@@ -905,14 +905,24 @@ public static class Program
         // differs, and it is chosen here rather than by a second AddMcpServer call — registering the server
         // twice would build two of everything and leave which one answers to configuration order.
         IMcpServerBuilder server = services.AddMcpServer()
-            .WithToolsFromAssembly(typeof(Program).Assembly)
+            .WithToolsFromAssembly(typeof(Program).Assembly);
 
-            // The store-fault boundary (gh#89). ON THE SERVER, NOT ON A TOOL: every tools/call goes through
-            // this pipeline, so a tool added tomorrow is covered by having been registered rather than by its
-            // author remembering a try/catch. A guard written into a tool covers that tool, which is how a
-            // 23505 from two overlapping fills reached a caller of get_bars as a raw DbUpdateException while
-            // the one method that translated anything sat two tools away.
-            .WithRequestFilters(filters => filters.AddCallToolFilter(StoreFaultGuard.Filter));
+        // The five order tools have no [McpServerToolType], so the assembly scan above does not publish
+        // them. They are listed only when the master switch is on. Each method still refuses when trading
+        // is disabled, which covers a call that arrives without a fresh list.
+        TradingExecutionOptions trading = new();
+        TradingExecutionOptionsConfiguration.Bind(trading, builder.Configuration);
+        if (trading.Enabled)
+        {
+            server.WithTools<TradingOrderTools>();
+        }
+
+        // The store-fault boundary (gh#89). ON THE SERVER, NOT ON A TOOL: every tools/call goes through
+        // this pipeline, so a tool added tomorrow is covered by having been registered rather than by its
+        // author remembering a try/catch. A guard written into a tool covers that tool, which is how a
+        // 23505 from two overlapping fills reached a caller of get_bars as a raw DbUpdateException while
+        // the one method that translated anything sat two tools away.
+        server = server.WithRequestFilters(filters => filters.AddCallToolFilter(StoreFaultGuard.Filter));
 
         if (mcp.Transport == McpTransport.Http)
         {

@@ -11,30 +11,24 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 public sealed class TradingAuditContractCountMigrationTests(SchemaFixture fixture)
 {
     [Fact]
-    public void AddTradingAuditContractCount_Down_RemovesContractCountColumn()
+    public async Task AddTradingAuditContractCount_Down_RemovesContractCountColumn()
     {
-        using TopstepXDbContext database = fixture.CreateContext();
+        // A private database. The collection's shared database stays at the latest migration, so this
+        // reversibility walk cannot leave a later migration pending for the next test.
+        await using TopstepXDbContext database =
+            await fixture.CreateEmptyDatabaseAsync("audit_count_" + Guid.NewGuid().ToString("N"));
         IMigrator migrator = database.Database.GetService<IMigrator>();
 
-        try
-        {
-            migrator.Migrate("20261018065525_AddTradingAuditLog");
-            migrator.Migrate("20261018142658_AddTradingAuditContractCount");
+        await migrator.MigrateAsync("20261018065525_AddTradingAuditLog");
+        await migrator.MigrateAsync("20261018142658_AddTradingAuditContractCount");
 
-            database.Database.ExecuteSqlRaw(
-                """INSERT INTO "TradingAuditLog" ("AttemptedAt","AccountId","ParsedStage","Tool","IdempotencyKey","RequestHash","DryRun","ContractCount","Outcome") VALUES (NOW(),1,'Practice','place_order','','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',false,3,'Live');""");
+        await database.Database.ExecuteSqlRawAsync(
+            """INSERT INTO "TradingAuditLog" ("AttemptedAt","AccountId","ParsedStage","Tool","IdempotencyKey","RequestHash","DryRun","ContractCount","Outcome") VALUES (NOW(),1,'Practice','place_order','','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',false,3,'Live');""");
 
-            migrator.Migrate("20261018065525_AddTradingAuditLog");
+        await migrator.MigrateAsync("20261018065525_AddTradingAuditLog");
 
-            Action readAfterDown = () => database.Database.ExecuteSqlRaw(
-                """SELECT "ContractCount" FROM "TradingAuditLog" LIMIT 1;""");
-            readAfterDown.Should().Throw<Exception>();
-        }
-        finally
-        {
-            // The collection shares one database that the fixture left at the latest migration.
-            // Stopping at ContractCount leaves every later migration pending.
-            migrator.Migrate();
-        }
+        Func<Task> readAfterDown = () => database.Database.ExecuteSqlRawAsync(
+            """SELECT "ContractCount" FROM "TradingAuditLog" LIMIT 1;""");
+        await readAfterDown.Should().ThrowAsync<Exception>();
     }
 }

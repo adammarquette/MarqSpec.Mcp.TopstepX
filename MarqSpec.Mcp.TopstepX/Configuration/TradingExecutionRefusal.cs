@@ -142,9 +142,21 @@ public readonly record struct TradingExecutionRefusal(string Code, string Messag
     public static TradingExecutionRefusal IdempotencyKeyRequired { get; } =
         new(
             ExecutionWriteRefusal.IdempotencyKeyRequired,
-            "idempotencyKey is required and must be at most "
+            "idempotencyKey is required. A replay of the same account, tool and key returns the stored transmit and does not send again.");
+
+    /// <summary>The idempotency key is longer than the audit column. Refused before any audit row.</summary>
+    public static TradingExecutionRefusal IdempotencyKeyTooLong { get; } =
+        new(
+            ExecutionWriteRefusal.IdempotencyKeyTooLong,
+            "idempotencyKey is longer than "
             + TradingAuditClaims.MaxKeyLength.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            + " characters. A replay of the same account, tool and key returns the stored transmit and does not send again.");
+            + " characters. Use a shorter key. Nothing was written.");
+
+    /// <summary>A read or a store write failed before the venue was sent. Nothing was transmitted.</summary>
+    public static TradingExecutionRefusal BeforeSendFault { get; } =
+        new(
+            ExecutionWriteRefusal.Error,
+            "The call failed before the venue was sent. Nothing was transmitted. Retry when the fault clears.");
 
     /// <summary>The idempotency key is already stored for a different request.</summary>
     public static TradingExecutionRefusal IdempotencyConflict { get; } =

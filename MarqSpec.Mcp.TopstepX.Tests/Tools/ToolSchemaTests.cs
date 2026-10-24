@@ -464,7 +464,9 @@ public sealed class ToolSchemaTests
     private static IEnumerable<Type> ToolTypes() =>
         typeof(ToolPayloads).Assembly
             .GetTypes()
-            .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
+            .Where(t => t.IsClass && (t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null
+                || t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                    .Any(method => method.GetCustomAttribute<McpServerToolAttribute>() is not null)))
             .OrderBy(t => t.Name);
 
     /// <summary>Members holding a default a caller gets by omitting an argument.</summary>

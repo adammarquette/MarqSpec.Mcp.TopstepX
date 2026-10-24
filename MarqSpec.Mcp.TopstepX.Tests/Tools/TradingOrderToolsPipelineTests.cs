@@ -1,7 +1,8 @@
 using System.IO.Pipelines;
-using System.Text.Json;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,11 +15,21 @@ using ModelContextProtocol.Server;
 namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 
 /// <summary>
-/// tools/list and tools/call for the five order tools, over a real MCP pipe, with trading left disabled.
+/// tools/list for the five order tools, over a real MCP pipe. Disabled servers omit them. Enabled
+/// servers list them. The in-tool refusal is the second layer and is called directly.
 /// </summary>
 [Trait("Gate", "ADR-0024")]
 public sealed class TradingOrderToolsPipelineTests
 {
+    private static readonly string[] _orderTools =
+    [
+        TradingMcpTools.PlaceOrderOperation,
+        TradingMcpTools.ModifyOrderOperation,
+        TradingMcpTools.CancelOrderOperation,
+        TradingMcpTools.ClosePositionOperation,
+        TradingMcpTools.PartialClosePositionOperation,
+    ];
+
     private static readonly Dictionary<string, string?> _settings = new()
     {
         ["ConnectionStrings:Default"] = "Host=localhost;Database=x;Username=u;Password=p",
@@ -28,10 +39,10 @@ public sealed class TradingOrderToolsPipelineTests
     };
 
     [Fact]
-    public async Task TradingRiskGate_OrderTools_ListAndCall_OverTheMcpPipeline()
+    public async Task TradingRiskGate_OrderTools_AreAbsentFromTheList_WhenTradingIsDisabled()
     {
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
-        using ServiceProvider provider = Build();
+        using ServiceProvider provider = Build(tradingEnabled: false);
         McpServerOptions configured = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
 
         McpServerOptions options = new()
@@ -61,47 +72,79 @@ public sealed class TradingOrderToolsPipelineTests
             cancellationToken: timeout.Token);
 
         IList<McpClientTool> listed = await client.ListToolsAsync(cancellationToken: timeout.Token);
-        listed.Select(tool => tool.Name).Should().Contain(
-        [
-            TradingMcpTools.PlaceOrderOperation,
-            TradingMcpTools.ModifyOrderOperation,
-            TradingMcpTools.CancelOrderOperation,
-            TradingMcpTools.ClosePositionOperation,
-            TradingMcpTools.PartialClosePositionOperation,
-        ]);
+        listed.Select(tool => tool.Name).Intersect(_orderTools).Should().BeEmpty();
 
-        McpClientTool place = listed.Should().ContainSingle(tool => tool.Name == TradingMcpTools.PlaceOrderOperation).Subject;
-        place.Description.Should().Contain("live practice account");
-        place.Description.Should().Contain("never retry OutcomeUnknown");
-
-        CallToolResult called = await client.CallToolAsync(
-            TradingMcpTools.PlaceOrderOperation,
-            new Dictionary<string, object?>
-            {
-                ["accountId"] = 1,
-                ["contractId"] = "CON.F.US.MES.Z26",
-                ["orderType"] = "Market",
-                ["side"] = "Buy",
-                ["size"] = 1,
-                ["idempotencyKey"] = "pipeline-key",
-            },
-            cancellationToken: timeout.Token);
-
-        called.IsError.Should().NotBe(true);
-        string body = string.Join(" ", called.Content.OfType<TextContentBlock>().Select(block => block.Text));
-        using JsonDocument payload = JsonDocument.Parse(body);
-        payload.RootElement.GetProperty("refusalCode").GetString().Should().Be("trading_disabled");
-        payload.RootElement.GetProperty("retrySafety").GetString().Should().Be("SafeToRetry");
-        payload.RootElement.GetProperty("status").GetString().Should().Be("Refused");
+        await using AsyncServiceScope scope = provider.CreateAsyncScope();
+        TradingOrderTools tools = scope.ServiceProvider.GetRequiredService<TradingOrderTools>();
+        ToolPayloads.TradingWriteResult refused = await tools.SubmitPlace(
+            1,
+            "CON.F.US.MES.Z26",
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "pipeline-key");
+        refused.RefusalCode.Should().Be("trading_disabled");
+        refused.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        refused.Status.Should().Be("Refused");
 
         await server.DisposeAsync();
         await running;
     }
 
-    private static ServiceProvider Build()
+    [Fact]
+    public async Task TradingRiskGate_OrderTools_AreListed_WhenTradingIsEnabled()
     {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(30));
+        using ServiceProvider provider = Build(tradingEnabled: true);
+        McpServerOptions configured = provider.GetRequiredService<IOptions<McpServerOptions>>().Value;
+
+        McpServerOptions options = new()
+        {
+            ServerInfo = configured.ServerInfo ?? new Implementation { Name = "orders", Version = "0" },
+            ToolCollection = configured.ToolCollection,
+        };
+
+        Pipe toServer = new();
+        Pipe toClient = new();
+        await using McpServer server = McpServer.Create(
+            new StreamServerTransport(
+                toServer.Reader.AsStream(), toClient.Writer.AsStream(), "orders", NullLoggerFactory.Instance),
+            options,
+            NullLoggerFactory.Instance,
+            provider);
+        Task running = server.RunAsync(timeout.Token);
+
+        await using McpClient client = await McpClient.CreateAsync(
+            new StreamClientTransport(
+                toServer.Writer.AsStream(), toClient.Reader.AsStream(), NullLoggerFactory.Instance),
+            cancellationToken: timeout.Token);
+
+        IList<McpClientTool> listed = await client.ListToolsAsync(cancellationToken: timeout.Token);
+        listed.Select(tool => tool.Name).Should().Contain(_orderTools);
+
+        McpClientTool place = listed.Should().ContainSingle(tool => tool.Name == TradingMcpTools.PlaceOrderOperation).Subject;
+        place.Description.Should().Contain("the stakes are real");
+        place.Description.Should().Contain("get_orders");
+        place.Description.Should().Contain("get_positions");
+        place.Description.Should().Contain("get_trades");
+        place.Description.Should().NotContain("list_open_orders");
+        place.Description.Should().NotContain("list_positions");
+
+        await server.DisposeAsync();
+        await running;
+    }
+
+    private static ServiceProvider Build(bool tradingEnabled)
+    {
+        Dictionary<string, string?> settings = new(_settings);
+        if (tradingEnabled)
+        {
+            settings["Trading:Enabled"] = "true";
+            settings["Trading:AllowedAccountIds"] = "1";
+        }
+
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
-        builder.Configuration.AddInMemoryCollection(_settings);
+        builder.Configuration.AddInMemoryCollection(settings);
         Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
         return builder.Services.BuildServiceProvider();
     }

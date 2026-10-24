@@ -702,10 +702,15 @@ Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of 
 | `OrderId` | `bigint` null | Broker order id on a `Live` row, so a replay can return it. Null otherwise |
 
 One row for **every** trading attempt that passes validation — preview, refusal, or live — before the
-outcome is returned (ADR-0024 §5, gh#707 / gh#709 / gh#750). A size, price or partial-close refusal writes
-no row. The idempotency claim **is** a row in this table: one `Unknown` row inserted before the send, unique
-on `(AccountId, Tool, IdempotencyKey)` where `Outcome = 'Unknown'` and the key is not empty. A later `Live`
-or `Failed` row for the same key is what a replay prefers. Empty keys are outside the unique index.
+outcome is returned (ADR-0024 §5, gh#707 / gh#709 / gh#750). A size, price, non-positive partial-close, or
+over-long-key refusal writes no row, and neither does `trading_disabled` before the claim. The kill switch,
+stage, allowlist, denylist, caps, a blank key, an idempotency conflict, a gateway refusal, and
+`trading_disabled` after the claim write `Refused`. The idempotency claim **is** a row in this table: one
+`Unknown` row inserted before the send, unique on `(AccountId, Tool, IdempotencyKey)` where
+`Outcome = 'Unknown'` and the key is not empty. The migration that creates that index reclassifies older
+duplicate Unknown rows to `Attempted` at contract count 0, keeping the earliest Unknown. A later `Live`,
+then `Failed`, then `Refused` row for the same key is what a replay prefers. Empty keys are outside the
+unique index. `modify_order` charges the full new size on its `Attempted` row, not a delta.
 
 **The cap charge sits on `Attempted`, and outcome rows stay at `0`.** A gateway refusal after the write-ahead
 appends a second `Attempted` row with the negated count, then `Refused` at `0`, so the session-day sum nets

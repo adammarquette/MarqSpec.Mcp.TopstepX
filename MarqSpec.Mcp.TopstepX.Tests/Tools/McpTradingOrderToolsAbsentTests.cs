@@ -32,6 +32,10 @@ public sealed class McpTradingOrderToolsRegistrationTests
             .. assembly.GetTypes().Where(type => type.GetCustomAttribute<McpServerToolTypeAttribute>() is not null),
         ];
 
+        toolTypes.Should().NotContain(typeof(TradingOrderTools));
+        typeof(TradingOrderTools).GetCustomAttribute<McpServerToolTypeAttribute>().Should().BeNull(
+            "assembly scan would publish the five tools while trading is disabled");
+
         List<MethodInfo> orderMethods = [];
         foreach (Type toolType in toolTypes)
         {
@@ -80,6 +84,19 @@ public sealed class McpTradingOrderToolsRegistrationTests
                 _orderTools.Should().NotContain(attribute.Name ?? string.Empty);
             }
         }
+
+        foreach (MethodInfo method in typeof(TradingOrderTools).GetMethods(
+                     BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+        {
+            if (method.GetCustomAttribute<McpServerToolAttribute>() is not null)
+            {
+                orderMethods.Add(method);
+            }
+        }
+
+        typeof(TradingOrderTools).GetConstructors().Should().ContainSingle()
+            .Which.GetParameters().Select(parameter => parameter.ParameterType)
+            .Should().Equal(typeof(TradingRiskGate));
 
         orderMethods.Should().HaveCount(_orderTools.Length);
         orderMethods.Select(method => method.GetCustomAttribute<McpServerToolAttribute>()!.Name)

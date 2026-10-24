@@ -1091,7 +1091,8 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   which supersedes [ADR-0002](adr/0002-read-only-venue-boundary.md)). **`Trading__*` configuration is wired and
   validated** (gh#708) — master enable off by default, kill switch, secondary account allowlist, contract caps
   and a symbol denylist. The five MCP tools `place_order`, `modify_order`, `cancel_order`, `close_position`
-  and `partial_close_position` call that gate and no other write path (gh#750). The kill switch blocks cancel
+  and `partial_close_position` are registered only when `Trading__Enabled` is true, and each one calls that
+  gate and no other write path (gh#750). The kill switch blocks cancel
   and close; that block is pending Adam's decision and is unchanged. Idempotency is the pre-send `Unknown`
   audit row, unique per account, tool and key, not process memory. `check-no-order-path.sh` still confines
   order-method names to the execution seam. Bracket fields,

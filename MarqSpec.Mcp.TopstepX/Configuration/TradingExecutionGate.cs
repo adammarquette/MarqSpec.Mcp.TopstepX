@@ -17,15 +17,20 @@ public sealed class TradingExecutionGate(
     ITradingKillSwitch killSwitch,
     IAccountStageResolver stageResolver)
 {
-    private readonly TradingExecutionOptions _options = options.Value;
     private readonly ITradingKillSwitch _killSwitch = killSwitch;
     private readonly IAccountStageResolver _stageResolver = stageResolver;
+
+    /// <summary>
+    /// The bound options, read on every check. A master-switch change during a call is visible to the next
+    /// check in that call (ADR-0024).
+    /// </summary>
+    private TradingExecutionOptions Current => options.Value;
 
     /// <summary>Refuses when master enable is off or the kill switch is engaged.</summary>
     /// <returns>A refusal, or <see langword="null"/> when trading may proceed past this layer.</returns>
     public TradingExecutionRefusal? RefuseIfDisabledOrHalted()
     {
-        if (!_options.Enabled)
+        if (!Current.Enabled)
         {
             return TradingExecutionRefusal.TradingDisabled;
         }
@@ -46,12 +51,12 @@ public sealed class TradingExecutionGate(
     /// <returns>A refusal, or <see langword="null"/> when the account passes the allowlist layer.</returns>
     public TradingExecutionRefusal? RefuseIfNotAllowlisted(int accountId)
     {
-        if (!_options.IsAllowlistConfigured)
+        if (!Current.IsAllowlistConfigured)
         {
             return null;
         }
 
-        if (!_options.TryGetAllowedAccountIdList(out IReadOnlyList<int> allowed, out string? configError))
+        if (!Current.TryGetAllowedAccountIdList(out IReadOnlyList<int> allowed, out string? configError))
         {
             return TradingExecutionRefusal.InvalidConfiguration(configError!);
         }
@@ -67,7 +72,7 @@ public sealed class TradingExecutionGate(
     public TradingExecutionRefusal? RefuseIfSymbolDenied(string symbol)
     {
         InstrumentId instrument = new(symbol);
-        return _options.DeniedSymbolSet().Contains(instrument.Symbol)
+        return Current.DeniedSymbolSet().Contains(instrument.Symbol)
             ? TradingExecutionRefusal.SymbolDenied(instrument.Symbol)
             : null;
     }
@@ -77,12 +82,12 @@ public sealed class TradingExecutionGate(
     /// <returns>A refusal, or <see langword="null"/> when the size is within the cap.</returns>
     public TradingExecutionRefusal? RefuseIfOrderSizeExceedsLimit(int requestedSize)
     {
-        if (requestedSize <= _options.MaxContractsPerOrder)
+        if (requestedSize <= Current.MaxContractsPerOrder)
         {
             return null;
         }
 
-        return TradingExecutionRefusal.OrderSizeExceedsLimit(requestedSize, _options.MaxContractsPerOrder);
+        return TradingExecutionRefusal.OrderSizeExceedsLimit(requestedSize, Current.MaxContractsPerOrder);
     }
 
     /// <summary>
@@ -97,7 +102,7 @@ public sealed class TradingExecutionGate(
         int contractsAlreadyToday,
         int requestedSize)
     {
-        if (contractsAlreadyToday + requestedSize <= _options.MaxContractsPerDay)
+        if (contractsAlreadyToday + requestedSize <= Current.MaxContractsPerDay)
         {
             return null;
         }
@@ -106,7 +111,7 @@ public sealed class TradingExecutionGate(
             accountId,
             contractsAlreadyToday,
             requestedSize,
-            _options.MaxContractsPerDay);
+            Current.MaxContractsPerDay);
     }
 
     /// <summary>

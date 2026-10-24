@@ -9,12 +9,16 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <remarks>
 /// MCP tools call this type only — never the execution gateway directly. Every member that touches
 /// stage resolution, allowlist, denylist, or the gateway re-checks
-/// <see cref="TradingExecutionGate.RefuseIfDisabledOrHalted"/> first. The master switch is checked before
-/// the idempotency claim. Daily caps charge on <see cref="TradingAuditOutcomes.Attempted"/> rows; outcome
-/// rows use zero contract count. A gateway refusal after the write-ahead appends a second Attempted row
-/// with the negated count so the session-day sum nets to zero. A pre-send
+/// <see cref="TradingExecutionGate.RefuseIfDisabledOrHalted"/> first, and that check re-reads the bound
+/// options so a master switch flipped during the call is visible before the claim and again before the
+/// send. A disable that lands before the claim writes no audit row. Daily caps charge on
+/// <see cref="TradingAuditOutcomes.Attempted"/> rows; outcome rows use zero contract count. Modify charges
+/// the full new size, not a delta from the resting order. A gateway refusal after the write-ahead appends
+/// a second Attempted row with the negated count so the session-day sum nets to zero. A pre-send
 /// <see cref="TradingAuditOutcomes.Unknown"/> row, unique per account, tool and key, is written before the
-/// send so a throw or a lost acknowledgment cannot be retried into a second send.
+/// send so a throw or a lost acknowledgment cannot be retried into a second send. A refusal recorded after
+/// that claim is what a replay returns. <see cref="TradingAttemptOutcome.Unknown"/> is returned only when
+/// the send may already have happened.
 /// </remarks>
 public sealed class TradingRiskGate
 {
@@ -213,11 +217,11 @@ public sealed class TradingRiskGate
             if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken).ConfigureAwait(false)
                 is TradingExecutionRefusal daily)
             {
-                return await RefuseAsync(
+                return await AuditedUnlessTradingDisabledAsync(
                     command.AccountId,
-                    FormatStage(stage),
+                    stage,
                     audit,
-                    contractCount: command.Size,
+                    command.Size,
                     daily,
                     cancellationToken).ConfigureAwait(false);
             }
@@ -339,11 +343,11 @@ public sealed class TradingRiskGate
                 && await RefuseDailyCapAsync(command.AccountId, dailySize, cancellationToken).ConfigureAwait(false)
                     is TradingExecutionRefusal daily)
             {
-                return await RefuseAsync(
+                return await AuditedUnlessTradingDisabledAsync(
                     command.AccountId,
-                    FormatStage(stage),
+                    stage,
                     audit,
-                    contractCount: dailySize,
+                    dailySize,
                     daily,
                     cancellationToken).ConfigureAwait(false);
             }
@@ -635,11 +639,11 @@ public sealed class TradingRiskGate
             if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken).ConfigureAwait(false)
                 is TradingExecutionRefusal daily)
             {
-                return await RefuseAsync(
+                return await AuditedUnlessTradingDisabledAsync(
                     command.AccountId,
-                    FormatStage(stage),
+                    stage,
                     audit,
-                    contractCount: command.Size,
+                    command.Size,
                     daily,
                     cancellationToken).ConfigureAwait(false);
             }
@@ -769,20 +773,20 @@ public sealed class TradingRiskGate
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
         CancellationToken cancellationToken)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        if (await RefuseBeforeClaimAsync(accountId, stage, audit, capChargeSize, cancellationToken)
+                .ConfigureAwait(false) is { } switchedOff)
         {
-            return await RefuseAsync(
-                accountId,
-                FormatStage(stage),
-                audit,
-                capChargeSize,
-                disabled,
-                cancellationToken).ConfigureAwait(false);
+            return switchedOff;
         }
 
         if (await RefuseGatewayWriteUnlessPermittedAsync(accountId, cancellationToken).ConfigureAwait(false)
             is TradingExecutionRefusal gatewayRefusal)
         {
+            if (gatewayRefusal.Code == TradingExecutionRefusal.TradingDisabled.Code)
+            {
+                return RefuseWithoutSideEffects(gatewayRefusal);
+            }
+
             return await RefuseAsync(
                 accountId,
                 FormatStage(stage),
@@ -798,6 +802,12 @@ public sealed class TradingRiskGate
             return claimed;
         }
 
+        if (await RefuseAfterClaimAsync(accountId, stage, audit, cancellationToken).ConfigureAwait(false)
+            is { } afterClaim)
+        {
+            return afterClaim;
+        }
+
         try
         {
             await WriteAuditAsync(
@@ -809,20 +819,21 @@ public sealed class TradingRiskGate
                 venueErrorCode: null,
                 orderId: null,
                 cancellationToken).ConfigureAwait(false);
-
-            return await SendAndFinalizeAsync(
-                accountId,
-                stage,
-                audit,
-                capChargeSize,
-                send,
-                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception)
         {
-            // The Unknown claim is already stored. A lost Attempted row or a throw after it must not send again.
-            return UnknownTransmit(stage);
+            // The send has not started. Record the refusal so the claim is not replayed as OutcomeUnknown.
+            return await RefuseUnsentClaimAsync(accountId, stage, audit, cancellationToken)
+                .ConfigureAwait(false);
         }
+
+        return await SendAndFinalizeAsync(
+            accountId,
+            stage,
+            audit,
+            capChargeSize,
+            send,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<TradingRiskGateResult> TransmitWithoutCapChargeAsync(
@@ -832,20 +843,20 @@ public sealed class TradingRiskGate
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
         CancellationToken cancellationToken)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        if (await RefuseBeforeClaimAsync(accountId, stage, audit, contractCount: 0, cancellationToken)
+                .ConfigureAwait(false) is { } switchedOff)
         {
-            return await RefuseAsync(
-                accountId,
-                FormatStage(stage),
-                audit,
-                contractCount: 0,
-                disabled,
-                cancellationToken).ConfigureAwait(false);
+            return switchedOff;
         }
 
         if (await RefuseGatewayWriteUnlessPermittedAsync(accountId, cancellationToken).ConfigureAwait(false)
             is TradingExecutionRefusal gatewayRefusal)
         {
+            if (gatewayRefusal.Code == TradingExecutionRefusal.TradingDisabled.Code)
+            {
+                return RefuseWithoutSideEffects(gatewayRefusal);
+            }
+
             return await RefuseAsync(
                 accountId,
                 FormatStage(stage),
@@ -861,6 +872,12 @@ public sealed class TradingRiskGate
             return claimed;
         }
 
+        if (await RefuseAfterClaimAsync(accountId, stage, audit, cancellationToken).ConfigureAwait(false)
+            is { } afterClaim)
+        {
+            return afterClaim;
+        }
+
         try
         {
             await WriteAuditAsync(
@@ -872,19 +889,20 @@ public sealed class TradingRiskGate
                 venueErrorCode: null,
                 orderId: null,
                 cancellationToken).ConfigureAwait(false);
-
-            return await SendAndFinalizeAsync(
-                accountId,
-                stage,
-                audit,
-                capChargeApplied: 0,
-                send,
-                cancellationToken).ConfigureAwait(false);
         }
         catch (Exception)
         {
-            return UnknownTransmit(stage);
+            return await RefuseUnsentClaimAsync(accountId, stage, audit, cancellationToken)
+                .ConfigureAwait(false);
         }
+
+        return await SendAndFinalizeAsync(
+            accountId,
+            stage,
+            audit,
+            capChargeApplied: 0,
+            send,
+            cancellationToken).ConfigureAwait(false);
     }
 
     private Task<TradingExecutionRefusal?> RefuseGatewayWriteUnlessPermittedAsync(
@@ -905,6 +923,37 @@ public sealed class TradingRiskGate
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
         CancellationToken cancellationToken)
     {
+        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal blocked)
+        {
+            try
+            {
+                if (capChargeApplied != 0)
+                {
+                    await WriteAuditAsync(
+                        accountId,
+                        FormatStage(stage),
+                        audit,
+                        TradingAuditOutcomes.Attempted,
+                        contractCount: -capChargeApplied,
+                        venueErrorCode: blocked.Code,
+                        orderId: null,
+                        CancellationToken.None).ConfigureAwait(false);
+                }
+
+                return await RecordRefusalAsync(
+                    accountId,
+                    FormatStage(stage),
+                    audit,
+                    contractCount: 0,
+                    blocked,
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                return RefuseWithoutSideEffects(blocked);
+            }
+        }
+
         ExecutionWriteResult write;
         try
         {
@@ -912,8 +961,9 @@ public sealed class TradingRiskGate
         }
         catch (Exception)
         {
-            // The pre-send Unknown claim already blocks a retry. A second Unknown row would violate the
-            // unique claim, and rethrowing would skip the structured OutcomeUnknown the caller must see.
+            // The send may have reached the venue. The pre-send Unknown claim already blocks a retry.
+            // A second Unknown row would violate the unique claim, and rethrowing would skip the
+            // structured OutcomeUnknown the caller must see.
             return UnknownTransmit(stage);
         }
 
@@ -938,9 +988,9 @@ public sealed class TradingRiskGate
     {
         if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
         {
-            return await RefuseAsync(
+            return await AuditedUnlessTradingDisabledAsync(
                 accountId,
-                FormatStage(stage),
+                stage,
                 audit,
                 contractCount,
                 disabled,
@@ -965,6 +1015,110 @@ public sealed class TradingRiskGate
             Preview: new TradingExecutionPreview(accountId, stage, audit.Tool, WouldTransmit: true));
     }
 
+    private Task<TradingRiskGateResult> AuditedUnlessTradingDisabledAsync(
+        int accountId,
+        AccountStage stage,
+        AuditEnvelope audit,
+        int contractCount,
+        TradingExecutionRefusal refusal,
+        CancellationToken cancellationToken)
+    {
+        if (refusal.Code == TradingExecutionRefusal.TradingDisabled.Code)
+        {
+            return Task.FromResult(RefuseWithoutSideEffects(refusal));
+        }
+
+        return RefuseAsync(
+            accountId,
+            FormatStage(stage),
+            audit,
+            contractCount,
+            refusal,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// A master-switch or kill-switch refusal before the claim. Trading disabled writes nothing. The kill
+    /// switch still writes a refusal row.
+    /// </summary>
+    private async Task<TradingRiskGateResult?> RefuseBeforeClaimAsync(
+        int accountId,
+        AccountStage stage,
+        AuditEnvelope audit,
+        int contractCount,
+        CancellationToken cancellationToken)
+    {
+        if (_executionGate.RefuseIfDisabledOrHalted() is not TradingExecutionRefusal blocked)
+        {
+            return null;
+        }
+
+        if (blocked.Code == TradingExecutionRefusal.TradingDisabled.Code)
+        {
+            return RefuseWithoutSideEffects(blocked);
+        }
+
+        return await RefuseAsync(
+            accountId,
+            FormatStage(stage),
+            audit,
+            contractCount,
+            blocked,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A switch flipped after the claim and before the send. The claim already exists, so the refusal is
+    /// recorded and a replay returns it instead of OutcomeUnknown. Nothing is sent.
+    /// </summary>
+    private async Task<TradingRiskGateResult?> RefuseAfterClaimAsync(
+        int accountId,
+        AccountStage stage,
+        AuditEnvelope audit,
+        CancellationToken cancellationToken)
+    {
+        if (_executionGate.RefuseIfDisabledOrHalted() is not TradingExecutionRefusal blocked)
+        {
+            return null;
+        }
+
+        _ = cancellationToken;
+        return await RecordRefusalAsync(
+            accountId,
+            FormatStage(stage),
+            audit,
+            contractCount: 0,
+            blocked,
+            CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The Attempted row could not be stored, and the send has not started. Record a refusal when the store
+    /// can still take one. Either way the caller gets a retryable result and no exception.
+    /// </summary>
+    private async Task<TradingRiskGateResult> RefuseUnsentClaimAsync(
+        int accountId,
+        AccountStage stage,
+        AuditEnvelope audit,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+        try
+        {
+            return await RecordRefusalAsync(
+                accountId,
+                FormatStage(stage),
+                audit,
+                contractCount: 0,
+                TradingExecutionRefusal.BeforeSendFault,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            return RefuseWithoutSideEffects(TradingExecutionRefusal.BeforeSendFault);
+        }
+    }
+
     private static TradingRiskGateResult RefuseWithoutSideEffects(TradingExecutionRefusal refusal) =>
         new(
             TradingAttemptOutcome.Refused,
@@ -973,7 +1127,29 @@ public sealed class TradingRiskGate
             WriteResult: null,
             Preview: null);
 
-    private async Task<TradingRiskGateResult> RefuseAsync(
+    private Task<TradingRiskGateResult> RefuseAsync(
+        int accountId,
+        string parsedStage,
+        AuditEnvelope audit,
+        int contractCount,
+        TradingExecutionRefusal refusal,
+        CancellationToken cancellationToken)
+    {
+        if (refusal.Code == TradingExecutionRefusal.TradingDisabled.Code)
+        {
+            return Task.FromResult(RefuseWithoutSideEffects(refusal));
+        }
+
+        return RecordRefusalAsync(
+            accountId,
+            parsedStage,
+            audit,
+            contractCount,
+            refusal,
+            cancellationToken);
+    }
+
+    private async Task<TradingRiskGateResult> RecordRefusalAsync(
         int accountId,
         string parsedStage,
         AuditEnvelope audit,
@@ -1098,7 +1274,7 @@ public sealed class TradingRiskGate
     {
         if (audit.IdempotencyKey.Length > TradingAuditClaims.MaxKeyLength)
         {
-            return RefuseWithoutSideEffects(TradingExecutionRefusal.IdempotencyKeyRequired);
+            return RefuseWithoutSideEffects(TradingExecutionRefusal.IdempotencyKeyTooLong);
         }
 
         if (context.RequireIdempotencyKey && string.IsNullOrWhiteSpace(audit.IdempotencyKey))
@@ -1168,6 +1344,22 @@ public sealed class TradingRiskGate
         AccountStage parsed = Enum.TryParse(claim.ParsedStage, out AccountStage stored)
             ? stored
             : stage;
+
+        if (claim.BestOutcome == TradingAuditOutcomes.Refused)
+        {
+            string code = string.IsNullOrEmpty(claim.VenueErrorCode)
+                ? ExecutionWriteRefusal.Error
+                : claim.VenueErrorCode;
+            return new TradingRiskGateResult(
+                TradingAttemptOutcome.Refused,
+                parsed,
+                new TradingExecutionRefusal(
+                    code,
+                    "Stored refusal for this account, tool and idempotency key. The venue was not left with a new order."),
+                WriteResult: null,
+                Preview: null,
+                IsReplay: true);
+        }
 
         (ExecutionWriteOutcome venueOutcome, TradingAttemptOutcome attempt) = claim.BestOutcome switch
         {

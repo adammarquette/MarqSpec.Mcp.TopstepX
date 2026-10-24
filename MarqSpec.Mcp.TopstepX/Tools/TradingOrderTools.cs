@@ -1,7 +1,11 @@
 using System.ComponentModel;
+using System.Net.Http;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Server;
+using Npgsql;
 
 namespace MarqSpec.Mcp.TopstepX.Tools;
 
@@ -11,17 +15,20 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// <remarks>
 /// Method names are <c>Submit*</c> on purpose. The venue order identifiers are confined to the execution
 /// seam; these tools name the gate's entry points and publish <c>place_order</c> and its siblings via
-/// <see cref="McpServerToolAttribute.Name"/>. <c>Trading__Enabled</c> defaults to false and refuses before
-/// any vendor send. The kill switch blocks cancel and close on the same path. There is no carve-out.
+/// <see cref="McpServerToolAttribute.Name"/>. There is no <see cref="McpServerToolTypeAttribute"/>: the
+/// composition root registers this type only when trading is enabled, so a disabled server does not list
+/// the tools. Each method still refuses when trading is disabled, which is the second layer if a call
+/// arrives anyway. The kill switch blocks cancel and close on the same path. There is no carve-out.
+/// A fault from a read before the send is a retryable error. <see cref="TradingAttemptOutcome.Unknown"/>
+/// is returned only when the send may already have happened.
 /// </remarks>
-[McpServerToolType]
 public sealed class TradingOrderTools(TradingRiskGate gate)
 {
     private const string Stakes =
         "This writes on a live practice account and the stakes are real. Non-practice accounts are refused. "
         + "Use a fresh idempotencyKey for each order; the key is scoped to this account and this tool, and "
-        + "the longest key is 256 characters. never retry OutcomeUnknown; reconcile via list_open_orders, "
-        + "list_positions and recent trades (get_orders, get_positions and get_trades). ";
+        + "the longest key is 256 characters. never retry OutcomeUnknown; reconcile via get_orders, "
+        + "get_positions and get_trades. ";
 
     private readonly TradingRiskGate _gate = gate;
 
@@ -101,7 +108,8 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
         + "Modifies an open order only through the trading risk gate. Trading__Enabled defaults to false and "
         + "refuses this call before any vendor send, and the kill switch blocks it the same way. "
         + "idempotencyKey is required; a replay of that key returns the stored transmit and does not send "
-        + "again. A supplied size is checked against the per-order and daily caps. status is Preview, "
+        + "again. A supplied size is checked against the per-order and daily caps, and the full new size is "
+        + "what the daily cap counts. status is Preview, "
         + "Refused, Live, Failed, or Unknown. retrySafety is SafeToRetry, NotSafeToRetry, or OutcomeUnknown. "
         + "refusalCode, resultCode and orderId are omitted when this call has nothing to report for them.")]
     public Task<ToolPayloads.TradingWriteResult> SubmitModify(
@@ -237,13 +245,32 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
         }
         catch (VenueException)
         {
-            return new ToolPayloads.TradingWriteResult(
-                nameof(TradingAttemptOutcome.Unknown),
-                ToolPayloads.TradingRetrySafety.OutcomeUnknown,
-                AccountStage.Unknown,
-                RefusalCode: null,
-                ResultCode: null,
-                OrderId: null);
+            return BeforeSendFault();
+        }
+        catch (HttpRequestException)
+        {
+            return BeforeSendFault();
+        }
+        catch (DbUpdateException)
+        {
+            return BeforeSendFault();
+        }
+        catch (NpgsqlException)
+        {
+            return BeforeSendFault();
         }
     }
+
+    /// <summary>
+    /// A read or a store fault that reached the tool happened before the send. The venue was not touched
+    /// by this failure, so the caller may retry. Database and HTTP errors stay inside this result.
+    /// </summary>
+    private static ToolPayloads.TradingWriteResult BeforeSendFault() =>
+        new(
+            nameof(TradingAttemptOutcome.Refused),
+            ToolPayloads.TradingRetrySafety.SafeToRetry,
+            AccountStage.Unknown,
+            ExecutionWriteRefusal.Error,
+            ResultCode: null,
+            OrderId: null);
 }

@@ -392,7 +392,7 @@ public sealed class TradingRiskGateTests
         _audit.Entries.Should().Contain(e =>
             e.Outcome == TradingAuditOutcomes.Unknown
             && e.VenueErrorCode == nameof(InvalidOperationException)
-            && e.ContractCount == SamplePlace(PracticeAccountId).Size);
+            && e.ContractCount == 0);
     }
 
     [Fact]
@@ -464,7 +464,10 @@ public sealed class TradingRiskGateTests
             .Where(e => e.Outcome == TradingAuditOutcomes.Attempted)
             .Sum(e => e.ContractCount);
         attemptedNet.Should().Be(0);
-        _audit.Entries.Should().Contain(e => e.Outcome == TradingAuditOutcomes.Refused);
+        _audit.Entries.Should().Contain(e =>
+            e.Outcome == TradingAuditOutcomes.Attempted && e.ContractCount == -placeSize);
+        _audit.Entries.Should().Contain(e =>
+            e.Outcome == TradingAuditOutcomes.Refused && e.ContractCount == 0);
     }
 
     [Fact]

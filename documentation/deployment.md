@@ -48,6 +48,62 @@ GHCR reference, set secrets through your orchestrator's mechanism instead of a t
 the server behind TLS when the instance is reachable off the machine
 ([ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md)).
 
+## Railway (gh#758)
+
+Railway is **one target, not the platform**: [`.railway/railway.ts`](../.railway/railway.ts) is Railway's
+Infrastructure-as-Code file and mirrors [`docker-compose.yml`](../docker-compose.yml) value for value, so the
+same stack moves to any orchestrator that runs images. Railway's legacy `railway.json` / `railway.toml` is
+deprecated (no longer read after 2026-12-01) and is not used. CI checks the file offline
+(`railway-template` job, [`check-railway-template.sh`](../scripts/check-railway-template.sh)); nothing in this
+repository runs `railway config apply`.
+
+**Services.** One project, three services, all image-sourced — Railway never builds this repository:
+
+| Service | Image | Role |
+|---|---|---|
+| `postgres` | `timescale/timescaledb-ha:pg17` (ADR-0004) | volume `postgres-data` (10 GiB) at `/home/postgres/pgdata`, `PGDATA=…/data` |
+| `server` | private GHCR image, pinned tag or digest | public MCP endpoint; `MarketData__RecordTape=false`; healthcheck `/health` |
+| `recorder` | the same image | `MarketData__RecordTape=true`, HTTP transport, no public domain; healthcheck `/health` |
+
+Both server roles bind plaintext `8080` behind Railway's TLS edge — the ADR-0021 shape, so
+`ASPNETCORE_HTTP_PORTS=8080` is **set**, never cleared as compose does. `Trading__Enabled` is the literal
+`"false"` in the template, beside the code default (ADR-0024).
+
+**Variables.** Secrets are never in the file: each is a `${{shared.NAME}}` reference to an environment
+shared variable you create in Railway. Everything else is a literal in the file and documented in
+[`.env.example`](../.env.example).
+
+| Shared variable (set in Railway) | Feeds |
+|---|---|
+| `POSTGRES_PASSWORD` | `postgres`, and the password in `ConnectionStrings__Default` |
+| `PROJECTX_API_KEY`, `PROJECTX_API_SECRET` | `ProjectX__ApiKey`, `ProjectX__ApiSecret` |
+| `PROJECTX_DATA_TIER` | `ProjectX__DataTier` (never defaulted, R-7.2) |
+| `MCP_HTTP_BEARER_TOKEN` | `Mcp__HttpBearerToken` |
+
+**Data retention — reserved, inert.** The template carries the retention intent so the names are reviewed
+before code lands. **No released image reads these keys**, and the schema deliberately has no retention on
+the trade tape (`AddTradeTape` migration, `SchemaTests`), so enabling retention needs a product change and an
+ADR. It must not drop raw tape before gh#755's scheduled export has written it.
+
+| Variable | Template value | Meaning (proposed) |
+|---|---|---|
+| `Retention__Enabled` | `false` | master switch; CI rejects `true` until the feature exists |
+| `Retention__RawTapeDays` | `30` | keep N days of raw tape, then roll older days into daily summaries |
+| `Retention__DailySummaryDays` | `0` | how long summaries live; `0` = forever |
+| `Retention__RequireExportBeforeDrop` | `true` | never drop a day gh#755's export has not written |
+| `TapeExport__Schedule`, `__Path`, `__Format` | empty | placeholders for gh#755; rename to whatever it defines |
+
+**Done in the Railway dashboard, not the file:**
+
+1. **Registry credential** on `server` and `recorder`: username `adammarquette`, password a GitHub token with
+   `read:packages` only. IaC would need it as a literal, so it stays out of source. Private-registry pulls
+   need a Railway Pro plan.
+2. **Shared variables** in the table above, per environment.
+3. **Domain** on `server` only (generated or custom). `recorder` and `postgres` get none.
+4. **Volume backups** on `postgres-data`, until gh#755's export exists.
+5. Replace `REPLACE_WITH_RELEASE_TAG` with a release tag or digest, then `railway config plan` before any
+   `apply`.
+
 ## Verify a running instance
 
 [`scripts/check-deployment.sh`](../scripts/check-deployment.sh) probes a **deployed** HTTPS origin from

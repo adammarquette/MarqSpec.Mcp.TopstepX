@@ -1117,8 +1117,13 @@ public static class Program
 
         try
         {
+            // The same token ReachAsync uses. It cannot fire before the host starts. The comment above
+            // is why a later move of this call, to after StartAsync, would still need the stop catch.
             await MigrationCommandTimeout
-                .ApplyAsync(database.Database, migrations.CommandTimeoutSeconds)
+                .ApplyAsync(
+                    database.Database,
+                    migrations.CommandTimeoutSeconds,
+                    app.Lifetime.ApplicationStopping)
                 .ConfigureAwait(false);
             return StoreAvailability.Available();
         }

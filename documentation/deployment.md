@@ -387,29 +387,22 @@ a deploy limit: zero is refused because Npgsql treats it as no timeout. Compose 
 `${Migrations__CommandTimeoutSeconds:-3600}`.
 
 `MigrateAsync` runs in `Main` before the process listens, so `/health` does not answer while a migration
-is in progress. This repository has no `railway.json` or `railway.toml`. On Railway the healthcheck path
-and its timeout live in the service dashboard, or in `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`. When a healthcheck
-path is set, Railway's default healthcheck timeout is 300 seconds. That window, not `3600`, is what stops
-the container. A per-chunk index build, or the plain-Postgres build that blocks writes on `Trades` for the
-whole statement, is killed mid-command once the window expires. The next start drops the invalid index and
-builds it again under the same window. A restart policy repeats that loop.
+is in progress. Railway's default healthcheck timeout is 300 seconds. A deploy that misses that window is
+marked failed, and the previous deployment keeps running. That is not a container kill, and a restart
+policy does not rebuild the index by itself. The next deploy drops an invalid index and builds it again.
 
-Before the first deploy against a large `Trades` tape, do one of these:
+The healthcheck timeout will come from the Railway config in PR #774 (`.railway/railway.ts`,
+`healthcheckTimeout` 3900) once that change lands. The reconcile of this note with that config is part of
+PR #774.
 
-1. Raise the healthcheck timeout to at least the expected build (the dashboard timeout, or
-   `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`).
-2. Run that first migration once outside the health-gated deploy: one instance, or a pre-deploy command,
-   with the healthcheck path unset for that run.
-
-Scale the service to **one replica** for that first deploy. A second instance waits on the session
-advisory lock for up to the command timeout, then fails with `57014` and exits. It does not leave a
-partial index: the create is `IF NOT EXISTS` after the lock. On Railway the healthcheck kills the waiter
-before that timeout.
+One replica of each service is not enough on its own. The server and the recorder both migrate, and they
+take the same session advisory lock. The second waits, up to the command timeout, then fails with `57014`
+and exits. It does not leave a partial index: the create is `IF NOT EXISTS` after the lock. The healthcheck
+window has to cover that wait as well as the build.
 
 The composed server has no healthcheck of its own. Postgres uses `pg_isready` with `start_period: 20s`,
 and the server waits on that, not on the server listening. If you add a healthcheck on the server that
-gates other services, give it a `start_period` that covers the same first build. A short `start_period`
-stops the container the same way Railway's healthcheck does.
+gates other services, give it a `start_period` that covers the same first build.
 
 ## Troubleshooting
 

@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace MarqSpec.Mcp.TopstepX.Data;
 
@@ -24,8 +25,11 @@ namespace MarqSpec.Mcp.TopstepX.Data;
 /// failure. Npgsql resets a pooled connection with <c>DISCARD ALL</c>, and that reset releases advisory
 /// locks when it is sent. The failure path unlocks here rather than leaving the key for the reset. The
 /// probe and the unlock copy the migration command's timeout, so they are not left on Npgsql's 30-second
-/// default. An unlock that throws is logged and swallowed: the original command error has to stay the one
-/// <c>CommandFailed</c> reports.
+/// default. An unlock that throws <see cref="DbException"/>, <see cref="InvalidOperationException"/>, or
+/// <see cref="TimeoutException"/> is logged and swallowed, so the original command error stays the one
+/// <c>CommandFailed</c> reports. <see cref="OperationCanceledException"/> and fatal exceptions propagate.
+/// When the context has no <see cref="ILoggerFactory"/>, or resolving one throws, the warning goes to
+/// <see cref="NullLogger"/> and is not rethrown.
 /// </para>
 /// </remarks>
 internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandInterceptor
@@ -141,26 +145,42 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
         {
             unlock.ExecuteScalar();
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsRecoverableUnlockFailure(exception))
         {
-            // The build error is the one startup has to log. An unlock that fails because the server is
-            // already gone must not replace it.
+            // The build error is the one startup has to log. A database error, a closed connection, or a
+            // timeout on the unlock must not replace it. Cancellation and fatal exceptions still propagate.
             LogUnlockFailure(eventData, exception);
         }
     }
 
+    /// <summary>
+    /// Database, state, and timeout failures are recoverable here. Cancellation is not: it has to stay
+    /// visible. Fatal exceptions are not in this set, so they are not swallowed either.
+    /// </summary>
+    private static bool IsRecoverableUnlockFailure(Exception exception) =>
+        exception is DbException or InvalidOperationException or TimeoutException
+        && exception is not OperationCanceledException;
+
     private static void LogUnlockFailure(CommandErrorEventData eventData, Exception exception)
     {
+        // No logger is an explicit NullLogger, not a swallowed warning. Resolving one must not replace
+        // the command error, so a failure there keeps the same fallback.
+        ILogger logger = NullLogger<TradeInstrumentIndexBuildInterceptor>.Instance;
         try
         {
             ILoggerFactory? factory = eventData.Context?.GetService<ILoggerFactory>();
-            factory?.CreateLogger<TradeInstrumentIndexBuildInterceptor>().LogWarning(
-                exception,
-                "The trade index build lock was not released. The original command error is unchanged.");
+            if (factory is not null)
+            {
+                logger = factory.CreateLogger<TradeInstrumentIndexBuildInterceptor>();
+            }
         }
-        catch (Exception)
+        catch (Exception resolveFailure) when (resolveFailure is InvalidOperationException or ObjectDisposedException)
         {
-            // Logging itself must not replace the command error either.
+            logger = NullLogger<TradeInstrumentIndexBuildInterceptor>.Instance;
         }
+
+        logger.LogWarning(
+            exception,
+            "The trade index build lock was not released. The original command error is unchanged.");
     }
 }

@@ -50,78 +50,123 @@ the server behind TLS when the instance is reachable off the machine
 
 ## Railway (gh#758)
 
-Railway is the deploy target; [`.railway/railway.ts`](../.railway/railway.ts) keeps it **swappable**. It is
-Railway's Infrastructure-as-Code file (the legacy `railway.json` / `railway.toml` is deprecated and unread
-after 2026-12-01). It follows compose's shape — same images, same keys — but is not a copy: the differences
-are listed below, and any key it omits takes the code default. The decision is drafted as
+Railway is the deploy target. [`.railway/railway.ts`](../.railway/railway.ts), Railway's Infrastructure-as-Code
+file, keeps it **swappable**: the legacy `railway.json` / `railway.toml` is deprecated and unread after
+2026-12-01. The template uses compose's image and key **names**. It does not copy compose's values; the
+differences are listed below, and any key it omits takes the code default. The decision is drafted as
 [ADR-0025](adr/0025-railway-as-the-deploy-target.md) (Proposed). Nothing here runs `railway config apply`.
 
 **Checks.** `railway-template` ([`check-railway-template.sh`](../scripts/check-railway-template.sh)) compiles
-the file against the pinned SDK (`scripts/railway/`, Dependabot-tracked) and evaluates it offline for staging
-and production; [`evaluate-template.mjs`](../scripts/railway/evaluate-template.mjs) lists every rule and the
-selftest mutates the file once per rule. `Trading__Enabled` in `.railway/` is also held by the **required**
-`no-order-path` job. Before a plan, run `scripts/check-railway-template.sh --mode deployable`, which refuses
-the `REPLACE_WITH_RELEASE_TAG` sentinel. The SDK labels IaC experimental even though Railway's docs call it
-GA, so expect DSL churn; the CLI must be ≥ 5.42.1.
+the file against the pinned SDK (`scripts/railway/`, Dependabot-tracked). It then evaluates it offline for
+`staging`, `production`, `dev` and an arbitrary name, so a branch on `ctx.environment` cannot hide anything.
+[`evaluate-template.mjs`](../scripts/railway/evaluate-template.mjs) lists every rule, and `recorder-private`
+is a named check of its own.
 
-**Services.** All image-sourced — Railway never builds this repository.
+The selftest mutates the file to exercise the rules; it prints its case count, and it is not one case per
+rule. The **required** `no-order-path` job also refuses any `Trading__Enabled` line in `.railway/` that is
+not exactly the literal `"false"`: no ternary, variable or fallback.
+
+Before a plan, run `--mode deployable`. That mode refuses the `REPLACE_WITH_RELEASE_TAG` sentinel and
+requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL churn; the CLI must be
+≥ 5.42.1.
+
+**Services.** All are image-sourced; Railway never builds this repository.
 
 | Service | Image | Role |
 |---|---|---|
-| `postgres` | `timescale/timescaledb-ha:pg17` (ADR-0004) | volume `postgres-data` (10 GiB) at `/home/postgres/pgdata`, `PGDATA=…/data`; no domain, no TCP proxy |
-| `server` | GHCR `X.Y.Z` and/or `@sha256:` pin, auto-updates off | public MCP endpoint, **OAuth** (ADR-0021); `RecordTape=false` |
-| `recorder` | the same image | `RecordTape=true`, StaticToken on the private network only, one replica, no domain |
+| `postgres` | `timescale/timescaledb-ha:pg17@sha256:cae37881…` (ADR-0004), digest-pinned | `PGDATA=/home/postgres/pgdata/data`; no domain, no TCP proxy. **Volume in production only** (below) |
+| `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **OAuth** (ADR-0021), `RecordTape=false` |
+| `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
 
-**Volume permissions.** Railway mounts volumes root-owned; the image runs as `postgres` (uid 1000) and
-Postgres refuses to run as root. The template sets `RAILWAY_RUN_UID=0` (Railway's documented remedy for
-non-root images) and `PGDATA` one level below the mount. The image's `docker-entrypoint.sh`, started as root,
-creates `PGDATA`, chowns it to `postgres` and re-execs itself with `gosu postgres` before `initdb` — the
-same path as `docker run --user root`. Read from the entrypoint and Railway's docs, **not yet observed on
-Railway**: confirm `initdb` and a restart on the first staging deploy.
+`Deployment__Version` and `Deployment__ImageDigest` are derived from `SERVER_IMAGE`, never typed separately.
+`/health` therefore reports the pinned tag and digest, and
+[`check-deployment.sh`](../scripts/check-deployment.sh) `<url> X.Y.Z` passes on a correct deploy.
 
-**Differences from compose, deliberately:** `ASPNETCORE_HTTP_PORTS=8080` and `ASPNETCORE_HTTPS_PORTS=""`
-(TLS at Railway's edge, ADR-0021; compose is the reverse); `Store__StartupWaitSeconds=90` (no `depends_on`);
-the server runs OAuth, not compose's static token; `ASPNETCORE_FORWARDEDHEADERS_ENABLED` true on `server`
-(the edge is its only path and overwrites `X-Forwarded-*`) and false on `recorder`; JSON console logs;
-per-role `Otel__ServiceName`. Compose's `MarketData__*`, `Indicators__*`, `KeyLevels__*`, `Trading__Max*`,
-`Trading__DeniedSymbols`, `Trading__KillSwitchFile` and `Embeddings__*` are absent, so code defaults apply.
+**Staging is disposable; production keeps the data.**
+- Outside `production`, Postgres has **no volume, no backups and no tape export**. The database lives on the
+  container's ephemeral storage, so every redeploy starts empty. Staging exists to test changes before prod
+  and keeps no long-term data.
+- `production` requires exactly one volume (`postgres-data`, 10 GiB, at `/home/postgres/pgdata`).
+- The check enforces both directions. It rejects `TapeExport__*` / `Retention__*` everywhere until their
+  ADRs land.
 
-**Shared variables** (set per environment in Railway; CI rejects any literal or unknown reference):
+**Volume permissions (production).** Railway mounts volumes root-owned, while the image runs as `postgres`
+(uid 1000) and Postgres refuses to run as root. The template therefore:
+- sets `RAILWAY_RUN_UID=0` (Railway's documented remedy for non-root images);
+- puts `PGDATA` one level below the mount.
+
+Started as root, the image's `docker-entrypoint.sh` creates `PGDATA`, chowns it to `postgres`, and re-execs
+itself with `gosu postgres` before `initdb`. Without a volume the same path is image storage that `postgres`
+already owns.
+
+This is read from the entrypoint and Railway's docs and is **not yet observed**. Staging has no volume, so
+the check (`initdb`, then one restart with the data intact) moves to the **first production deploy**. That
+deploy stays manual and needs Adam's approval.
+
+**Differences from compose, deliberately:**
+- **Ports:** only `ASPNETCORE_HTTP_PORTS=8080`. `ASPNETCORE_URLS` and `ASPNETCORE_HTTPS_PORTS` are rejected
+  because TLS is at Railway's edge (ADR-0021).
+- **Store wait:** `Store__StartupWaitSeconds=90`, required ≥ 30, because Railway has no `depends_on`.
+- **Healthcheck:** the timeout must be ≥ store wait + 120 s.
+- **Auth:** the server runs OAuth, not compose's static token. Its scope is locked to `topstepx-mcp/read`.
+- **Resource URL:** `Mcp__OAuth__ResourceUrl` is exactly `https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp`, the
+  server's own domain.
+- **Forwarded headers:** `ASPNETCORE_FORWARDEDHEADERS_ENABLED` is true on `server` and false on `recorder`.
+- **Restarts:** one restart budget (`ON_FAILURE`, 10) for all three services.
+- **Logs and telemetry:** JSON console logs; a per-role `Otel__ServiceName`.
+- **Absent:** compose's `MarketData__*`, `Indicators__*`, `KeyLevels__*`, `Trading__Max*`,
+  `Trading__DeniedSymbols`, `Trading__KillSwitchFile` and `Embeddings__*`, so code defaults apply.
+
+**ADR-0021's load-balancer shape on Railway.**
+- Railway's edge terminates TLS and forwards plaintext to `PORT=8080`, as ADR-0021's load balancer did.
+- `/health` is the healthcheck.
+- The edge is the only path into `server`, so trusting `X-Forwarded-*` there is safe.
+- `recorder` has no edge; the private network is its only path in.
+
+**Resource URL and custom domains.** `RAILWAY_PUBLIC_DOMAIN` is the service's public domain. With no domain
+the value is `https:///mcp`, which `OAuthOptions` refuses at startup. With a custom domain, confirm on the
+first deploy that `RAILWAY_PUBLIC_DOMAIN` is the host connectors use, because `check-deployment.sh` compares
+`resource` exactly. This is an ADR-0025 open item.
+
+**Shared variables.** Set them per environment in Railway. CI rejects any literal secret or unknown reference.
 
 | Shared variable | Feeds |
 |---|---|
 | `POSTGRES_PASSWORD` | `postgres`, and the password in `ConnectionStrings__Default` |
-| `PROJECTX_API_KEY`, `PROJECTX_API_SECRET`, `PROJECTX_DATA_TIER` | `ProjectX__*` (tier never defaulted, R-7.2) |
-| `MCP_OAUTH_ISSUER`, `MCP_OAUTH_CLIENT_IDS`, `MCP_OAUTH_RESOURCE_URL` | `server`'s `Mcp__OAuth__*` |
+| `PROJECTX_API_KEY`, `PROJECTX_API_SECRET`, `PROJECTX_DATA_TIER` | `ProjectX__*` (the tier is never defaulted, R-7.2) |
+| `MCP_OAUTH_ISSUER`, `MCP_OAUTH_CLIENT_IDS` | `server`'s `Mcp__OAuth__Issuer` / `ClientIds` |
 | `MCP_RECORDER_BEARER_TOKEN` | `recorder`'s `Mcp__HttpBearerToken` |
 
 The database host is the typed reference `postgres.env.RAILWAY_PRIVATE_DOMAIN`, read into the connection
-string as a same-service reference. That runs over the private network, so no `SSL Mode` is needed.
+string as a same-service reference. It runs over the private network, so no `SSL Mode` is needed.
 
-**Two writers, briefly, on a recorder redeploy.** Railway starts the new deployment and keeps the old one
-until the new one passes `/health`; `overlapSeconds: 0` stops the old one at that moment, and
-`drainingSeconds: 30` gives it time to release the tape lease. Until then both run on different hosts. The
-`TapeLease` fence gives one **owner**, but its own remarks say clock skew between hosts can still produce a
-second **writer** (ADR-0016 wants one recorder host). Treat each recorder redeploy as a short dual-write
-risk. Open for Maker: whether the new process reports healthy while waiting for the lease.
+**Two recorders, briefly, on a redeploy.** Railway keeps the old deployment until the new one passes
+`/health`. `overlapSeconds: 0` stops the old one at that moment, and `drainingSeconds: 30` gives it time to
+release the tape lease. The `TapeLease` fence gives one **owner**, but its own remarks say clock skew can still
+produce a second **writer**. ADR-0016 wants one recorder.
 
-**Migrations.** `server` and `recorder` both run `MigrateAsync` at startup against the same database. EF
-Core 9+ serialises this with a migration lock, so concurrent starts should be safe. No configuration option
-limits migration to one service; that is a Maker question.
+**Open for Maker (product):**
+- Does a recorder waiting on the lease report healthy? If not, a redeploy fails its healthcheck while the old
+  one holds the lease.
+- `server` and `recorder` both run `MigrateAsync` against one database. EF Core 9+ takes a migration lock, so
+  this should be safe. No option exists to limit migrations to one service.
 
-**Data retention — proposed, pending an ADR.** Not in the template: the schema keeps the trade tape forever
-on purpose (`AddTradeTape` migration, `SchemaTests`), and CI rejects any `Retention__*` / `TapeExport__*` key
-there. Proposed names live commented in [`.env.example`](../.env.example): `Retention__Enabled=false`,
-`Retention__RawTapeDays=30`, `Retention__DailySummaryDays=0` (forever), `Retention__RequireExportBeforeDrop=true`.
-Export keys belong to gh#755. Until both exist, size the volume for unbounded tape and keep backups on.
+**Data retention — proposed, pending an ADR.** Not in the template: the schema keeps the trade tape forever on
+purpose (`AddTradeTape` migration, `SchemaTests`). Proposed names are commented in
+[`.env.example`](../.env.example): `Retention__Enabled=false`, `Retention__RawTapeDays=30`,
+`Retention__DailySummaryDays=0` (forever) and `Retention__RequireExportBeforeDrop=true`. There is no pruning
+until that ADR (gh#763) is accepted, and export keys belong to gh#755. Until both exist, size the production volume
+for unbounded tape and keep its backups on.
 
 **Done in the Railway dashboard, not the file:**
 
-1. **Registry credential** on `server` and `recorder`: a GitHub token with `read:packages` only (Railway Pro).
+1. **Registry credential** on `server` and `recorder`: a GitHub token with `read:packages` only. Private
+   registries need Railway Pro, an open decision for Adam in ADR-0025.
 2. **Shared variables** above, per environment.
 3. **Domain** on `server` only. Generated domains are never in `railway.ts`, by Railway's design.
-4. **Volume backups** on `postgres-data`.
-5. Replace the image sentinel with a pin, run `--mode deployable`, then `railway config plan`.
+4. **Volume backups** on production's `postgres-data` only.
+5. Pin the image, run `--mode deployable`, then `railway config plan`. Production deploys stay manual until
+   Adam approves otherwise.
 
 ## Verify a running instance
 

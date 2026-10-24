@@ -574,6 +574,27 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   unknown name is refused by listing the session vocabulary (`R-5.3`). They are their own tool type
   ([ADR-0017](adr/0017-one-tool-type-per-concern.md)) and the window caps refuse rather than truncate
   (`R-5.4`, `R-1.13`). See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#501, gh#496).
+- **R-5.14** **`get_recorder_health`** and **`GET /health/recorder`** return the same payload, and the HTTP
+  path stays behind the bearer gate (gh#756). `feedConnected` is true only when the market-data hub is up —
+  listening, or connected and not yet subscribed. `feed` is the process-wide `TapeUnavailableReason` name.
+  `database` is `Available` or `Unavailable` from a live probe that does not replace the startup
+  `StoreAvailability` the other tools use. A probe that exceeds its short deadline is the same wire answer
+  and a distinct `timeout` count; a caller who cancelled is neither. `contracts` lists each configured
+  symbol, and a `contractId` only when that contract printed or was covered inside the elapsed session. A
+  rolled-off contract, and an unconfigured symbol, are absent — neither is a row, so neither is a
+  session-long gap and neither keeps the report degraded. `lastTickUtc` is omitted when that contract has
+  no print inside the session. `gaps` are the `TapeCoverage` holes in the elapsed portion of the current
+  product session, or of the session that most recently closed when the market is shut. A declared early
+  close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this report's session and
+  ends that session at the declared time; the hours after it are not a hole in this report, and bar
+  expectation is unchanged. An open listen counts through the report instant only
+  while that instrument is listening; a still-open row while it is not listening is not coverage. `gaps`
+  is omitted when the ledger could not be read — an empty array means the window is covered. A missing
+  print time is omitted, never substituted. The endpoint is not the liveness probe: a down feed is still
+  HTTP 200, and `/health` stays the one unauthenticated path. The tool only reads. The read is bounded to
+  the configured symbols and that session. This process keeps a built report for five seconds. `cachedAtUtc`
+  and `ageMs` are omitted on a reply that was just built, and present when the reply was reused:
+  `cachedAtUtc` is when it was stored, `ageMs` is how old it is at that read. A build the caller cancelled is not stored.
 - **R-5.13** **Five order tools** — `place_order`, `modify_order`, `cancel_order`, `close_position` and
   `partial_close_position` — are the venue-write surface (gh#750, gh#714, gh#715, gh#716). Each one calls
   `TradingRiskGate` only (`R-4.1`). `Trading__Enabled` defaults to false. While it is false the five tools
@@ -594,27 +615,6 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   Modify charges the full new size against the daily cap.
   Bracket fields, `confirm_trading_action` and the OAuth trade scope are outside this requirement (gh#713,
   gh#717, gh#719). The catalogue section is `R-5`'s contract for the shapes (gh#721).
-- **R-5.13** **`get_recorder_health`** and **`GET /health/recorder`** return the same payload, and the HTTP
-  path stays behind the bearer gate (gh#756). `feedConnected` is true only when the market-data hub is up —
-  listening, or connected and not yet subscribed. `feed` is the process-wide `TapeUnavailableReason` name.
-  `database` is `Available` or `Unavailable` from a live probe that does not replace the startup
-  `StoreAvailability` the other tools use. A probe that exceeds its short deadline is the same wire answer
-  and a distinct `timeout` count; a caller who cancelled is neither. `contracts` lists each configured
-  symbol, and a `contractId` only when that contract printed or was covered inside the elapsed session. A
-  rolled-off contract, and an unconfigured symbol, are absent — neither is a row, so neither is a
-  session-long gap and neither keeps the report degraded. `lastTickUtc` is omitted when that contract has
-  no print inside the session. `gaps` are the `TapeCoverage` holes in the elapsed portion of the current
-  product session, or of the session that most recently closed when the market is shut. A declared early
-  close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this report's session and
-  ends that session at the declared time; the hours after it are not a hole in this report, and bar
-  expectation is unchanged. An open listen counts through the report instant only
-  while that instrument is listening; a still-open row while it is not listening is not coverage. `gaps`
-  is omitted when the ledger could not be read — an empty array means the window is covered. A missing
-  print time is omitted, never substituted. The endpoint is not the liveness probe: a down feed is still
-  HTTP 200, and `/health` stays the one unauthenticated path. The tool only reads. The read is bounded to
-  the configured symbols and that session. This process keeps a built report for five seconds. `cachedAtUtc`
-  and `ageMs` are omitted on a reply that was just built, and present when the reply was reused:
-  `cachedAtUtc` is when it was stored, `ageMs` is how old it is. A build the caller cancelled is not stored.
 
 ## R-6 — Observations
 

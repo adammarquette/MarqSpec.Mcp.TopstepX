@@ -30,7 +30,7 @@ page against either**, so check it against the code, never against another docum
   the `topstepx-mcp/read` scope, and a call without one gets a `401` naming the protected-resource metadata
   the connector reads to find the issuer. Which mode a deployment runs is its environment's `Mcp__Auth__Mode`;
   `/health` answers without a credential under both (ADR-0007, gh#512). `GET /health/recorder` is not that
-  probe: it is the same report as `get_recorder_health` and stays behind the gate (R-5.13, gh#756).
+  probe: it is the same report as `get_recorder_health` and stays behind the gate (R-5.14, gh#756).
 - **Numeric-only payloads.** Every field is a number, a timestamp, a boolean, or an enum name from a closed set
   this repository defines. No vendor free text is echoed back.
 - **An unknown instrument is an error**, and it names what would have been valid. A wrong symbol and a quiet
@@ -981,7 +981,7 @@ that instant and the horizon, rather than faulting below the boundary.
 
 ### `get_recorder_health()`
 
-Whether this process's recorder is doing its job (R-5.13, gh#756). A dead recorder used to surface only in
+Whether this process's recorder is doing its job (R-5.14, gh#756). A dead recorder used to surface only in
 an end-of-day job. The same payload is served to a monitor at `GET /health/recorder`, behind the bearer
 gate. `/health` stays the unauthenticated liveness probe and does not open a database connection.
 

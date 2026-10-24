@@ -153,7 +153,7 @@ public static class Program
         // AFTER the gate, and a mapped endpoint rather than a terminal branch, so it stays authenticated.
         // `/health` is the probe and reaches nothing. This path opens a database connection, which is why
         // it is not on the 30 s probe, and it is worth a span: IsTraced excludes only the exact probe path
-        // (gh#756, R-5.13).
+        // (gh#756, R-5.14).
         app.MapRecorderHealth();
     }
 

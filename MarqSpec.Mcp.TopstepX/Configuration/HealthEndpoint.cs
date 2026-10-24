@@ -44,7 +44,7 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// </para>
 /// <para>
 /// <b><c>GET /health/recorder</c> is not this probe.</b> It is a mapped endpoint behind the gate
-/// (R-5.13, gh#756). A prefix match here would hand that report out with no credential.
+/// (R-5.14, gh#756). A prefix match here would hand that report out with no credential.
 /// </para>
 /// </remarks>
 public static class HealthEndpoint

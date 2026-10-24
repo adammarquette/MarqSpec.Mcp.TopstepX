@@ -80,7 +80,7 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A tape-claim hand-off (ADR-0016).</summary>
     public const string TapeLeaseChangesInstrument = "mcp.tape.lease.changes";
 
-    /// <summary>One recorder-health report (gh#756, R-5.13).</summary>
+    /// <summary>One recorder-health report (gh#756, R-5.14).</summary>
     public const string RecorderHealthReadsInstrument = "mcp.recorder.health.reads";
 
     /// <summary>Indicator values a projection pass wrote.</summary>

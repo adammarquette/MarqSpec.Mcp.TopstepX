@@ -780,7 +780,7 @@ Two things about it are easy to undo by accident:
   measurement of it. An unavailable store is still `200`: this is **liveness**, and the tools needing no store
   answer normally, so killing the task would replace a degraded server with no server.
 
-`GET /health/recorder` is a different request (R-5.13, gh#756). It returns the same payload as
+`GET /health/recorder` is a different request (R-5.14, gh#756). It returns the same payload as
 `get_recorder_health` — hub connection, the last stored print of each contract active in the elapsed
 session, `TapeCoverage` holes in that session, and whether the database answers now — and it is mapped
 after the gate, so it stays authenticated. A contract whose prints and coverage ended before the session
@@ -922,7 +922,7 @@ carrying the fix, rather than a dead process (ADR-0007):
 
 | Absent | What still works | What refuses |
 |---|---|---|
-| Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts`, and `get_recorder_health` (it answers with `database` Unavailable and `gaps` omitted, R-5.13) | Anything reading bars, indicators, levels or observations, with an `McpException` naming the fix — start the store, or set `ConnectionStrings__Default`. The **log** names the target too — `host`, `port`, `database`, `user`, never the password — but the caller does not (gh#551). `Store__StartupWaitSeconds` bounds how long startup retries first (gh#514) |
+| Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts`, and `get_recorder_health` (it answers with `database` Unavailable and `gaps` omitted, R-5.14) | Anything reading bars, indicators, levels or observations, with an `McpException` naming the fix — start the store, or set `ConnectionStrings__Default`. The **log** names the target too — `host`, `port`, `database`, `user`, never the password — but the caller does not (gh#551). `Store__StartupWaitSeconds` bounds how long startup retries first (gh#514) |
 | Credentials | Everything served from the store, plus session and instrument reference | Contract resolution, account reads, and any cache miss |
 | Embedding key | Recording and searching observations — search matches text instead of meaning | Nothing |
 | OTLP endpoint | Everything — no exporter is registered, no background exporter thread runs, and nothing warns about a collector that is not there | Nothing; the server simply emits no telemetry ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)) |
@@ -1145,7 +1145,7 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   stay out of this phase, and there is still no `get_quote`.
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
-  in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.13).
+  in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).
   A declared early close shortens only that session. This process reuses a built report for five seconds.
   `/health` stays liveness and the one unauthenticated path.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push

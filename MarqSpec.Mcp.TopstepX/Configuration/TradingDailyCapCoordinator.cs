@@ -1,13 +1,21 @@
 using System.Data;
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 
 namespace MarqSpec.Mcp.TopstepX.Configuration;
 
 /// <summary>Postgres session advisory lock plus Attempted-row rollups for the Topstep session day.</summary>
-public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeProvider clock)
+public sealed class TradingDailyCapCoordinator(
+    TopstepXDbContext database,
+    TimeProvider clock,
+    HostTelemetry telemetry)
     : ITradingDailyCapCoordinator
 {
+    private bool _lastReleaseFailed;
+
+    /// <inheritdoc />
+    public bool LastReleaseFailed => _lastReleaseFailed;
     /// <summary>Distinct advisory lock class for trading daily caps (gh#711).</summary>
     public const int AdvisoryLockClassId = 0x0711_0024;
 
@@ -23,6 +31,7 @@ public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeP
         int accountId,
         CancellationToken cancellationToken)
     {
+        _lastReleaseFailed = false;
         await database.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
 
         try
@@ -44,7 +53,13 @@ public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeP
             throw;
         }
 
-        return new SessionLock(database, AdvisoryLockClassId, accountId);
+        return new SessionLock(database, AdvisoryLockClassId, accountId, this);
+    }
+
+    private void NoteReleaseFailed()
+    {
+        _lastReleaseFailed = true;
+        telemetry.RecordBookkeepingFault();
     }
 
     /// <inheritdoc />
@@ -65,22 +80,43 @@ public sealed class TradingDailyCapCoordinator(TopstepXDbContext database, TimeP
             .ConfigureAwait(false);
     }
 
-    private sealed class SessionLock(TopstepXDbContext database, int classId, int accountId) : IAsyncDisposable
+    private sealed class SessionLock(
+        TopstepXDbContext database,
+        int classId,
+        int accountId,
+        TradingDailyCapCoordinator owner) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {
+            // Neither the unlock nor the connection close may throw. A database blip here is after the
+            // trading result was decided, and a throw used to become SafeToRetry while a Live row existed.
+            Exception? failure = null;
             try
             {
                 await database.Database
                     .ExecuteSqlRawAsync("SELECT pg_advisory_unlock({0}, {1})", [classId, accountId])
                     .ConfigureAwait(false);
             }
-            finally
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+
+            try
             {
                 if (database.Database.GetDbConnection().State == ConnectionState.Open)
                 {
                     await database.Database.CloseConnectionAsync().ConfigureAwait(false);
                 }
+            }
+            catch (Exception exception)
+            {
+                failure ??= exception;
+            }
+
+            if (failure is not null)
+            {
+                owner.NoteReleaseFailed();
             }
         }
     }

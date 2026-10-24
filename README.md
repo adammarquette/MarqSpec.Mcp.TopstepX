@@ -558,6 +558,14 @@ signatures: [the tool catalogue](documentation/mcp-tool-catalog.md).
 | Account (read) | `list_accounts` · `get_positions` · `get_orders` · `get_trades` |
 | Composed | `get_market_snapshot` — bars, indicators, levels and session state in one call |
 | Observations | `record_observation` · `search_observations` — writes to *this* database, never the venue |
+| Orders (off unless enabled) | `place_order` · `modify_order` · `cancel_order` · `close_position` · `partial_close_position` — practice accounts only, through the risk gate ([ADR-0024](documentation/adr/0024-gated-trading-actions-practice-v1.md)) |
+
+`Trading__Enabled` defaults to false. The five order tools are registered only when that flag is true at
+process start, so listing them needs a restart. A reload does change, without a restart,
+`Trading__Enabled` (a call then refuses), `Trading__KillSwitch`, `Trading__KillSwitchFile`,
+`Trading__DeniedSymbols`, `Trading__AllowedAccountIds`, `Trading__MaxContractsPerOrder` and
+`Trading__MaxContractsPerDay`. A reload into a configuration that fails validation refuses the call and does
+not keep the last good values.
 
 **There is no `get_quote`.** ProjectX publishes no REST quote endpoint; live bid/ask is SignalR-only. The HTTP
 transport can opt in to recording the trade tape (`MarketData__RecordTape`), which is prints and volume, not

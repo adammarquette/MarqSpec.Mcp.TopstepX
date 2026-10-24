@@ -99,8 +99,10 @@ public sealed class SchemaFixture : IAsyncLifetime
     /// two-session insert then waits out the command timeout creating the first chunk again
     /// (<c>IndicatorReconcileConcurrencyTests</c>). A delete leaves the chunks in place. Sequences are
     /// restarted so the next identity is 1, which <c>TRUNCATE … RESTART IDENTITY</c> used to do. Foreign keys
-    /// are not consulted for that delete: <c>session_replication_role</c> is the test role's privilege, and a
-    /// hand-kept delete order would be a second list to keep stale.
+    /// are not consulted for that delete: <c>SET session_replication_role = replica</c> skips the replica
+    /// triggers, and that statement needs elevated privileges (a superuser, which the test container's
+    /// database owner is). A restricted role cannot run it. A hand-kept delete order would be a second list
+    /// to keep stale.
     /// </para>
     /// <para>
     /// A migration test that needs the rows a migration found uses <see cref="CreateEmptyDatabaseAsync"/> and

@@ -2,6 +2,7 @@ using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
@@ -29,7 +30,8 @@ public sealed class TradingDailyCapCoordinatorIntegrationTests(SeriesStoreFixtur
     [Fact]
     public async Task TradingDailyCapCoordinator_CountsOnlyAttemptedRows_ForSessionDay()
     {
-        TradingDailyCapCoordinator coordinator = new(_database, _clock);
+        using HostTelemetry telemetry = new();
+        TradingDailyCapCoordinator coordinator = new(_database, _clock, telemetry);
         DateTimeOffset sessionStart = TradingCapSessionCalendar.SessionDayStartUtc(_clock.GetUtcNow());
 
         _database.TradingAuditLog.AddRange(
@@ -50,8 +52,9 @@ public sealed class TradingDailyCapCoordinatorIntegrationTests(SeriesStoreFixtur
     public async Task TradingDailyCapCoordinator_AdvisoryLock_SerialisesConcurrentSessions()
     {
         await using TopstepXDbContext other = fixture.CreateContext();
-        TradingDailyCapCoordinator first = new(_database, _clock);
-        TradingDailyCapCoordinator second = new(other, _clock);
+        using HostTelemetry telemetry = new();
+        TradingDailyCapCoordinator first = new(_database, _clock, telemetry);
+        TradingDailyCapCoordinator second = new(other, _clock, telemetry);
 
         IAsyncDisposable firstLock = await first.AcquireAccountDayLockAsync(100, CancellationToken.None);
 

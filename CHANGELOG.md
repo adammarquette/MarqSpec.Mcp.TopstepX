@@ -22,11 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   index makes that claim survive a restart, a redeploy and a second replica. The migration that creates it
   temporarily disables the append-only update trigger, reclassifies duplicate Unknown rows, and re-enables
   the trigger. A throw during the send, including a timeout, or an audit write that fails after an ack,
-  returns structured `OutcomeUnknown` and does not rethrow. A fault that reaches the tool, including a
-  timeout or any other exception, is a retryable error from before the send. A replay ignores a `Refused`
+  returns structured `OutcomeUnknown` and does not rethrow. Only a fault the gate classified as before the
+  send is a retryable error. Anything thrown after the send has started, including a daily-cap unlock or a
+  telemetry listener, is `OutcomeUnknown`. Those two disposals catch, log a constant line and count the
+  failure, and they do not throw. A replay ignores a `Refused`
   row written before the claim, and a later refusal with a different request hash. A refusal recorded after
   the claim with the same hash is replayed as that refusal. The master switch is read through
-  `IOptionsMonitor`, so turning trading off takes effect without a restart. A key longer than 256 characters
+  `IOptionsMonitor`, so turning trading off, the kill switch, the denylist, the allowlist and the contract
+  caps take effect without a restart. A reload into an invalid configuration refuses and does not keep the
+  last good values. The five tools stay listed or unlisted as they were at process start until a restart.
+  A key longer than 256 characters
   is `idempotency_key_too_long` and writes no row. Modify charges the full new size. When trading is enabled,
   an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel and close; that
   block is pending Adam's decision.

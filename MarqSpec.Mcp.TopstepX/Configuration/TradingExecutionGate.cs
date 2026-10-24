@@ -34,24 +34,53 @@ public sealed class TradingExecutionGate(
         IOptions<TradingExecutionOptions> options,
         ITradingKillSwitch killSwitch,
         IAccountStageResolver stageResolver)
-        : this(new FixedOptionsMonitor(options), killSwitch, stageResolver)
+        : this(new FixedTradingOptionsMonitor(options), killSwitch, stageResolver)
     {
     }
+
     private readonly ITradingKillSwitch _killSwitch = killSwitch;
     private readonly IAccountStageResolver _stageResolver = stageResolver;
 
     /// <summary>
     /// The bound options, read on every check through <see cref="IOptionsMonitor{TOptions}.CurrentValue"/>.
     /// A configuration reload turns the master switch off without restarting the process, and a change during
-    /// a call is visible to the next check in that call (ADR-0024).
+    /// a call is visible to the next check in that call (ADR-0024). A reload that fails validation does not
+    /// return the last good options.
     /// </summary>
-    private TradingExecutionOptions Current => options.CurrentValue;
+    private bool TryCurrent(out TradingExecutionOptions current, out TradingExecutionRefusal? invalid)
+    {
+        try
+        {
+            current = options.CurrentValue;
+            invalid = null;
+            return true;
+        }
+        catch (OptionsValidationException)
+        {
+            current = null!;
+            invalid = _configurationReloadRefused;
+            return false;
+        }
+    }
+
+    private static readonly TradingExecutionRefusal _configurationReloadRefused =
+        TradingExecutionRefusal.InvalidConfiguration(
+            "Trading configuration failed validation. The last good values are not kept.");
 
     /// <summary>Refuses when master enable is off or the kill switch is engaged.</summary>
     /// <returns>A refusal, or <see langword="null"/> when trading may proceed past this layer.</returns>
+    /// <remarks>
+    /// A reload into options that fail validation refuses with
+    /// <see cref="TradingExecutionRefusal.InvalidConfiguration"/>. The last good values are not kept.
+    /// </remarks>
     public TradingExecutionRefusal? RefuseIfDisabledOrHalted()
     {
-        if (!Current.Enabled)
+        if (!TryCurrent(out TradingExecutionOptions current, out TradingExecutionRefusal? invalid))
+        {
+            return invalid;
+        }
+
+        if (!current.Enabled)
         {
             return TradingExecutionRefusal.TradingDisabled;
         }
@@ -72,12 +101,17 @@ public sealed class TradingExecutionGate(
     /// <returns>A refusal, or <see langword="null"/> when the account passes the allowlist layer.</returns>
     public TradingExecutionRefusal? RefuseIfNotAllowlisted(int accountId)
     {
-        if (!Current.IsAllowlistConfigured)
+        if (!TryCurrent(out TradingExecutionOptions current, out TradingExecutionRefusal? invalid))
+        {
+            return invalid;
+        }
+
+        if (!current.IsAllowlistConfigured)
         {
             return null;
         }
 
-        if (!Current.TryGetAllowedAccountIdList(out IReadOnlyList<int> allowed, out string? configError))
+        if (!current.TryGetAllowedAccountIdList(out IReadOnlyList<int> allowed, out string? configError))
         {
             return TradingExecutionRefusal.InvalidConfiguration(configError!);
         }
@@ -92,8 +126,18 @@ public sealed class TradingExecutionGate(
     /// <returns>A refusal, or <see langword="null"/> when the symbol is permitted.</returns>
     public TradingExecutionRefusal? RefuseIfSymbolDenied(string symbol)
     {
+        if (!TryCurrent(out TradingExecutionOptions current, out TradingExecutionRefusal? invalid))
+        {
+            return invalid;
+        }
+
+        if (!current.TryGetDeniedSymbolSet(out IReadOnlySet<string> denied, out string? configError))
+        {
+            return TradingExecutionRefusal.InvalidConfiguration(configError!);
+        }
+
         InstrumentId instrument = new(symbol);
-        return Current.DeniedSymbolSet().Contains(instrument.Symbol)
+        return denied.Contains(instrument.Symbol)
             ? TradingExecutionRefusal.SymbolDenied(instrument.Symbol)
             : null;
     }
@@ -103,12 +147,17 @@ public sealed class TradingExecutionGate(
     /// <returns>A refusal, or <see langword="null"/> when the size is within the cap.</returns>
     public TradingExecutionRefusal? RefuseIfOrderSizeExceedsLimit(int requestedSize)
     {
-        if (requestedSize <= Current.MaxContractsPerOrder)
+        if (!TryCurrent(out TradingExecutionOptions current, out TradingExecutionRefusal? invalid))
+        {
+            return invalid;
+        }
+
+        if (requestedSize <= current.MaxContractsPerOrder)
         {
             return null;
         }
 
-        return TradingExecutionRefusal.OrderSizeExceedsLimit(requestedSize, Current.MaxContractsPerOrder);
+        return TradingExecutionRefusal.OrderSizeExceedsLimit(requestedSize, current.MaxContractsPerOrder);
     }
 
     /// <summary>
@@ -123,7 +172,12 @@ public sealed class TradingExecutionGate(
         int contractsAlreadyToday,
         int requestedSize)
     {
-        if (contractsAlreadyToday + requestedSize <= Current.MaxContractsPerDay)
+        if (!TryCurrent(out TradingExecutionOptions current, out TradingExecutionRefusal? invalid))
+        {
+            return invalid;
+        }
+
+        if (contractsAlreadyToday + requestedSize <= current.MaxContractsPerDay)
         {
             return null;
         }
@@ -132,7 +186,7 @@ public sealed class TradingExecutionGate(
             accountId,
             contractsAlreadyToday,
             requestedSize,
-            Current.MaxContractsPerDay);
+            current.MaxContractsPerDay);
     }
 
     /// <summary>
@@ -210,25 +264,5 @@ public sealed class TradingExecutionGate(
 
         AccountStage stage = _stageResolver.ResolveFromFreshVenueAccount(account);
         return RefuseIfStageBlocksWrite(stage, accountId, unknownStageSignal);
-    }
-
-    /// <summary>An options monitor over one <see cref="IOptions{TOptions}"/> instance.</summary>
-    private sealed class FixedOptionsMonitor(IOptions<TradingExecutionOptions> options)
-        : IOptionsMonitor<TradingExecutionOptions>
-    {
-        public TradingExecutionOptions CurrentValue => options.Value;
-
-        public TradingExecutionOptions Get(string? name) => options.Value;
-
-        public IDisposable OnChange(Action<TradingExecutionOptions, string?> listener) => Empty.Instance;
-
-        private sealed class Empty : IDisposable
-        {
-            public static readonly Empty Instance = new();
-
-            public void Dispose()
-            {
-            }
-        }
     }
 }

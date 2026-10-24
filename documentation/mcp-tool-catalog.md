@@ -1097,11 +1097,17 @@ gh#750). Each call goes through `TradingRiskGate`. The tool does not take the ve
 `IExecutionGateway`. `scripts/check-no-order-path.sh` was not given a new allowlist entry for them: the C#
 methods are named `Submit*` and the published names below are the MCP `Name`.
 
-**`Trading__Enabled` defaults to false.** While it is false the five tools are not registered, so a model
-does not see them. A call that still reaches a method refuses with `trading_disabled` before the vendor
+**`Trading__Enabled` defaults to false.** While it is false at process start the five tools are not
+registered, so a model does not see them. Whether they are listed is fixed at startup: turning the flag on
+does not register them until restart, and turning it off refuses every call immediately but leaves them
+listed until restart. A call that still reaches a method refuses with `trading_disabled` before the vendor
 client is touched. That refusal writes no audit row, charges no daily cap and calls no gateway method.
-The gate reads the flag from `IOptionsMonitor<TradingExecutionOptions>.CurrentValue` on every check, so a
-configuration reload turns trading off without a process restart. A disable before the claim writes no row.
+The gate reads `Trading__Enabled`, `Trading__KillSwitch`, `Trading__KillSwitchFile`, `Trading__DeniedSymbols`,
+`Trading__AllowedAccountIds` and the two contract caps from
+`IOptionsMonitor<TradingExecutionOptions>.CurrentValue` on every check, so a configuration reload changes
+them without a process restart. A reload that fails validation throws from the options monitor rather than
+publishing the invalid document, and the next check refuses with `trading_configuration_invalid`. The last
+good values are not kept. A disable before the claim writes no row.
 A disable after the claim records the refusal and does not send.
 The kill switch refuses with `kill_switch` on the same five tools. Cancel and close have no carve-out.
 **Pending Adam:** that block stays until he decides whether a halt may still flatten. v1 does not add a carve-out.
@@ -1131,12 +1137,14 @@ checked first, so a blank or over-long key while trading is disabled is `trading
 taken after that check.
 
 **`retrySafety` is the retry signal.** `SafeToRetry` is a refusal, a preview, a venue rejection, or a fault
-before the send. `NotSafeToRetry` is a broker acknowledgment (`status: Live`). `OutcomeUnknown` is returned
-only when the send may have happened: a throw from the send, including a timeout during the send, an audit
-write that fails after an ack, or a broker success that carried no order id. A venue, HTTP, timeout,
-database or any other fault that reaches the tool is a read from before the send — the gate already caught
-a throw from the send and returned `OutcomeUnknown` — and it is a structured `error` with `SafeToRetry`,
-not a raw exception and not `OutcomeUnknown`. `Live` is only a broker acknowledgment.
+the gate classified as before the send (`GateRefusedBeforeSendException` only). `NotSafeToRetry` is a broker
+acknowledgment (`status: Live`). `OutcomeUnknown` is returned when the send may have happened: a throw from
+the send, including a timeout during the send, an audit write that fails after an ack, a daily-cap unlock
+or a telemetry listener that fails after the send has started, or a broker success that carried no order id.
+Any other exception that reaches the tool is `OutcomeUnknown` as well, with refusal code `error`, and is not
+`SafeToRetry`. The unlock and the telemetry dispose catch their own failures, log one constant line, and
+count them; they do not throw, and they do not by themselves choose `SafeToRetry`. `Live` is only a broker
+acknowledgment.
 `refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
 for them — they are fields, so the test is key presence.
 

@@ -179,7 +179,7 @@ while IFS= read -r hit; do
   [ -n "$hit" ] || continue
   file="${hit%%:*}"; rest="${hit#*:}"; line="${rest%%:*}"; text="${rest#*:}"
   in_list "$file" "${GATEWAY_ALLOWED[@]}" && continue
-  if [ "$file" = "$PROGRAM" ] && printf '%s\n' "$text" | grep -qE "$PROGRAM_REGISTRATION_RE"; then
+  if [ "$file" = "$PROGRAM" ] && grep -qE "$PROGRAM_REGISTRATION_RE" <<<"$text"; then
     registrations=$((registrations + 1)); continue
   fi
   fail "GATEWAY BYPASS  $file:$line" "${text#"${text%%[![:space:]]*}"}" \
@@ -276,7 +276,7 @@ while IFS= read -r c; do
   [ "$status" -gt 1 ] && env_fail "CANNOT SEARCH  grep exited $status over $c"
   while IFS= read -r l; do
     [ -n "$l" ] || continue
-    printf '%s\n' "${l#*:}" | grep -qiE '^[[:space:]]*-?[[:space:]]*trading__enabled[[:space:]]*[:=][[:space:]]*"?(\$\{trading__enabled:-false\}|false)"?[[:space:]]*(#.*)?$' && continue
+    grep -qiE '^[[:space:]]*-?[[:space:]]*trading__enabled[[:space:]]*[:=][[:space:]]*"?(\$\{trading__enabled:-false\}|false)"?[[:space:]]*(#.*)?$' <<<"${l#*:}" && continue
     fail "MASTER SWITCH  $c:${l%%:*} must default Trading__Enabled to false" "${l#*:}" \
       "Allowed: Trading__Enabled: \"\${Trading__Enabled:-false}\" or false."
   done <<<"$lines"
@@ -293,8 +293,8 @@ for f in Dockerfile* .env.example; do
   while IFS= read -r l; do
     [ -n "$l" ] || continue
     body="${l#*:}"
-    printf '%s\n' "$body" | grep -qE '^[[:space:]]*#' && continue
-    printf '%s\n' "$body" | grep -qiE 'trading__enabled[[:space:]]*[= ][[:space:]]*"?false"?[[:space:]]*(\\)?$' && continue
+    grep -qE '^[[:space:]]*#' <<<"$body" && continue
+    grep -qiE 'trading__enabled[[:space:]]*[= ][[:space:]]*"?false"?[[:space:]]*(\\)?$' <<<"$body" && continue
     fail "MASTER SWITCH  $f:${l%%:*} sets Trading__Enabled to something other than false" "$body"
   done <<<"$lines"
 done

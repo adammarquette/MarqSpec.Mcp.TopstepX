@@ -402,6 +402,185 @@ public sealed class TradingOrderToolGateTests
         _gateway.PlaceOrderCalls.Should().Be(0);
     }
 
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_AllowlistRefusal_ThenAThrowingSend_ReplaysOutcomeUnknown()
+    {
+        using HostTelemetry blockedTelemetry = new();
+        TradingOrderTools blocked = Tools(
+            blockedTelemetry,
+            new TradingExecutionOptions { Enabled = true, AllowedAccountIds = "999" });
+
+        ToolPayloads.TradingWriteResult refused = await blocked.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "K");
+
+        refused.RefusalCode.Should().Be(ExecutionWriteRefusal.AccountNotAllowlisted);
+        refused.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        _gateway.PlaceOrderCalls.Should().Be(0);
+
+        _gateway.PlaceException = new InvalidOperationException("the socket timed out after the send");
+        using HostTelemetry allowedTelemetry = new();
+        TradingOrderTools allowed = Tools(
+            allowedTelemetry,
+            new TradingExecutionOptions
+            {
+                Enabled = true,
+                AllowedAccountIds = PracticeAccountId.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            });
+
+        ToolPayloads.TradingWriteResult thrown = await allowed.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "K");
+
+        thrown.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        thrown.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+
+        _gateway.PlaceException = null;
+        _gateway.Next = Acknowledged(99);
+        ToolPayloads.TradingWriteResult replay = await allowed.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "K");
+
+        replay.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        replay.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        replay.RefusalCode.Should().BeNull();
+        _gateway.PlaceOrderCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_ConflictRefusalAfterTheClaim_DoesNotHideOutcomeUnknown()
+    {
+        _gateway.PlaceException = new InvalidOperationException("the send threw");
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult thrown = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "K");
+        ToolPayloads.TradingWriteResult conflict = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            2,
+            "K");
+        _gateway.PlaceException = null;
+        ToolPayloads.TradingWriteResult replay = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "K");
+
+        thrown.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        conflict.RefusalCode.Should().Be(ExecutionWriteRefusal.IdempotencyConflict);
+        replay.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        replay.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        replay.RefusalCode.Should().BeNull();
+        _gateway.PlaceOrderCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_TimeoutBeforeSend_IsAStructuredRetryableError()
+    {
+        _accountsFailure = new TimeoutException("the account read timed out");
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "read-timeout");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.Error);
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_TimeoutDuringSend_ReturnsStructuredOutcomeUnknown()
+    {
+        _gateway.PlaceException = new TimeoutException("the send timed out");
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "send-timeout");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        result.RefusalCode.Should().BeNull();
+        _gateway.PlaceOrderCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_UnexpectedExceptionBeforeSend_IsAStructuredRetryableError()
+    {
+        _accountsFailure = new InvalidOperationException("the account read failed for another reason");
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "read-other");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.Error);
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_PlaceOrder_NpgsqlExceptionBeforeSend_IsAStructuredRetryableError()
+    {
+        _accountsFailure = new Npgsql.NpgsqlException("the store connection dropped");
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "npgsql-read");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.Error);
+        _gateway.PlaceOrderCalls.Should().Be(0);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(-2)]
@@ -580,6 +759,8 @@ public sealed class TradingOrderToolGateTests
         {
             string description = method.GetCustomAttribute<System.ComponentModel.DescriptionAttribute>()!.Description;
             description.Should().Contain("the stakes are real");
+            description.Should().Contain("Non-practice accounts are refused.");
+            description.Should().Contain("Never retry OutcomeUnknown");
             description.Should().Contain("get_orders");
             description.Should().Contain("get_positions");
             description.Should().Contain("get_trades");
@@ -725,7 +906,7 @@ public sealed class TradingOrderToolGateTests
     {
         ProjectXAccountStageResolver stageResolver = new();
         TradingExecutionGate executionGate = new(
-            Options.Create(options),
+            TradingOptionsMonitors.Fixed(options),
             _killSwitch,
             stageResolver);
         InstrumentRegistry registry = new(Options.Create(new MarketDataOptions { Instruments = "MES" }));

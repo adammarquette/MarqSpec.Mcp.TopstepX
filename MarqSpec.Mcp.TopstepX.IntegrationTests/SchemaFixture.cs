@@ -1,6 +1,7 @@
 using MarqSpec.Mcp.TopstepX.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -28,6 +29,8 @@ public sealed class SchemaFixture : IAsyncLifetime
         .WithUsername("topstepx")
         .WithPassword("test-only")
         .Build();
+
+    private string? _truncate;
 
     /// <summary>The connection string for the running container.</summary>
     public string ConnectionString => _postgres.GetConnectionString();
@@ -80,6 +83,39 @@ public sealed class SchemaFixture : IAsyncLifetime
         return new TopstepXDbContext(new DbContextOptionsBuilder<TopstepXDbContext>()
             .UseNpgsql(builder.ConnectionString, npgsql => npgsql.UseVector())
             .Options);
+    }
+
+    /// <summary>Empties every table on the shared database, so the next test starts from the rows it inserts.</summary>
+    /// <returns>The running operation.</returns>
+    /// <remarks>
+    /// <para>
+    /// The classes that share this database each call this from <see cref="IAsyncLifetime.InitializeAsync"/>.
+    /// xUnit runs one collection serially, which is what makes emptying it safe. The table list is read off
+    /// the model rather than written down here, for the same reason as <see cref="SeriesStoreFixture"/>: a
+    /// hand-kept list goes stale the first time a table is added, and it goes stale silently.
+    /// </para>
+    /// <para>
+    /// A migration test that needs the rows a migration found uses <see cref="CreateEmptyDatabaseAsync"/> and
+    /// does not call this. Truncating the shared database would not unmigrate it, and it would not recreate
+    /// the pre-migration shape those tests walk up to.
+    /// </para>
+    /// </remarks>
+    public async Task ResetAsync()
+    {
+        await using TopstepXDbContext database = CreateContext();
+
+        _truncate ??= "TRUNCATE TABLE "
+            + string.Join(
+                ", ",
+                database.Model.GetEntityTypes()
+                    .Select(entity => entity.GetTableName())
+                    .Where(table => table is not null)
+                    .Distinct(StringComparer.Ordinal)
+                    .Order(StringComparer.Ordinal)
+                    .Select(table => $"\"{table}\""))
+            + " RESTART IDENTITY CASCADE;";
+
+        await database.Database.ExecuteSqlRawAsync(_truncate);
     }
 
     /// <inheritdoc />

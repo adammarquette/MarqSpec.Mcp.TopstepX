@@ -107,8 +107,14 @@ public sealed class CountingInterceptor : DbCommandInterceptor
 /// </para>
 /// </remarks>
 [Collection(SchemaCollection.Name)]
-public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
+public sealed class SnapshotQueryCountTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     private const string Venue = "querycount";
     private const string Contract = "CON.F.US.EP.Z26";
     private const int BarCount = 400;

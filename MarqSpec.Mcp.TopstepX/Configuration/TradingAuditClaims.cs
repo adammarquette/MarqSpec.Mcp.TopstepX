@@ -47,8 +47,10 @@ public sealed record TradingAuditClaimResult(
 /// The key is <c>(AccountId, Tool, IdempotencyKey)</c>. The same key on another account or another tool is a
 /// different claim. <see cref="MaxKeyLength"/> matches the <c>IdempotencyKey</c> column. A pre-send row with
 /// outcome <see cref="TradingAuditOutcomes.Unknown"/> is the claim; a later <c>Live</c> or <c>Failed</c> row
-/// is what a replay prefers. A <c>Refused</c> row recorded after that claim is preferred over the bare
-/// <c>Unknown</c> row, so a refusal is not replayed as an unknown transmit. Previews are not claims.
+/// is what a replay prefers. A <c>Refused</c> row counts only when it was written after that claim and carries
+/// the same request hash. An earlier refusal for the same key, including one taken before any send, must not
+/// turn a later unknown transmit into <c>SafeToRetry</c>. Previews are not claims. Callers pass rows in
+/// insertion order. The production writer orders by id.
 /// </remarks>
 public static class TradingAuditClaims
 {
@@ -66,12 +68,13 @@ public static class TradingAuditClaims
         ArgumentNullException.ThrowIfNull(rows);
 
         List<TradingAuditWriteRequest> matches = [.. rows];
-        TradingAuditWriteRequest? claim = matches.FirstOrDefault(
-            row => row.Outcome == TradingAuditOutcomes.Unknown);
-        if (claim is null)
+        int claimIndex = matches.FindIndex(row => row.Outcome == TradingAuditOutcomes.Unknown);
+        if (claimIndex < 0)
         {
             return null;
         }
+
+        TradingAuditWriteRequest claim = matches[claimIndex];
 
         if (!string.Equals(claim.RequestHash, requestHash, StringComparison.Ordinal))
         {
@@ -101,8 +104,16 @@ public static class TradingAuditClaims
                 failed.VenueErrorCode);
         }
 
-        TradingAuditWriteRequest? refused = matches.LastOrDefault(
-            row => row.Outcome == TradingAuditOutcomes.Refused);
+        TradingAuditWriteRequest? refused = null;
+        for (int i = claimIndex + 1; i < matches.Count; i++)
+        {
+            TradingAuditWriteRequest row = matches[i];
+            if (row.Outcome == TradingAuditOutcomes.Refused
+                && string.Equals(row.RequestHash, claim.RequestHash, StringComparison.Ordinal))
+            {
+                refused = row;
+            }
+        }
         if (refused is not null)
         {
             return new TradingAuditClaimResult(

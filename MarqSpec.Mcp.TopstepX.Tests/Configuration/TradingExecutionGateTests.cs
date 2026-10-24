@@ -3,6 +3,10 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration.Memory;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
@@ -134,7 +138,7 @@ public sealed class TradingExecutionGateTests
 
     private TradingExecutionGate Gate(TradingExecutionOptions options)
     {
-        return new TradingExecutionGate(Options.Create(options), _killSwitch, new ProjectXAccountStageResolver());
+        return new TradingExecutionGate(TradingOptionsMonitors.Fixed(options), _killSwitch, new ProjectXAccountStageResolver());
     }
 
     private sealed class FakeKillSwitch : ITradingKillSwitch
@@ -151,6 +155,36 @@ public sealed class TradingExecutionGateTests
         public void UnknownStageWriteRefused(int accountId) => RefusedAccountIds.Add(accountId);
     }
 
+    [Fact]
+    public void TradingExecutionGate_MasterSwitch_FollowsARealOptionsMonitorChange()
+    {
+        Dictionary<string, string?> settings = new()
+        {
+            ["ConnectionStrings:Default"] = "Host=localhost;Database=x;Username=u;Password=p",
+            ["MarketData:Instruments"] = "ES,NQ,MES",
+            ["MarketData:SessionCloseCentral"] = "16:00",
+            ["MarketData:MaxRows"] = "5000",
+            ["Trading:Enabled"] = "true",
+            ["Trading:AllowedAccountIds"] = "1",
+        };
+        WebApplicationBuilder builder = WebApplication.CreateBuilder();
+        builder.Configuration.AddInMemoryCollection(settings);
+        Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
+        using ServiceProvider provider = builder.Services.BuildServiceProvider();
+        TradingExecutionGate gate = provider.GetRequiredService<TradingExecutionGate>();
+
+        gate.RefuseIfDisabledOrHalted().Should().BeNull();
+
+        IConfigurationRoot configuration = builder.Configuration;
+        MemoryConfigurationProvider memory = configuration.Providers
+            .OfType<MemoryConfigurationProvider>()
+            .Last();
+        memory.Set("Trading:Enabled", "false");
+        configuration.Reload();
+
+        gate.RefuseIfDisabledOrHalted().Should().Be(TradingExecutionRefusal.TradingDisabled);
+    }
+
     /// <summary>Kill switch refuses before any account fetch.</summary>
     [Fact]
     [Trait("Gate", "ADR-0024")]
@@ -159,7 +193,7 @@ public sealed class TradingExecutionGateTests
         CountingAccountsGateway marketData = new([Account(1, AccountStage.Practice)]);
         FakeKillSwitch killSwitch = new() { Engaged = true };
         TradingExecutionGate gate = new(
-            Options.Create(new TradingExecutionOptions { Enabled = true }),
+            TradingOptionsMonitors.Fixed(new TradingExecutionOptions { Enabled = true }),
             killSwitch,
             new ProjectXAccountStageResolver());
 

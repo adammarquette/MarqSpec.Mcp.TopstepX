@@ -1063,15 +1063,16 @@ methods are named `Submit*` and the published names below are the MCP `Name`.
 **`Trading__Enabled` defaults to false.** While it is false the five tools are not registered, so a model
 does not see them. A call that still reaches a method refuses with `trading_disabled` before the vendor
 client is touched. That refusal writes no audit row, charges no daily cap and calls no gateway method.
-The gate re-reads the flag during the call. A disable before the claim writes no row. A disable after the
-claim records the refusal and does not send.
+The gate reads the flag from `IOptionsMonitor<TradingExecutionOptions>.CurrentValue` on every check, so a
+configuration reload turns trading off without a process restart. A disable before the claim writes no row.
+A disable after the claim records the refusal and does not send.
 The kill switch refuses with `kill_switch` on the same five tools. Cancel and close have no carve-out.
 **Pending Adam:** that block stays until he decides whether a halt may still flatten. v1 does not add a carve-out.
 
 When `Trading__Enabled` is true, startup fails if `Trading__AllowedAccountIds` is empty.
 
 **These tools write on a live practice account and the stakes are real.** A non-practice account is refused.
-Use a fresh `idempotencyKey` for each order. never retry OutcomeUnknown; reconcile via `get_orders`,
+Use a fresh `idempotencyKey` for each order. Never retry OutcomeUnknown; reconcile via `get_orders`,
 `get_positions` and `get_trades`.
 
 **Every call emits the gate's telemetry.** The span is `execution.<tool>` and the counter is
@@ -1081,20 +1082,24 @@ new outcome. The gate owns both. The tools do not open a second span or counter.
 **`idempotencyKey` is required.** It is scoped per account and per tool, and `TradingAuditClaims.MaxKeyLength`
 is 256, the same width as the audit column. A replay of the same account, tool and request hash returns the
 stored transmit and does not send again. The claim is the pre-send `Unknown` audit row, unique in Postgres,
-so a restart, a redeploy or another replica still sees it (gh#712). Only a transmit is stored. A refusal or
-a preview is not replayed: a `trading_disabled` refusal does not become a send after trading is enabled.
-The same key with a different request hash, including a different `dryRun`, is `idempotency_conflict` and
-does not transmit. A blank key is `idempotency_key_required` and is audited. A key longer than 256
-characters is `idempotency_key_too_long` and writes no row. The master switch is checked first, so a blank
-or over-long key while trading is disabled is `trading_disabled`. The claim is taken after that check.
-A refusal recorded after the claim is what a later replay of that key returns.
+so a restart, a redeploy or another replica still sees it (gh#712). A refusal written before the claim is
+not replayed: an allowlist miss, or a `trading_disabled` refusal, does not become a send — and does not
+turn a later unknown transmit into `SafeToRetry` — after the condition is fixed. A `Refused` row written
+after the claim with the same request hash is what a later replay of that key returns. A later refusal
+with a different hash, including an idempotency conflict, does not override `Unknown` or `Live`. A preview
+is not a claim. The same key with a different request hash, including a different `dryRun`, is
+`idempotency_conflict` and does not transmit. A blank key is `idempotency_key_required` and is audited. A
+key longer than 256 characters is `idempotency_key_too_long` and writes no row. The master switch is
+checked first, so a blank or over-long key while trading is disabled is `trading_disabled`. The claim is
+taken after that check.
 
 **`retrySafety` is the retry signal.** `SafeToRetry` is a refusal, a preview, a venue rejection, or a fault
 before the send. `NotSafeToRetry` is a broker acknowledgment (`status: Live`). `OutcomeUnknown` is returned
-only when the send may have happened: a throw from the send, an audit write that fails after an ack, or a
-broker success that carried no order id. A venue, HTTP or database fault that reaches the tool is a read
-from before the send, and it is a structured `error` with `SafeToRetry`, not a raw exception and not
-`OutcomeUnknown`. `Live` is only a broker acknowledgment.
+only when the send may have happened: a throw from the send, including a timeout during the send, an audit
+write that fails after an ack, or a broker success that carried no order id. A venue, HTTP, timeout,
+database or any other fault that reaches the tool is a read from before the send — the gate already caught
+a throw from the send and returned `OutcomeUnknown` — and it is a structured `error` with `SafeToRetry`,
+not a raw exception and not `OutcomeUnknown`. `Live` is only a broker acknowledgment.
 `refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
 for them — they are fields, so the test is key presence.
 

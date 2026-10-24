@@ -31,8 +31,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class BarUpsertConcurrencyTests(SchemaFixture fixture)
+public sealed class BarUpsertConcurrencyTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     /// <summary>How far a restated bar moves, so which fill wrote a row can be read off the row.</summary>
     private const decimal Restatement = 7.5m;
 

@@ -672,12 +672,12 @@ public sealed class TradingRiskGateTests
         IReadOnlyList<VenueAccount>? accounts = null,
         IReadOnlyList<VenueOrder>? orders = null,
         string instruments = "MES",
-        IOptions<TradingExecutionOptions>? bound = null,
+        IOptionsMonitor<TradingExecutionOptions>? bound = null,
         Action? onAccounts = null)
     {
         ProjectXAccountStageResolver stageResolver = new();
         TradingExecutionGate executionGate = new(
-            bound ?? Options.Create(options),
+            bound ?? TradingOptionsMonitors.Fixed(options),
             _killSwitch,
             stageResolver);
         InstrumentRegistry registry = new(Options.Create(new MarketDataOptions { Instruments = instruments }));
@@ -746,11 +746,22 @@ public sealed class TradingRiskGateTests
         public bool IsEngaged { get; set; }
     }
 
-    private sealed class ReplaceableOptions(TradingExecutionOptions initial) : IOptions<TradingExecutionOptions>
+    private sealed class ReplaceableOptions(TradingExecutionOptions initial) : IOptionsMonitor<TradingExecutionOptions>
     {
         public TradingExecutionOptions Current { get; set; } = initial;
 
-        public TradingExecutionOptions Value => Current;
+        public TradingExecutionOptions CurrentValue => Current;
+
+        public TradingExecutionOptions Get(string? name) => Current;
+
+        public IDisposable OnChange(Action<TradingExecutionOptions, string?> listener) => new Noop();
+
+        private sealed class Noop : IDisposable
+        {
+            public void Dispose()
+            {
+            }
+        }
     }
 
     private sealed class StubMarketDataGateway(

@@ -34,8 +34,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class BarReadFreshnessTests(SchemaFixture fixture)
+public sealed class BarReadFreshnessTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     /// <summary>Far enough that a stale copy is unmistakable rather than a rounding argument.</summary>
     private const decimal Restatement = 500m;
 

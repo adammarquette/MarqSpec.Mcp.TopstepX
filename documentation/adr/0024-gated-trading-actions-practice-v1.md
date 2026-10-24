@@ -197,8 +197,10 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
 
 1. **Master enable** — `Trading__Enabled=false` by default. The five tools are registered only when the flag
    is true, so a disabled server does not list them. Each method still refuses when the flag is false, before
-   the vendor client, with no audit row and no gateway call. The gate re-reads the flag on every check. A
-   disable that lands before the idempotency claim writes no audit row. A disable that lands after the claim
+   the vendor client, with no audit row and no gateway call. The gate reads the flag from
+   `IOptionsMonitor<TradingExecutionOptions>.CurrentValue` on every check, so a configuration reload turns
+   trading off without a process restart. A disable that lands before the idempotency claim writes no audit
+   row. A disable that lands after the claim
    records the refusal and does not send. The kill switch blocks cancel and close on that same path.
    **Pending Adam:** whether a halt should keep blocking cancel and close. v1 keeps the block. A carve-out
    would be a write the switch does not cover, and v1 has no separate flatten privilege. Do not change it
@@ -219,16 +221,24 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    `confirmationToken`; confirm re-runs gates 1–5 before transmit.
 7. **Idempotency** — the audit log is the store. Before a send, the gate inserts one `Unknown` row keyed by
    `(AccountId, Tool, IdempotencyKey)` with the request hash (`dryRun` included). A partial unique index
-   rejects a second claim, including across replicas. Rows that already shared an Unknown key are
-   reclassified to `Attempted` at contract count 0 before that index is created, leaving one Unknown claim.
-   A replay prefers a later `Live` row, then `Failed`, then a `Refused` row recorded after the claim, and
-   only then the bare `Unknown` claim. A refusal after the claim is therefore replayed as that refusal
-   (`SafeToRetry`), not as `OutcomeUnknown`. Previews are not claims. A disabled refusal taken before the
+   rejects a second claim, including across replicas. The migration `AddTradingAuditIdempotencyClaim`
+   temporarily runs `DISABLE TRIGGER trading_audit_log_reject_update` — the `BEFORE UPDATE` trigger that
+   rejects audit updates, because the table is append-only and those rows cannot be rewritten while the
+   trigger is on — rewrites every extra `Unknown` row for the same account, tool and key to `Attempted`
+   with contract count 0 and `VenueErrorCode` `duplicate_unknown_claim`, keeps the earliest `Unknown`
+   (`MIN(Id)`), then `ENABLE TRIGGER` before the unique index is created. A replay prefers a later `Live`
+   row, then `Failed`, then a `Refused` row written after the current claim with the same request hash,
+   and only then the bare `Unknown` claim. A refusal after the claim with that hash is therefore replayed
+   as that refusal (`SafeToRetry`), not as `OutcomeUnknown`. An earlier refusal, such as an allowlist miss
+   that was later fixed, must not turn a later unknown transmit into `SafeToRetry`. A later refusal with a
+   different request hash, such as an idempotency conflict, does not either. Previews are not claims. A
+   disabled refusal taken before the
    claim is not stored, so enabling trading does not replay it into a send. A key longer than 256 characters
    is `idempotency_key_too_long` and writes no row. A blank key is `idempotency_key_required` and is audited.
 8. **Audit log** — append-only. The pre-send `Unknown` claim (contract count 0) is the idempotency record.
-   The `Attempted` row still carries the key and is the cap charge. Later `Live` (with `OrderId`), `Failed`,
-   or `Refused` rows are what a replay prefers, in that order. No secrets.
+   The `Attempted` row still carries the key and is the cap charge. A replay prefers a later `Live` (with
+   `OrderId`), then `Failed`, then a `Refused` row written after the claim with the same request hash. No
+   secrets.
    **Rows written:** validation refusals (`size_not_positive`, `price_required`, `price_not_positive`,
    a non-positive partial close, `idempotency_key_too_long`) and `trading_disabled` before the claim write
    none. The kill switch, stage, allowlist, denylist, caps, a blank key, an idempotency conflict, a gateway

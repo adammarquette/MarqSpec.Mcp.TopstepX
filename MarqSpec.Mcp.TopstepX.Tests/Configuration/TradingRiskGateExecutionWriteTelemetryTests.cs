@@ -152,7 +152,7 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
 
     private TradingRiskGate Gate(HostTelemetry telemetry, TradingExecutionOptions options)
     {
-        TradingExecutionGate executionGate = new(Options.Create(options), _killSwitch, new ProjectXAccountStageResolver());
+        TradingExecutionGate executionGate = new(TradingOptionsMonitors.Fixed(options), _killSwitch, new ProjectXAccountStageResolver());
         InstrumentRegistry registry = new(Options.Create(new MarketDataOptions { Instruments = "MES" }));
         TradingContractDenylist denylist = new(Options.Create(options), registry);
         ProjectXAccountStageResolver stageResolver = new();
@@ -177,7 +177,7 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
     {
         TradingExecutionOptions options = new() { Enabled = enabled };
         TradingExecutionGate executionGate = new(
-            Options.Create(options),
+            TradingOptionsMonitors.Fixed(options),
             _killSwitch,
             new ProjectXAccountStageResolver());
         InstrumentRegistry registry = new(Options.Create(new MarketDataOptions { Instruments = "MES" }));

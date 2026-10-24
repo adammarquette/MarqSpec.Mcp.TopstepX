@@ -578,12 +578,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   `partial_close_position` — are the venue-write surface (gh#750, gh#714, gh#715, gh#716). Each one calls
   `TradingRiskGate` only (`R-4.1`). `Trading__Enabled` defaults to false. While it is false the five tools
   are not registered, and a call that still reaches a method refuses before any vendor send, with no audit
-  row and no gateway call. The kill switch blocks cancel and close on that same path. Every call emits the
+  row and no gateway call. The gate reads `Trading__Enabled` from the options monitor on every check, so a
+  configuration reload turns trading off without a process restart. The kill switch blocks cancel and close
+  on that same path. Every call emits the
   gate's execution-write span and counter, tagged with the operation and the refusal reason. Each tool takes
   a caller-supplied `idempotencyKey`, at most 256 characters and scoped per account and tool. A longer key
   is `idempotency_key_too_long` and writes no row. The gate writes an `Unknown` audit claim before the send.
-  A replay prefers a later `Live`, `Failed`, or `Refused` row over that claim and does not send again
-  (gh#712). A refusal taken before the claim, and a preview, are not replayed. The result carries
+  A replay prefers a later `Live` row, then `Failed`, then a `Refused` row written after that claim with the
+  same request hash, and does not send again
+  (gh#712). A refusal taken before the claim, a refusal with a different request hash, and a preview, are
+  not replayed over the claim. The result carries
   `retrySafety`: `SafeToRetry`, `NotSafeToRetry`, or `OutcomeUnknown`, matching the gate. `status: Live` is
   only a broker acknowledgment. `OutcomeUnknown` is returned only when the send may have happened. A fault
   before the send is a retryable `error`. Size, price and partial-close checks refuse before any audit row.

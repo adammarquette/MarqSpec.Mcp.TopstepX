@@ -4,109 +4,117 @@ using Parquet.Schema;
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
-/// Parquet twin of the gzip CSV archive. Timestamps are the same text the CSV writes, so a value
-/// survives the round trip at the full 100ns the tape stores. Price is a decimal, not a double.
+/// Parquet twin of the gzip CSV archive. Timestamps are Parquet timestamps (nanoseconds, UTC),
+/// not text. Price is a decimal, not a double. A row group holds at most <see cref="RowGroupSize"/>
+/// rows, so a day is not one buffer (gh#755).
 /// </summary>
 internal static class TapeExportParquet
 {
+    /// <summary>How many rows one row group holds before it is flushed.</summary>
+    public const int RowGroupSize = 1024;
+
     private const int PricePrecision = 18;
 
     private const int PriceScale = 8;
 
     public static Task WriteTradesAsync(
         string path,
-        IReadOnlyList<TapeExportTradeRow> rows,
+        IAsyncEnumerable<TapeExportTradeRow> rows,
         CancellationToken cancellationToken)
     {
         DataField<string> venue = new("venue");
         DataField<string> instrument = new("instrument");
         DataField<string> contractId = new("contract_id");
-        DataField<string> tradeTime = new("trade_time_utc");
+        DateTimeDataField tradeTime = Instant("trade_time_utc");
         DataField<long> sequence = new("sequence");
         DecimalDataField price = new("price", PricePrecision, PriceScale);
         DataField<long> size = new("size");
         DataField<int> direction = new("direction");
-        DataField<string> recordedAt = new("recorded_at");
+        DateTimeDataField recordedAt = Instant("recorded_at");
+        ParquetSchema schema = new(venue, instrument, contractId, tradeTime, sequence, price, size, direction, recordedAt);
 
         return WriteAsync(
             path,
-            new ParquetSchema(venue, instrument, contractId, tradeTime, sequence, price, size, direction, recordedAt),
-            async (group, token) =>
+            schema,
+            rows,
+            async (group, buffer, token) =>
             {
-                await WriteTextAsync(group, venue, rows.Select(row => row.Venue).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, instrument, rows.Select(row => row.Instrument).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, contractId, rows.Select(row => row.ContractId).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, tradeTime, rows.Select(row => TapeExportArchive.FormatInstant(row.TradeTimeUtc)).ToArray(), token).ConfigureAwait(false);
-                await WriteValuesAsync(group, sequence, rows.Select(row => row.Sequence).ToArray(), token).ConfigureAwait(false);
-                await WriteValuesAsync(group, price, rows.Select(row => row.Price).ToArray(), token).ConfigureAwait(false);
-                await WriteValuesAsync(group, size, rows.Select(row => row.Size).ToArray(), token).ConfigureAwait(false);
-                await WriteValuesAsync(group, direction, rows.Select(row => (int)row.Direction).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, recordedAt, rows.Select(row => TapeExportArchive.FormatInstant(row.RecordedAt)).ToArray(), token).ConfigureAwait(false);
+                await WriteTextAsync(group, venue, buffer.Select(row => row.Venue).ToArray(), token).ConfigureAwait(false);
+                await WriteTextAsync(group, instrument, buffer.Select(row => row.Instrument).ToArray(), token).ConfigureAwait(false);
+                await WriteTextAsync(group, contractId, buffer.Select(row => row.ContractId).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, tradeTime, buffer.Select(row => ToTimestamp(row.TradeTimeUtc)).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, sequence, buffer.Select(row => row.Sequence).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, price, buffer.Select(row => row.Price).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, size, buffer.Select(row => row.Size).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, direction, buffer.Select(row => (int)row.Direction).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, recordedAt, buffer.Select(row => ToTimestamp(row.RecordedAt)).ToArray(), token).ConfigureAwait(false);
             },
             cancellationToken);
     }
 
     public static Task WriteCoverageAsync(
         string path,
-        IReadOnlyList<TapeExportCoverageRow> rows,
+        IAsyncEnumerable<TapeExportCoverageRow> rows,
         CancellationToken cancellationToken)
     {
         DataField<string> venue = new("venue");
         DataField<string> instrument = new("instrument");
         DataField<string> contractId = new("contract_id");
-        DataField<string> rangeStart = new("range_start");
-        DataField<string> rangeEnd = new("range_end");
-        DataField<string> recordedAt = new("recorded_at");
+        DateTimeDataField rangeStart = Instant("range_start");
+        DateTimeDataField rangeEnd = Instant("range_end");
+        DateTimeDataField recordedAt = Instant("recorded_at");
+        ParquetSchema schema = new(venue, instrument, contractId, rangeStart, rangeEnd, recordedAt);
 
         return WriteAsync(
             path,
-            new ParquetSchema(venue, instrument, contractId, rangeStart, rangeEnd, recordedAt),
-            async (group, token) =>
+            schema,
+            rows,
+            async (group, buffer, token) =>
             {
-                await WriteTextAsync(group, venue, rows.Select(row => row.Venue).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, instrument, rows.Select(row => row.Instrument).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, contractId, rows.Select(row => row.ContractId).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, rangeStart, rows.Select(row => TapeExportArchive.FormatInstant(row.RangeStart)).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, rangeEnd, rows.Select(row => TapeExportArchive.FormatInstant(row.RangeEnd)).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, recordedAt, rows.Select(row => TapeExportArchive.FormatInstant(row.RecordedAt)).ToArray(), token).ConfigureAwait(false);
+                await WriteTextAsync(group, venue, buffer.Select(row => row.Venue).ToArray(), token).ConfigureAwait(false);
+                await WriteTextAsync(group, instrument, buffer.Select(row => row.Instrument).ToArray(), token).ConfigureAwait(false);
+                await WriteTextAsync(group, contractId, buffer.Select(row => row.ContractId).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, rangeStart, buffer.Select(row => ToTimestamp(row.RangeStart)).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, rangeEnd, buffer.Select(row => ToTimestamp(row.RangeEnd)).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, recordedAt, buffer.Select(row => ToTimestamp(row.RecordedAt)).ToArray(), token).ConfigureAwait(false);
             },
             cancellationToken);
     }
 
     public static Task WriteFootprintAsync(
         string path,
-        IReadOnlyList<TapeExportFootprintRow> rows,
+        IAsyncEnumerable<TapeExportFootprintRow> rows,
         CancellationToken cancellationToken)
     {
         DataField<string> venue = new("venue");
         DataField<string> instrument = new("instrument");
         DataField<int> resolution = new("resolution_minutes");
-        DataField<string> bucket = new("bucket_start");
+        DateTimeDataField bucket = Instant("bucket_start");
         DecimalDataField price = new("price", PricePrecision, PriceScale);
         DataField<long> buy = new("buy_volume");
         DataField<long> sell = new("sell_volume");
-        DataField<string> recordedAt = new("recorded_at");
+        DateTimeDataField recordedAt = Instant("recorded_at");
+        ParquetSchema schema = new(venue, instrument, resolution, bucket, price, buy, sell, recordedAt);
 
         return WriteAsync(
             path,
-            new ParquetSchema(venue, instrument, resolution, bucket, price, buy, sell, recordedAt),
-            async (group, token) =>
+            schema,
+            rows,
+            async (group, buffer, token) =>
             {
-                await WriteTextAsync(group, venue, rows.Select(row => row.Venue).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, instrument, rows.Select(row => row.Instrument).ToArray(), token).ConfigureAwait(false);
-                await WriteValuesAsync(group, resolution, rows.Select(row => row.ResolutionMinutes).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, bucket, rows.Select(row => TapeExportArchive.FormatInstant(row.BucketStart)).ToArray(), token).ConfigureAwait(false);
-                await WriteValuesAsync(group, price, rows.Select(row => row.Price).ToArray(), token).ConfigureAwait(false);
-                await WriteValuesAsync(group, buy, rows.Select(row => row.BuyVolume).ToArray(), token).ConfigureAwait(false);
-                await WriteValuesAsync(group, sell, rows.Select(row => row.SellVolume).ToArray(), token).ConfigureAwait(false);
-                await WriteTextAsync(group, recordedAt, rows.Select(row => TapeExportArchive.FormatInstant(row.RecordedAt)).ToArray(), token).ConfigureAwait(false);
+                await WriteTextAsync(group, venue, buffer.Select(row => row.Venue).ToArray(), token).ConfigureAwait(false);
+                await WriteTextAsync(group, instrument, buffer.Select(row => row.Instrument).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, resolution, buffer.Select(row => row.ResolutionMinutes).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, bucket, buffer.Select(row => ToTimestamp(row.BucketStart)).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, price, buffer.Select(row => row.Price).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, buy, buffer.Select(row => row.BuyVolume).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, sell, buffer.Select(row => row.SellVolume).ToArray(), token).ConfigureAwait(false);
+                await WriteValuesAsync(group, recordedAt, buffer.Select(row => ToTimestamp(row.RecordedAt)).ToArray(), token).ConfigureAwait(false);
             },
             cancellationToken);
     }
 
-    public static async Task<List<TapeExportTradeRow>> ReadTradesAsync(
-        string path,
-        CancellationToken cancellationToken)
+    public static async Task<List<TapeExportTradeRow>> ReadTradesAsync(string path, CancellationToken cancellationToken)
     {
         await using FileStream stream = File.OpenRead(path);
         await using ParquetReader reader = await ParquetReader.CreateAsync(stream, cancellationToken: cancellationToken)
@@ -128,12 +136,12 @@ internal static class TapeExportParquet
             string[] venues = await ReadStringsAsync(group, venue, cancellationToken).ConfigureAwait(false);
             string[] instruments = await ReadStringsAsync(group, instrument, cancellationToken).ConfigureAwait(false);
             string[] contracts = await ReadStringsAsync(group, contractId, cancellationToken).ConfigureAwait(false);
-            string[] times = await ReadStringsAsync(group, tradeTime, cancellationToken).ConfigureAwait(false);
+            DateTime[] times = await ReadValuesAsync<DateTime>(group, tradeTime, cancellationToken).ConfigureAwait(false);
             long[] sequences = await ReadValuesAsync<long>(group, sequence, cancellationToken).ConfigureAwait(false);
             decimal[] prices = await ReadValuesAsync<decimal>(group, price, cancellationToken).ConfigureAwait(false);
             long[] sizes = await ReadValuesAsync<long>(group, size, cancellationToken).ConfigureAwait(false);
             int[] directions = await ReadValuesAsync<int>(group, direction, cancellationToken).ConfigureAwait(false);
-            string[] recorded = await ReadStringsAsync(group, recordedAt, cancellationToken).ConfigureAwait(false);
+            DateTime[] recorded = await ReadValuesAsync<DateTime>(group, recordedAt, cancellationToken).ConfigureAwait(false);
 
             for (int i = 0; i < venues.Length; i++)
             {
@@ -141,21 +149,19 @@ internal static class TapeExportParquet
                     venues[i],
                     instruments[i],
                     contracts[i],
-                    TapeExportArchive.ParseInstant(times[i]),
+                    FromTimestamp(times[i]),
                     sequences[i],
                     prices[i],
                     sizes[i],
                     TapeExportArchive.ParseDirection(directions[i].ToString(System.Globalization.CultureInfo.InvariantCulture)),
-                    TapeExportArchive.ParseInstant(recorded[i])));
+                    FromTimestamp(recorded[i])));
             }
         }
 
         return rows;
     }
 
-    public static async Task<List<TapeExportCoverageRow>> ReadCoverageAsync(
-        string path,
-        CancellationToken cancellationToken)
+    public static async Task<List<TapeExportCoverageRow>> ReadCoverageAsync(string path, CancellationToken cancellationToken)
     {
         await using FileStream stream = File.OpenRead(path);
         await using ParquetReader reader = await ParquetReader.CreateAsync(stream, cancellationToken: cancellationToken)
@@ -174,9 +180,9 @@ internal static class TapeExportParquet
             string[] venues = await ReadStringsAsync(group, venue, cancellationToken).ConfigureAwait(false);
             string[] instruments = await ReadStringsAsync(group, instrument, cancellationToken).ConfigureAwait(false);
             string[] contracts = await ReadStringsAsync(group, contractId, cancellationToken).ConfigureAwait(false);
-            string[] starts = await ReadStringsAsync(group, rangeStart, cancellationToken).ConfigureAwait(false);
-            string[] ends = await ReadStringsAsync(group, rangeEnd, cancellationToken).ConfigureAwait(false);
-            string[] recorded = await ReadStringsAsync(group, recordedAt, cancellationToken).ConfigureAwait(false);
+            DateTime[] starts = await ReadValuesAsync<DateTime>(group, rangeStart, cancellationToken).ConfigureAwait(false);
+            DateTime[] ends = await ReadValuesAsync<DateTime>(group, rangeEnd, cancellationToken).ConfigureAwait(false);
+            DateTime[] recorded = await ReadValuesAsync<DateTime>(group, recordedAt, cancellationToken).ConfigureAwait(false);
 
             for (int i = 0; i < venues.Length; i++)
             {
@@ -184,18 +190,16 @@ internal static class TapeExportParquet
                     venues[i],
                     instruments[i],
                     contracts[i],
-                    TapeExportArchive.ParseInstant(starts[i]),
-                    TapeExportArchive.ParseInstant(ends[i]),
-                    TapeExportArchive.ParseInstant(recorded[i])));
+                    FromTimestamp(starts[i]),
+                    FromTimestamp(ends[i]),
+                    FromTimestamp(recorded[i])));
             }
         }
 
         return rows;
     }
 
-    public static async Task<List<TapeExportFootprintRow>> ReadFootprintAsync(
-        string path,
-        CancellationToken cancellationToken)
+    public static async Task<List<TapeExportFootprintRow>> ReadFootprintAsync(string path, CancellationToken cancellationToken)
     {
         await using FileStream stream = File.OpenRead(path);
         await using ParquetReader reader = await ParquetReader.CreateAsync(stream, cancellationToken: cancellationToken)
@@ -216,11 +220,11 @@ internal static class TapeExportParquet
             string[] venues = await ReadStringsAsync(group, venue, cancellationToken).ConfigureAwait(false);
             string[] instruments = await ReadStringsAsync(group, instrument, cancellationToken).ConfigureAwait(false);
             int[] resolutions = await ReadValuesAsync<int>(group, resolution, cancellationToken).ConfigureAwait(false);
-            string[] buckets = await ReadStringsAsync(group, bucket, cancellationToken).ConfigureAwait(false);
+            DateTime[] buckets = await ReadValuesAsync<DateTime>(group, bucket, cancellationToken).ConfigureAwait(false);
             decimal[] prices = await ReadValuesAsync<decimal>(group, price, cancellationToken).ConfigureAwait(false);
             long[] buys = await ReadValuesAsync<long>(group, buy, cancellationToken).ConfigureAwait(false);
             long[] sells = await ReadValuesAsync<long>(group, sell, cancellationToken).ConfigureAwait(false);
-            string[] recorded = await ReadStringsAsync(group, recordedAt, cancellationToken).ConfigureAwait(false);
+            DateTime[] recorded = await ReadValuesAsync<DateTime>(group, recordedAt, cancellationToken).ConfigureAwait(false);
 
             for (int i = 0; i < venues.Length; i++)
             {
@@ -228,11 +232,11 @@ internal static class TapeExportParquet
                     venues[i],
                     instruments[i],
                     resolutions[i],
-                    TapeExportArchive.ParseInstant(buckets[i]),
+                    FromTimestamp(buckets[i]),
                     prices[i],
                     buys[i],
                     sells[i],
-                    TapeExportArchive.ParseInstant(recorded[i])));
+                    FromTimestamp(recorded[i])));
             }
         }
 
@@ -254,25 +258,69 @@ internal static class TapeExportParquet
         return rows;
     }
 
-    private static async Task WriteAsync(
+    public static async Task<int> RowGroupCountAsync(string path, CancellationToken cancellationToken)
+    {
+        await using FileStream stream = File.OpenRead(path);
+        await using ParquetReader reader = await ParquetReader.CreateAsync(stream, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        return reader.RowGroupCount;
+    }
+
+    public static async Task<bool> ColumnIsTimestampAsync(
         string path,
-        ParquetSchema schema,
-        Func<ParquetRowGroupWriter, CancellationToken, Task> write,
+        string column,
         CancellationToken cancellationToken)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        string partial = path + ".partial";
-        await using (FileStream stream = new(partial, FileMode.Create, FileAccess.Write, FileShare.None))
-        {
-            await using ParquetWriter writer = await ParquetWriter.CreateAsync(
-                schema,
-                stream,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-            using ParquetRowGroupWriter group = writer.CreateRowGroup();
-            await write(group, cancellationToken).ConfigureAwait(false);
-        }
+        await using FileStream stream = File.OpenRead(path);
+        await using ParquetReader reader = await ParquetReader.CreateAsync(stream, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        return reader.Schema.Fields.FirstOrDefault(field => field.Name == column) is DateTimeDataField date
+            && date.DateTimeFormat == DateTimeFormat.Timestamp;
+    }
 
-        File.Move(partial, path, overwrite: true);
+    private static DateTimeDataField Instant(string name) =>
+        new(name, DateTimeFormat.Timestamp, isAdjustedToUTC: true, unit: DateTimeTimeUnit.Nanos);
+
+    private static DateTime ToTimestamp(DateTimeOffset value) => value.UtcDateTime;
+
+    private static DateTimeOffset FromTimestamp(DateTime value) =>
+        new(DateTime.SpecifyKind(value, DateTimeKind.Utc));
+
+    private static async Task WriteAsync<T>(
+        string path,
+        ParquetSchema schema,
+        IAsyncEnumerable<T> rows,
+        Func<ParquetRowGroupWriter, List<T>, CancellationToken, Task> writeGroup,
+        CancellationToken cancellationToken)
+    {
+        List<T> buffer = new(RowGroupSize);
+        await TapeExportDurableFile.CommitAsync(
+            path,
+            async (stream, token) =>
+            {
+                await using ParquetWriter writer = await ParquetWriter.CreateAsync(
+                    schema,
+                    stream,
+                    cancellationToken: token).ConfigureAwait(false);
+                await foreach (T row in rows.WithCancellation(token).ConfigureAwait(false))
+                {
+                    buffer.Add(row);
+                    if (buffer.Count == RowGroupSize)
+                    {
+                        using ParquetRowGroupWriter group = writer.CreateRowGroup();
+                        await writeGroup(group, buffer, token).ConfigureAwait(false);
+                        buffer.Clear();
+                    }
+                }
+
+                if (buffer.Count > 0)
+                {
+                    using ParquetRowGroupWriter group = writer.CreateRowGroup();
+                    await writeGroup(group, buffer, token).ConfigureAwait(false);
+                    buffer.Clear();
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
     }
 
     private static DataField Field(ParquetReader reader, string name) =>

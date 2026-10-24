@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Globalization;
+using Google;
 using Google.Apis.Auth.OAuth2;
 using Google.Apis.Drive.v3;
 using Google.Apis.Services;
@@ -10,22 +12,35 @@ using FileList = Google.Apis.Drive.v3.Data.FileList;
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
-/// Uploads into a Drive folder with a service account. The same relative path updates the existing
-/// file. A second file with that name is not created (gh#755).
+/// Uploads into a Drive folder with a service account and the <c>drive.file</c> scope (ADR-0025).
 /// </summary>
 /// <remarks>
-/// Constructed only when <see cref="TapeExportDriveOptions.IsConfigured"/> is true. The credential
-/// JSON is never written to a log. A parse failure throws <see cref="IOException"/> with a fixed
-/// message and no inner exception.
+/// <para>
+/// The idempotency key is <see cref="TapeDriveIdentity"/>, stored as <c>appProperties</c>. A stored
+/// file id is updated in place. A missing id is looked up by those properties. Nothing is trashed
+/// and nothing is deleted. Two calls in this process for the same identity share one lock, so they
+/// cannot both create.
+/// </para>
+/// <para>
+/// The credential JSON is never written to a log, an exception message, or an inner exception.
+/// A parse failure throws <see cref="TapeDriveException"/> with a fixed message.
+/// </para>
 /// </remarks>
 public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
 {
+    /// <summary>
+    /// The only scope this client requests. Files the app creates, not the user's whole Drive (ADR-0025).
+    /// </summary>
+    public const string OAuthScope = "https://www.googleapis.com/auth/drive.file";
+
     private const string FolderMime = "application/vnd.google-apps.folder";
 
     private readonly string _folderId;
     private readonly string? _jsonPath;
     private readonly string? _inlineJson;
+    private readonly DriveService? _injected;
     private readonly ConcurrentDictionary<string, string> _folders = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _keys = new(StringComparer.Ordinal);
     private readonly object _gate = new();
     private DriveService? _service;
 
@@ -47,75 +62,80 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
         }
     }
 
-    /// <inheritdoc />
-    public async Task<string> UploadAsync(
-        string relativePath,
-        Stream content,
-        CancellationToken cancellationToken)
+    /// <summary>Uses a service the caller already built, so a test can stub HTTP. Does not read a credential.</summary>
+    /// <param name="folderId">The parent folder id.</param>
+    /// <param name="service">The Drive service. Disposed with this client.</param>
+    public GoogleTapeDriveClient(string folderId, DriveService service)
     {
-        DriveService service = Service();
-        string[] segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
-        if (segments.Length == 0)
-        {
-            throw new IOException("Tape export refused a Drive path with no file name.");
-        }
-
-        string parent = _folderId;
-        for (int i = 0; i < segments.Length - 1; i++)
-        {
-            parent = await FolderAsync(service, parent, segments[i], cancellationToken).ConfigureAwait(false);
-        }
-
-        string name = segments[^1];
-        IList<DriveFile> existing = await ListAsync(service, parent, name, folder: false, cancellationToken)
-            .ConfigureAwait(false);
-        string mime = name.EndsWith(".parquet", StringComparison.Ordinal)
-            ? "application/vnd.apache.parquet"
-            : name.EndsWith(".json", StringComparison.Ordinal)
-                ? "application/json"
-                : "application/gzip";
-
-        string fileId;
-        if (existing.Count == 0)
-        {
-            DriveFile created = new() { Name = name, Parents = [parent] };
-            FilesResource.CreateMediaUpload create = service.Files.Create(created, content, mime);
-            create.Fields = "id";
-            create.SupportsAllDrives = true;
-            IUploadProgress progress = await create.UploadAsync(cancellationToken).ConfigureAwait(false);
-            if (progress.Status != UploadStatus.Completed || create.ResponseBody?.Id is null)
-            {
-                throw new IOException("Tape export Drive upload did not complete.");
-            }
-
-            fileId = create.ResponseBody.Id;
-        }
-        else
-        {
-            fileId = existing[0].Id;
-            FilesResource.UpdateMediaUpload update = service.Files.Update(new DriveFile(), fileId, content, mime);
-            update.SupportsAllDrives = true;
-            IUploadProgress progress = await update.UploadAsync(cancellationToken).ConfigureAwait(false);
-            if (progress.Status != UploadStatus.Completed)
-            {
-                throw new IOException("Tape export Drive upload did not complete.");
-            }
-
-            for (int extra = 1; extra < existing.Count; extra++)
-            {
-                FilesResource.UpdateRequest trash = service.Files.Update(
-                    new DriveFile { Trashed = true },
-                    existing[extra].Id);
-                trash.SupportsAllDrives = true;
-                await trash.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-            }
-        }
-
-        return fileId;
+        ArgumentException.ThrowIfNullOrWhiteSpace(folderId);
+        ArgumentNullException.ThrowIfNull(service);
+        _folderId = folderId;
+        _injected = service;
+        _service = service;
     }
 
     /// <inheritdoc />
-    public void Dispose() => _service?.Dispose();
+    public async Task<string> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(upload);
+        string key = upload.Identity.Canonical();
+        SemaphoreSlim keyGate = _keys.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+        await keyGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            DriveService service = Service();
+            string name = FileName(upload.RelativePath);
+            string mime = Mime(name);
+            IDictionary<string, string> properties = Properties(upload.Identity);
+
+            if (!string.IsNullOrWhiteSpace(upload.KnownFileId))
+            {
+                try
+                {
+                    await using Stream content = upload.Open();
+                    await UpdateAsync(service, upload.KnownFileId, content, mime, properties, cancellationToken)
+                        .ConfigureAwait(false);
+                    return upload.KnownFileId;
+                }
+                catch (TapeDriveException exception) when (exception.StatusCode == 404)
+                {
+                    // The stored id is gone. Fall through to the property lookup. This is not a retry of the 404.
+                }
+            }
+
+            string? found = await FindByPropertiesAsync(service, properties, cancellationToken).ConfigureAwait(false);
+            if (found is not null)
+            {
+                await using Stream content = upload.Open();
+                await UpdateAsync(service, found, content, mime, properties, cancellationToken)
+                    .ConfigureAwait(false);
+                return found;
+            }
+
+            string parent = await ParentForAsync(service, upload.RelativePath, cancellationToken).ConfigureAwait(false);
+            await using Stream created = upload.Open();
+            return await CreateAsync(service, parent, name, created, mime, properties, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            keyGate.Release();
+        }
+    }
+
+    /// <inheritdoc />
+    public void Dispose()
+    {
+        if (_injected is null)
+        {
+            _service?.Dispose();
+        }
+
+        foreach (SemaphoreSlim gate in _keys.Values)
+        {
+            gate.Dispose();
+        }
+    }
 
     private DriveService Service()
     {
@@ -136,7 +156,7 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
                 ServiceAccountCredential account = _jsonPath is not null
                     ? CredentialFactory.FromFile<ServiceAccountCredential>(_jsonPath)
                     : CredentialFactory.FromJson<ServiceAccountCredential>(_inlineJson ?? string.Empty);
-                GoogleCredential credential = account.ToGoogleCredential().CreateScoped(DriveService.Scope.Drive);
+                GoogleCredential credential = account.ToGoogleCredential().CreateScoped(OAuthScope);
                 _service = new DriveService(new BaseClientService.Initializer
                 {
                     HttpClientInitializer = credential,
@@ -146,9 +166,37 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
             }
             catch (Exception)
             {
-                throw new IOException("Tape export could not read the Drive service account.");
+                throw new TapeDriveException(
+                    "Tape export could not read the Drive service account.",
+                    statusCode: null,
+                    permanent: true,
+                    failureType: "ServiceAccountCredential");
             }
         }
+    }
+
+    private async Task<string> ParentForAsync(
+        DriveService service,
+        string relativePath,
+        CancellationToken cancellationToken)
+    {
+        string[] segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0)
+        {
+            throw new TapeDriveException(
+                "Tape export refused a Drive path with no file name.",
+                statusCode: null,
+                permanent: true,
+                failureType: "TapeDriveException");
+        }
+
+        string parent = _folderId;
+        for (int i = 0; i < segments.Length - 1; i++)
+        {
+            parent = await FolderAsync(service, parent, segments[i], cancellationToken).ConfigureAwait(false);
+        }
+
+        return parent;
     }
 
     private async Task<string> FolderAsync(
@@ -163,12 +211,17 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
             return cached;
         }
 
-        IList<DriveFile> existing = await ListAsync(service, parentId, name, folder: true, cancellationToken)
-            .ConfigureAwait(false);
-        if (existing.Count > 0)
+        FilesResource.ListRequest list = service.Files.List();
+        list.Q = "name = '" + Escape(name) + "' and '" + Escape(parentId)
+            + "' in parents and mimeType = '" + FolderMime + "' and trashed = false";
+        list.Fields = "files(id)";
+        list.SupportsAllDrives = true;
+        list.IncludeItemsFromAllDrives = true;
+        FileList found = await ExecuteAsync(list.ExecuteAsync, cancellationToken).ConfigureAwait(false);
+        if (found.Files is { Count: > 0 } && !string.IsNullOrEmpty(found.Files[0].Id))
         {
-            _folders[cacheKey] = existing[0].Id;
-            return existing[0].Id;
+            _folders[cacheKey] = found.Files[0].Id;
+            return found.Files[0].Id;
         }
 
         FilesResource.CreateRequest request = service.Files.Create(new DriveFile
@@ -177,50 +230,179 @@ public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
             MimeType = FolderMime,
             Parents = [parentId],
         });
-        DriveFile created = await ExecuteCreateAsync(request, cancellationToken).ConfigureAwait(false);
-
+        request.Fields = "id";
+        request.SupportsAllDrives = true;
+        DriveFile created = await ExecuteAsync(request.ExecuteAsync, cancellationToken).ConfigureAwait(false);
         if (string.IsNullOrEmpty(created.Id))
         {
-            throw new IOException("Tape export could not create a Drive folder.");
+            throw new TapeDriveException(
+                "Tape export could not create a Drive folder.",
+                statusCode: null,
+                permanent: false,
+                failureType: "TapeDriveException");
         }
 
         _folders[cacheKey] = created.Id;
         return created.Id;
     }
 
-    private static async Task<DriveFile> ExecuteCreateAsync(
-        FilesResource.CreateRequest request,
-        CancellationToken cancellationToken)
-    {
-        request.Fields = "id";
-        request.SupportsAllDrives = true;
-        return await request.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-    }
-
-    private static async Task<IList<DriveFile>> ListAsync(
+    private static async Task<string?> FindByPropertiesAsync(
         DriveService service,
-        string parentId,
-        string name,
-        bool folder,
+        IDictionary<string, string> properties,
         CancellationToken cancellationToken)
     {
         FilesResource.ListRequest list = service.Files.List();
-        string query = "name = '" + Escape(name) + "' and '" + Escape(parentId)
-            + "' in parents and trashed = false";
-        if (folder)
-        {
-            query += " and mimeType = '" + FolderMime + "'";
-        }
-
-        list.Q = query;
-        list.Fields = "files(id,name)";
+        list.Q = string.Join(
+            " and ",
+            properties.Select(pair =>
+                "appProperties has { key='" + Escape(pair.Key) + "' and value='" + Escape(pair.Value) + "' }"))
+            + " and trashed = false";
+        list.Fields = "files(id)";
         list.SupportsAllDrives = true;
         list.IncludeItemsFromAllDrives = true;
-        FileList found = await list.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-        return found.Files is null
-            ? []
-            : [.. found.Files.OrderBy(file => file.Id, StringComparer.Ordinal)];
+        FileList found = await ExecuteAsync(list.ExecuteAsync, cancellationToken).ConfigureAwait(false);
+        if (found.Files is null || found.Files.Count == 0)
+        {
+            return null;
+        }
+
+        return found.Files
+            .Select(file => file.Id)
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Order(StringComparer.Ordinal)
+            .FirstOrDefault();
     }
+
+    private static async Task<string> CreateAsync(
+        DriveService service,
+        string parent,
+        string name,
+        Stream content,
+        string mime,
+        IDictionary<string, string> properties,
+        CancellationToken cancellationToken)
+    {
+        DriveFile metadata = new()
+        {
+            Name = name,
+            Parents = [parent],
+            AppProperties = new Dictionary<string, string>(properties),
+        };
+        FilesResource.CreateMediaUpload create = service.Files.Create(metadata, content, mime);
+        create.Fields = "id";
+        create.SupportsAllDrives = true;
+        await CompleteAsync(await create.UploadAsync(cancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+        if (string.IsNullOrEmpty(create.ResponseBody?.Id))
+        {
+            throw new TapeDriveException(
+                "Tape export Drive upload did not complete.",
+                statusCode: null,
+                permanent: false,
+                failureType: "TapeDriveException");
+        }
+
+        return create.ResponseBody.Id;
+    }
+
+    private static async Task UpdateAsync(
+        DriveService service,
+        string fileId,
+        Stream content,
+        string mime,
+        IDictionary<string, string> properties,
+        CancellationToken cancellationToken)
+    {
+        DriveFile metadata = new()
+        {
+            AppProperties = new Dictionary<string, string>(properties),
+        };
+        FilesResource.UpdateMediaUpload update = service.Files.Update(metadata, fileId, content, mime);
+        update.SupportsAllDrives = true;
+        await CompleteAsync(await update.UploadAsync(cancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
+    }
+
+    private static Task CompleteAsync(IUploadProgress progress)
+    {
+        if (progress.Status == UploadStatus.Completed)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (progress.Exception is not null)
+        {
+            throw Wrap(progress.Exception);
+        }
+
+        throw new TapeDriveException(
+            "Tape export Drive upload did not complete.",
+            statusCode: null,
+            permanent: false,
+            failureType: "TapeDriveException");
+    }
+
+    private static async Task<T> ExecuteAsync<T>(
+        Func<CancellationToken, Task<T>> call,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await call(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not TapeDriveException)
+        {
+            throw Wrap(exception);
+        }
+    }
+
+    private static TapeDriveException Wrap(Exception exception)
+    {
+        if (exception is TapeDriveException drive)
+        {
+            return drive;
+        }
+
+        Exception? current = exception;
+        int? status = null;
+        string type = exception.GetType().Name;
+        for (int depth = 0; depth < 4 && current is not null; depth++)
+        {
+            if (current is GoogleApiException google)
+            {
+                status = (int)google.HttpStatusCode;
+                type = google.GetType().Name;
+                break;
+            }
+
+            current = current.InnerException;
+        }
+
+        bool permanent = status is 400 or 401 or 403 or 404;
+        return new TapeDriveException("Drive request failed.", status, permanent, type);
+    }
+
+    private static Dictionary<string, string> Properties(TapeDriveIdentity identity) => new(StringComparer.Ordinal)
+    {
+        ["tapeDay"] = identity.Day,
+        ["tapeKind"] = identity.Kind,
+        ["tapeFmt"] = identity.Format,
+        ["tapeVenue"] = identity.Venue,
+        ["tapeSymbol"] = identity.Instrument,
+        ["tapeContract"] = identity.ContractId,
+        ["tapeRes"] = identity.ResolutionMinutes.ToString(CultureInfo.InvariantCulture),
+    };
+
+    private static string FileName(string relativePath)
+    {
+        string[] segments = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segments[^1];
+    }
+
+    private static string Mime(string name) =>
+        name.EndsWith(".parquet", StringComparison.Ordinal)
+            ? "application/vnd.apache.parquet"
+            : name.EndsWith(".json", StringComparison.Ordinal)
+                ? "application/json"
+                : "application/gzip";
 
     private static string Escape(string value) =>
         value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("'", "\\'", StringComparison.Ordinal);

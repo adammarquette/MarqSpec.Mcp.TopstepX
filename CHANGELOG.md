@@ -128,12 +128,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a mounted volume the process does not create). Trades and coverage are one pair of files per contract
   per day; footprint files are per instrument and resolution because a cell has no contract.
   `TapeExport__Format` accepts only `csv.gz+parquet`. Off unless the transport is HTTP and
-  `TapeExport__Enabled=true`. `TapeExport__Schedule` defaults to `06:00` UTC, with one pass at process
-  start. A UTC day is copied only after it has ended, and only when the manifest sha256 and row counts
-  verify. The export is additive: local rows are not deleted. Google Drive is a second copy, off unless
-  `TapeExport__Drive__FolderId` and a service-account JSON or path are set. A repeat replaces the Drive
-  file. A failed upload is retried and leaves the local file and the rows in place. `TapeExportReceipts`
-  records `local`, `uploaded`, or `failed`. `export-tape` and `import-tape` archive or restore one day
+  `TapeExport__Enabled=true`. `TapeExport__Schedule` defaults to `06:00` UTC. The worker waits for that
+  time and runs only while this process holds a recorder lease. A UTC day is copied only after it has
+  ended and no open listen still overlaps it. Files are `yyyy-MM-dd.vN`, the manifest is renamed into
+  place last, and a matching receipt hash is not read again. The export is additive: local rows, older
+  generations, and Drive files are not deleted. Google Drive is a second copy, off unless
+  `TapeExport__Drive__FolderId` and a service-account JSON or path are set. Prefer the path. Inline JSON
+  is visible to anyone who can inspect the container. The scope is `drive.file` (ADR-0025). The same
+  identity updates one file. A transient failure backs off. A permanent failure is not retried and keeps
+  the last file id. `TapeExportReceipts` records `pending`, `drive_disabled`, `uploaded`, or `failed`.
+  `export-tape` and `import-tape` archive or restore one day
   or every day; import refuses an unverified day and inserts nothing for it. `mcp.tape.exports`,
   `mcp.tape.uploads` and `mcp.tape.export.duration` record the pass, and spans `tape.export` and
   `tape.upload` trace it. Timescale `policy_retention` on `Trades` stays empty. gh#758's template uses

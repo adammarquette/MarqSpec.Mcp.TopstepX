@@ -54,7 +54,7 @@ public sealed class TapeExportArchiveTests
         parquet.Footprint.Should().ContainSingle().Which.BuyVolume.Should().Be(3);
         TapeExportArchive.RelativePath(
             TapeExportArchive.TradesDirectory, "test", "ES", "CON.F.US.EP.Z26", 0, _day, TapeExportArchive.CsvGzFormat)
-            .Should().Be("trades/test/ES/CON.F.US.EP.Z26/2026-10-01.csv.gz");
+            .Should().Be("trades/test/ES/CON.F.US.EP.Z26/2026-10-01.v1.csv.gz");
         File.Exists(TapeExportArchive.TradesPath(
             destination, "test", "ES", "CON.F.US.EP.Z26", _day, TapeExportArchive.ParquetFormat)).Should().BeTrue();
         File.Exists(TapeExportArchive.FootprintPath(
@@ -239,6 +239,150 @@ public sealed class TapeExportArchiveTests
         verification.Verified.Should().BeTrue();
         return destination;
     }
+
+    [Fact]
+    public void ParseTradesCsv_WhenAFieldContainsCommaQuoteAndNewline_RoundTrips()
+    {
+        DateTimeOffset traded = new(2026, 10, 1, 14, 31, 2, TimeSpan.Zero);
+        TapeExportTradeRow row = new(
+            "test",
+            "ES",
+            "ACME, \"North\"\nLLC",
+            traded,
+            7,
+            5123.25m,
+            3,
+            TradeDirection.Sell,
+            traded);
+
+        string csv = TapeExportArchive.FormatTradesCsv([row]);
+        TapeExportTradeRow parsed = TapeExportArchive.ParseTradesCsv(csv).Should().ContainSingle().Subject;
+
+        parsed.Should().BeEquivalentTo(row);
+        csv.Should().Contain("\"ACME, \"\"North\"\"\nLLC\"");
+    }
+
+    [Theory]
+    [InlineData("..")]
+    [InlineData(".")]
+    [InlineData("a/b")]
+    [InlineData("a\\b")]
+    [InlineData("/etc/passwd")]
+    public void RelativePath_WhenTheContractIsNotOneSegment_Refuses(string contractId)
+    {
+        Action path = () => TapeExportArchive.RelativePath(
+            TapeExportArchive.TradesDirectory,
+            "test",
+            "ES",
+            contractId,
+            0,
+            _day,
+            TapeExportArchive.CsvGzFormat);
+
+        path.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void RelativePath_WhenTheContractContainsANul_Refuses()
+    {
+        Action path = () => TapeExportArchive.RelativePath(
+            TapeExportArchive.TradesDirectory,
+            "test",
+            "ES",
+            "CON" + '\0' + "ID",
+            0,
+            _day,
+            TapeExportArchive.CsvGzFormat);
+
+        path.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public void TradesPath_WhenAParentIsASymlink_Refuses()
+    {
+        string destination = TempDirectory();
+        string outside = TempDirectory();
+        Directory.CreateSymbolicLink(Path.Combine(destination, "trades"), outside);
+
+        Action path = () => TapeExportArchive.TradesPath(destination, "test", "ES", "CON.F.US.EP.Z26", _day);
+
+        path.Should().Throw<InvalidOperationException>();
+    }
+
+    [Fact]
+    public async Task CommitAsync_WhenTheWriteThrows_LeavesNoFinalFile()
+    {
+        string destination = TempDirectory();
+        string finalPath = Path.Combine(destination, "trades.csv.gz");
+
+        Func<Task> write = () => TapeExportDurableFile.CommitAsync(
+            finalPath,
+            (_, _) => throw new IOException("disk full"),
+            CancellationToken.None);
+
+        await write.Should().ThrowAsync<IOException>();
+        File.Exists(finalPath).Should().BeFalse();
+        Directory.EnumerateFiles(destination, "*", SearchOption.AllDirectories)
+            .Should().NotContain(path => path.EndsWith(".partial", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task StageDay_WhenTheManifestIsNotPublished_LeavesThePreviousManifest()
+    {
+        string destination = TempDirectory();
+        DateTimeOffset traded = new(2026, 10, 1, 14, 0, 0, TimeSpan.Zero);
+        TapeExportDay first = Day(traded, 5123.25m);
+        await TapeExportArchive.WriteDayAsync(destination, first, _exportedAt, CancellationToken.None);
+        string manifest = await File.ReadAllTextAsync(TapeExportArchive.ManifestPath(destination, _day));
+
+        TapeExportDraft staged = await TapeExportArchive.StageDayAsync(
+            destination,
+            Day(traded, 10m),
+            CancellationToken.None);
+
+        staged.Generation.Should().Be(2);
+        (await File.ReadAllTextAsync(TapeExportArchive.ManifestPath(destination, _day))).Should().Be(manifest);
+        (await TapeExportArchive.ReadDayAsync(destination, _day, CancellationToken.None)).Trades
+            .Should().ContainSingle().Which.Price.Should().Be(5123.25m);
+        File.Exists(TapeExportArchive.TradesPath(
+            destination, "test", "ES", "CON.F.US.EP.Z26", _day, TapeExportArchive.CsvGzFormat, generation: 2))
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task WriteDay_WhenTheDayHasMoreThanOneRowGroup_StoresTimestampsAsTimestamps()
+    {
+        string destination = TempDirectory();
+        DateTimeOffset traded = new DateTimeOffset(2026, 10, 1, 14, 31, 2, TimeSpan.Zero).AddTicks(1234567);
+        List<TapeExportTradeRow> rows = [];
+        for (int i = 0; i < 1025; i++)
+        {
+            rows.Add(new TapeExportTradeRow(
+                "test", "ES", "CON.F.US.EP.Z26", traded.AddTicks(i), i, 10m + i, 1, TradeDirection.Buy, traded));
+        }
+
+        TapeExportDay day = new(_day, rows, [], []);
+        TapeExportVerification verification = await TapeExportArchive.WriteDayAsync(
+            destination, day, _exportedAt, CancellationToken.None);
+        string parquet = TapeExportArchive.TradesPath(
+            destination, "test", "ES", "CON.F.US.EP.Z26", _day, TapeExportArchive.ParquetFormat);
+
+        verification.Verified.Should().BeTrue();
+        (await TapeExportArchive.ParquetRowGroupCountAsync(parquet, CancellationToken.None)).Should().BeGreaterThan(1);
+        (await TapeExportArchive.ParquetColumnIsTimestampAsync(parquet, "trade_time_utc", CancellationToken.None))
+            .Should().BeTrue();
+        (await TapeExportArchive.ReadParquetDayAsync(destination, _day, CancellationToken.None)).Trades[0]
+            .TradeTimeUtc.Should().Be(traded);
+    }
+
+    private static TapeExportDay Day(DateTimeOffset traded, decimal price) =>
+        new(
+            _day,
+            [
+                new TapeExportTradeRow("test", "ES", "CON.F.US.EP.Z26", traded, 1, price, 1, TradeDirection.Buy, traded),
+            ],
+            [],
+            []);
 
     private static string TempDirectory()
     {

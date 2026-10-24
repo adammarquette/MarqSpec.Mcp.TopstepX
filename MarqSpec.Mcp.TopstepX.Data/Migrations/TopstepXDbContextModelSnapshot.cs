@@ -414,6 +414,13 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<DateTimeOffset>("ExportedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int?>("FailureStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("FailureType")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
                     b.Property<string>("RelativePath")
                         .IsRequired()
                         .HasMaxLength(512)

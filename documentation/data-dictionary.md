@@ -409,7 +409,7 @@ chunks older than seven days compress in place. Compression is a different Times
 
 **The export copies a finished UTC day and does not delete rows** (`R-10`, gh#755). A day of
 `TradeTimeUtc` is written once that day has ended, as gzip CSV and Parquet, one pair of files per
-contract: `trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.csv.gz` and `.parquet`, on the mounted
+contract: `trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.vN.csv.gz` and `.parquet`, on the mounted
 volume at `TapeExport__Path` (default `/data/tape-exports`). The volume is not created by a migration.
 `Retention__*` is not read; dropping raw tape needs its own ADR. Whether each file was copied, and
 whether a Drive upload of it finished, is §14.
@@ -782,8 +782,10 @@ unique partial `(AccountId, Tool, IdempotencyKey)` for the pre-send claim.
 | `Sha256` | `varchar(64)` | Lowercase hex of the file bytes |
 | `RowCount` | `integer` | Data rows. `0` for a manifest |
 | `ExportedAtUtc` | `timestamptz` | When this status was written |
-| `DriveFileId` | `varchar(128)` | Drive file id after a successful upload. Null otherwise |
-| `UploadState` | `varchar(16)` | `local` (Drive off), `uploaded`, or `failed` |
+| `DriveFileId` | `varchar(128)` | Last Drive file id that landed. A failed attempt does not clear it |
+| `UploadState` | `varchar(16)` | `pending`, `drive_disabled`, `uploaded`, or `failed` |
+| `FailureType` | `varchar(128)` | Exception type name when `UploadState` is `failed`. Null otherwise. Never a credential |
+| `FailureStatus` | `integer` | HTTP status when the client reported one. Null when there is no status |
 
 Primary key: `(Day, Kind, Format, Venue, Instrument, ContractId, ResolutionMinutes)`. A second pass of
 the same file updates this row (`ON CONFLICT DO UPDATE`). It does not insert another, and it does not
@@ -791,8 +793,9 @@ delete tape.
 
 **This is not a retention policy** (`R-10.7`, gh#755). It records that a file was written and whether
 the Drive upload finished, so a later decision can check. `Retention__*` is not read.
-`UploadState = failed` means the local file and the local rows are still there. `local` means Drive
-was not configured. Not a hypertable.
+`UploadState = failed` means the local file and the local rows are still there, and `DriveFileId` is
+the last id that landed. `drive_disabled` means Drive was not configured. `pending` is the in-flight
+upload and is not a finished copy. Not a hypertable.
 
 Index: `(Day, UploadState)` — the read that decision would make.
 

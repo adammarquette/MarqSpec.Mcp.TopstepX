@@ -933,7 +933,8 @@ public static class Program
         // switch — ExecuteAsync returns immediately unless the transport is HTTP and
         // MarketData__RecordTape is on. It takes no scoped venue client in the constructor;
         // every operation opens a scope (the captive-dependency case, ADR-0016).
-        services.AddHostedService<TradeTapeRecorder>();
+        services.AddSingleton<TradeTapeRecorder>();
+        services.AddHostedService(sp => sp.GetRequiredService<TradeTapeRecorder>());
 
         // Indicator warmup. Same shape: HTTP and an explicit switch, both. Always registered
         // so the container does not change with MarketData__WarmIndicators; ExecuteAsync
@@ -951,11 +952,15 @@ public static class Program
             HostTelemetry telemetry = sp.GetRequiredService<HostTelemetry>();
             if (!export.Drive.IsConfigured)
             {
-                return new DisabledTapeDriveUploader(telemetry);
+                return new DisabledTapeDriveUploader();
             }
 
-            return new RetryingTapeDriveUploader(new GoogleTapeDriveClient(export.Drive), telemetry);
+            return new RetryingTapeDriveUploader(
+                new GoogleTapeDriveClient(export.Drive),
+                telemetry,
+                sp.GetRequiredService<ILogger<RetryingTapeDriveUploader>>());
         });
+        services.AddSingleton<ITapeExportSchedulerGate, RecorderLeaseGate>();
         services.AddScoped<TapeExportPass>();
         services.AddScoped<ITapeExportPass>(sp => sp.GetRequiredService<TapeExportPass>());
         services.AddHostedService<TapeExportWorker>();

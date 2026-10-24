@@ -818,9 +818,9 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
 | `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
-| `mcp.tape.exports` | counter | `outcome` = skipped_open \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`) |
+| `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`). One measurement per pass for a repeated outcome |
 | `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
-| `mcp.tape.uploads` | counter | `outcome` = drive_off \| drive_retried \| drive_uploaded \| drive_failed | `RetryingTapeDriveUploader` / `DisabledTapeDriveUploader` (gh#755, `R-10.6`) |
+| `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent | `TapeExportPass` records `drive_disabled` once when Drive is off. The retrying uploader records the others (gh#755, `R-10.6`). `drive_retried` counts the retries, not one event per attempt |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
 
@@ -1122,29 +1122,36 @@ dating today's pick. It does not fetch bars and does not write a roll row.
 
 `Trades`, closed `TapeCoverage` and `FootprintCells` are the rows a reset can destroy and no venue call
 can put back (`R-10`, gh#755). `TapeExportWorker` is a `BackgroundService` registered beside the recorder.
-It runs only when the transport is HTTP **and** `TapeExport__Enabled` is true (default false). It takes
-one pass at process start, then waits until `TapeExport__Schedule` (default `06:00` UTC, exact `HH:mm`)
-and repeats. `export-tape` and `import-tape` call the same pass and do not read `Enabled`.
+It runs only when the transport is HTTP **and** `TapeExport__Enabled` is true (default false). It waits
+until `TapeExport__Schedule` (default `06:00` UTC, exact `HH:mm`) and runs only while this process holds
+a recorder lease. A restart does not export before the next schedule. `export-tape` and `import-tape`
+call the same pass and do not read `Enabled`.
 
 **Where the files go.** Exports write to a mounted volume at `TapeExport__Path`, default
 `/data/tape-exports`. The process creates `trades/`, `tape-coverage/`, `footprint-cells/` and
 `manifests/` under it and does not create the volume. An `s3://` URI and a relative path are refused
 as that path. `TapeExport__Format` accepts only `csv.gz+parquet`: both files, not a choice of one.
 Trades and closed coverage are one pair per contract per day,
-`trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.csv.gz` and `.parquet` (coverage under
-`tape-coverage/`). Footprint cells have no contract column, so those files are
-`footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.csv.gz` and `.parquet`. The manifest is
-`manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`) and stores each file's sha256 and data-row count.
+`trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.vN.csv.gz` and `.parquet` (coverage under
+`tape-coverage/`). `N` is the generation. Footprint cells have no contract column, so those files are
+`footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.vN.csv.gz` and `.parquet`. The manifest is
+`manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`), written last by a temp file, fsync, and rename, and
+it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
+An older generation is left on disk.
 The image user is uid 64198; a volume that user cannot write is a failed pass, not a silent success.
 The committed compose file forwards the environment variables and does not mount the volume.
 
-**Drive is optional and additive** (`R-10.6`). `TapeExport__Drive__FolderId` plus
-`TapeExport__Drive__ServiceAccountJson` or `TapeExport__Drive__ServiceAccountJsonPath` turn it on.
-Empty leaves it off and no client is constructed. The same relative path replaces the existing Drive
-file. A failed upload is retried three times in the pass; the local file and the Postgres rows stay.
-Spans are `tape.export` (one day) and `tape.upload` (one file). `TapeExportReceipts` records
-`local`, `uploaded`, or `failed` for a later retention check (`R-10.7`). That check is not this
-process.
+**Drive is optional and additive** (`R-10.6`, [ADR-0025](adr/0025-drive-file-scope-for-tape-export.md)).
+`TapeExport__Drive__FolderId` plus a credential turn it on. Prefer
+`TapeExport__Drive__ServiceAccountJsonPath` (a mounted file). Inline
+`TapeExport__Drive__ServiceAccountJson` is visible to anyone who can inspect the container. Empty
+leaves Drive off and the disabled uploader records nothing; the pass counts one `drive_disabled`.
+The OAuth scope is `drive.file`. The identity is `appProperties` plus the stored file id, not the
+display name. Nothing is trashed. A transient failure waits with exponential backoff and jitter, up to
+three attempts. A permanent failure is not retried. The local file, the Postgres rows, and the last
+good file id stay. Spans are `tape.export` (a day the pass touches) and `tape.upload` (one file, across
+its retries). `TapeExportReceipts` records `pending`, `drive_disabled`, `uploaded`, or `failed`
+(`R-10.7`). That is not a retention check.
 
 **The copy is additive.** A day is the UTC calendar day of `TradeTimeUtc`, of a closed coverage
 `RangeStart`, or of a footprint `BucketStart`, half-open `[dayStart, dayEnd)`. It is exported once
@@ -1153,18 +1160,18 @@ match the manifest. Local rows are not deleted, on a verified day or on a refuse
 `policy_retention` on `Trades` stays empty ([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)).
 `Retention__*` is not read. Dropping raw tape is out of scope and needs its own ADR (gh#758).
 
-The three reads share one repeatable-read transaction, so the file is one snapshot. A row committed
-after the snapshot stays in Postgres and is absent from that file until the next pass. Still-listening
-coverage (end `9999-12-31`) is not exported and is not deleted. An empty database does not rediscover
-a day, so a second pass does not replace a verified archive with an empty file. A path lock
+A candidate day is one whose rows have no matching receipt, or whose receipt hash no longer matches
+the file. Each contract is streamed inside one repeatable-read transaction. A row committed after the
+snapshot stays in Postgres until the next pass. A day whose receipt hash matches is not read. A day an
+open listen still overlaps is skipped. An empty database does not rediscover a day. A path lock
 (`.export.lock`) skips the pass when another process holds it. `import-tape` inserts with
 `ON CONFLICT DO NOTHING` and writes nothing for a day that fails verification.
 
-`mcp.tape.exports` counts each export outcome above. `mcp.tape.uploads` counts Drive
-(`drive_off`, `drive_retried`, `drive_uploaded`, `drive_failed`), tagged only with `outcome`.
-`mcp.tape.export.duration` is the pass, in seconds, with no tags. A thrown pass is caught, counted
-`export_failed`, and does not fault the host. Loading the files back with DuckDB or pandas is
-[tape-export-reload.md](tape-export-reload.md).
+`mcp.tape.exports` counts the outcomes above, once per pass when the count is positive.
+`mcp.tape.uploads` counts `drive_disabled`, `drive_retried`, `drive_uploaded`, `drive_failed`, and
+`drive_permanent`, tagged only with `outcome`. `mcp.tape.export.duration` is the pass, in seconds,
+with no tags. A thrown pass is caught, counted `export_failed`, and does not fault the host. Loading
+the files back with DuckDB or pandas is [tape-export-reload.md](tape-export-reload.md).
 
 ## What is deliberately absent
 

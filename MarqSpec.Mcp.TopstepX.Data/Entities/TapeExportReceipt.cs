@@ -18,13 +18,16 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// </remarks>
 public sealed class TapeExportReceipt
 {
-    /// <summary>Drive was not configured. The local file is the copy.</summary>
-    public const string StateLocal = "local";
+    /// <summary>The local file is written and the upload has not finished.</summary>
+    public const string StatePending = "pending";
 
-    /// <summary>The Drive file id is the object for this relative path.</summary>
+    /// <summary>Drive was not configured. The local file is the copy. Distinct from <see cref="StatePending"/>.</summary>
+    public const string StateDriveDisabled = "drive_disabled";
+
+    /// <summary>The Drive file id is the object for this identity.</summary>
     public const string StateUploaded = "uploaded";
 
-    /// <summary>The upload was retried and still failed. Local rows and the local file stay.</summary>
+    /// <summary>The upload failed. Local rows, the local file, and any previous Drive file id stay.</summary>
     public const string StateFailed = "failed";
 
     /// <summary>The UTC day the file covers.</summary>
@@ -60,9 +63,18 @@ public sealed class TapeExportReceipt
     /// <summary>When this status was written. UTC.</summary>
     public required DateTimeOffset ExportedAtUtc { get; set; }
 
-    /// <summary>The Drive file id after a successful upload. Null otherwise.</summary>
+    /// <summary>The Drive file id after a successful upload. A later failure does not clear it.</summary>
     public string? DriveFileId { get; set; }
 
-    /// <summary><see cref="StateLocal"/>, <see cref="StateUploaded"/>, or <see cref="StateFailed"/>.</summary>
+    /// <summary>
+    /// <see cref="StatePending"/>, <see cref="StateDriveDisabled"/>, <see cref="StateUploaded"/>, or
+    /// <see cref="StateFailed"/>.
+    /// </summary>
     public required string UploadState { get; set; }
+
+    /// <summary>The exception type name of a failed upload. Null otherwise. Never credential content.</summary>
+    public string? FailureType { get; set; }
+
+    /// <summary>The HTTP status of a failed upload, when the provider reported one.</summary>
+    public int? FailureStatus { get; set; }
 }

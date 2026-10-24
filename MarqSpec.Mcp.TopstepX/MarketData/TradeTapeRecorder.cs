@@ -129,6 +129,9 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// </summary>
     private readonly TapeLease _lease;
 
+    /// <summary>True when this process holds at least one recorder claim.</summary>
+    public bool HoldsRecorderLease => _lease.Held.Count > 0;
+
     private IProjectXWebSocketClient? _hub;
     private ISessionConflictProbe? _probe;
     private ProjectXWebSocketOptions? _socketOptions;

@@ -68,6 +68,11 @@ public sealed record TapeExportDay(
     IReadOnlyList<TapeExportCoverageRow> Coverage,
     IReadOnlyList<TapeExportFootprintRow> Footprint);
 
+/// <summary>Data files for one generation, not yet named by the manifest.</summary>
+/// <param name="Generation">The generation just written. The manifest still names the previous one until publish.</param>
+/// <param name="Files">The files in this generation.</param>
+public sealed record TapeExportDraft(int Generation, IReadOnlyList<TapeExportStoredFile> Files);
+
 /// <summary>One file the archive wrote. The path is relative to the volume root.</summary>
 /// <param name="Kind">trades, tape-coverage, or footprint.</param>
 /// <param name="Format"><c>csv.gz</c> or <c>parquet</c>.</param>

@@ -167,6 +167,30 @@ jobs:
             --results-directory "$RUNNER_TEMP/gate-tests"
           ./scripts/check-gate-tests-ran.sh "$RUNNER_TEMP/gate-tests/gate-tests.trx"
 
+  # gh#758. The Railway template (.railway/railway.ts) is the only reviewable copy of what a Railway deploy
+  # runs -- Railway's own variables are not CI-verifiable (AGENTS.md). This compiles it against the pinned SDK
+  # and evaluates it offline for staging and production; it holds no token and calls no Railway API.
+  #
+  # Its own job, not a no-order-path step: red here means "the template drifted", which is a different claim
+  # from "the read-only boundary was crossed". NOT YET REQUIRED -- a context nobody adds to the rulesets only
+  # reports (gh#26); adding it is the maintainer's settings change.
+  railway-template:
+    name: railway-template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Prove the template gate can still fail
+        run: ./scripts/check-railway-template-selftest.sh
+
+      - name: The Railway template holds its invariants
+        if: ${{ !cancelled() }}
+        run: ./scripts/check-railway-template.sh
+
   # gh#43. The pacer that keeps the bar paging loop inside the vendor's 50-requests-per-30-seconds allowance
   # is unit-tested; its CONNECTION to the loop was not, and deleting the await left all 208 tests green.
   #

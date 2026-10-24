@@ -20,8 +20,8 @@ public sealed class TradingRequestHasherTests
             null,
             null);
 
-        string first = TradingRequestHasher.HashPlace(command);
-        string second = TradingRequestHasher.HashPlace(command);
+        string first = TradingRequestHasher.HashPlace(command, dryRun: false);
+        string second = TradingRequestHasher.HashPlace(command, dryRun: false);
 
         first.Should().Be(second);
         first.Should().HaveLength(64);
@@ -42,6 +42,24 @@ public sealed class TradingRequestHasherTests
 
         ExecutionPlaceOrderCommand changed = baseline with { Size = 2 };
 
-        TradingRequestHasher.HashPlace(baseline).Should().NotBe(TradingRequestHasher.HashPlace(changed));
+        TradingRequestHasher.HashPlace(baseline, dryRun: false)
+            .Should().NotBe(TradingRequestHasher.HashPlace(changed, dryRun: false));
+    }
+
+    [Fact]
+    public void PlaceOrder_Changes_WhenDryRunChanges()
+    {
+        ExecutionPlaceOrderCommand command = new(
+            1,
+            "CON.F.US.MES.Z26",
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            null,
+            null,
+            null);
+
+        TradingRequestHasher.HashPlace(command, dryRun: false)
+            .Should().NotBe(TradingRequestHasher.HashPlace(command, dryRun: true));
     }
 }

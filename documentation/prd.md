@@ -579,9 +579,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   `TradingRiskGate` only (`R-4.1`). `Trading__Enabled` defaults to false and refuses before any vendor send,
   with no audit row and no gateway call; the kill switch blocks cancel and close on that same path. Every
   call emits the gate's execution-write span and counter, tagged with the operation and the refusal reason.
-  Each tool takes a caller-supplied `idempotencyKey`; a replay within 24 hours in the same process returns
-  the original result and does not send again (gh#712). The result carries `retrySafety`: `SafeToRetry`,
-  `NotSafeToRetry`, or `OutcomeUnknown`, matching the gate. `status: Live` is only a broker acknowledgment.
+  Each tool takes a caller-supplied `idempotencyKey`, at most 256 characters and scoped per account and tool.
+  The gate writes an `Unknown` audit claim before the send. A replay of that claim, including after a
+  restart, returns the stored transmit and does not send again (gh#712). Refusals and previews are not
+  replayed. The result carries `retrySafety`: `SafeToRetry`, `NotSafeToRetry`, or `OutcomeUnknown`, matching
+  the gate. `status: Live` is only a broker acknowledgment. A venue exception is `OutcomeUnknown`, not an
+  error result. Size, price and partial-close checks refuse before any audit row.
   Bracket fields, `confirm_trading_action` and the OAuth trade scope are outside this requirement (gh#713,
   gh#717, gh#719). The catalogue section is `R-5`'s contract for the shapes (gh#721).
 

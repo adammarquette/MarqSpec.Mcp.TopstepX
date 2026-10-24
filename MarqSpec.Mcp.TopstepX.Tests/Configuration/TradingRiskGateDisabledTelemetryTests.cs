@@ -149,8 +149,7 @@ public sealed class TradingRiskGateDisabledTelemetryTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            telemetry,
-            new InMemoryTradingIdempotencyStore(TimeProvider.System));
+            telemetry);
     }
 
     private static ExecutionPlaceOrderCommand SamplePlace() =>
@@ -301,6 +300,14 @@ public sealed class TradingRiskGateDisabledTelemetryTests
         {
             Entries.Add(request);
             return Task.CompletedTask;
+        }
+
+        public Task<TradingAuditClaimResult> TryClaimUnknownAsync(
+            TradingAuditWriteRequest request,
+            CancellationToken cancellationToken)
+        {
+            _ = cancellationToken;
+            return Task.FromResult(TradingAuditClaimMemory.TryClaim(Entries, request));
         }
     }
 

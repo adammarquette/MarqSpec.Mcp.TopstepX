@@ -254,23 +254,24 @@ the opposite: empty means the upload is off.
 | Environment variable | Default | What it is |
 |---|---|---|
 | `TapeExport__Enabled` | `false` | The daily worker. Runs only on the HTTP transport, and only when this is true. `export-tape` and `import-tape` ignore it. |
-| `TapeExport__Schedule` | `06:00` | UTC time of day, exact `HH:mm`. One pass at process start, then this time each day. |
+| `TapeExport__Schedule` | `06:00` | UTC time of day, exact `HH:mm`. The worker waits for this time. A process that starts later waits until the next day. It also skips the pass unless this process holds a recorder lease. |
 | `TapeExport__Path` | `/data/tape-exports` | Absolute directory. **Exports write to a mounted volume at this path.** Not object storage. |
 | `TapeExport__Format` | `csv.gz+parquet` | The only accepted value. Both gzip CSV and Parquet are written. `csv.gz` alone, `parquet` alone, and an empty string are refused. |
 | `TapeExport__Drive__FolderId` | empty | Drive folder id. **Empty disables Drive.** No client is constructed and no network call is made. |
-| `TapeExport__Drive__ServiceAccountJson` | empty | Service-account JSON injected by the environment. **Empty is off** unless the path below is set. Never commit a value. A path wins when both are set. |
-| `TapeExport__Drive__ServiceAccountJsonPath` | empty | Absolute path of a service-account JSON file outside the image. **Empty is off** unless the JSON above is set. A relative path is refused. |
+| `TapeExport__Drive__ServiceAccountJson` | empty | Inline service-account JSON. **Empty is off** unless the path below is set. Never commit a value. A path wins when both are set. **Anyone who can inspect the container can read this value.** Prefer the path. |
+| `TapeExport__Drive__ServiceAccountJsonPath` | empty | Absolute path of a mounted service-account JSON file. **This is the credential to use.** Empty is off unless the inline JSON above is set. A relative path is refused. |
 
 Files on the volume, one pair per contract per day for trades and coverage:
 
-`trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.csv.gz` and `.parquet`, and the same shape under
+`trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.vN.csv.gz` and `.parquet`, and the same shape under
 `tape-coverage/`. Footprint cells have no contract column, so those files are
-`footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.csv.gz` and `.parquet`. The manifest is
-`manifests/yyyy-MM-dd.json`. Drive uploads those same relative paths into `TapeExport__Drive__FolderId`
-and replaces a file instead of creating a second one. A failed upload is retried three times; the
-local file and the Postgres rows stay. `TapeExportReceipts` stores `local`, `uploaded`, or `failed`
-for each file so a later retention decision can check it. Reading the files back is
-[tape-export-reload.md](tape-export-reload.md).
+`footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.vN.csv.gz` and `.parquet`. The manifest
+`manifests/yyyy-MM-dd.json` is written last and names one generation. Drive uses the `drive.file`
+scope ([ADR-0025](adr/0025-drive-file-scope-for-tape-export.md)). Create the folder with the service
+account and set `TapeExport__Drive__FolderId` to that id. A repeat updates the stored file id and does
+not trash anything. A transient failure is retried with backoff. A permanent failure keeps the last
+good file id. `TapeExportReceipts` stores `pending`, `drive_disabled`, `uploaded`, or `failed`.
+Reading the files back is [tape-export-reload.md](tape-export-reload.md).
 
 **Retention is out of scope.** `Retention__Enabled`, `Retention__RawTapeDays`,
 `Retention__DailySummaryDays` and `Retention__RequireExportBeforeDrop` are not read. The tape is

@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 
@@ -14,12 +15,14 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <remarks>
 /// <para>
 /// Files live under <c>TapeExport__Path</c> (default <c>/data/tape-exports</c>):
-/// <c>trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.csv.gz</c> and the same path with
-/// <c>.parquet</c>, and the same shape under <c>tape-coverage/</c>. Footprint cells have no
-/// contract column, so those files are
-/// <c>footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.csv.gz</c> and
-/// <c>.parquet</c>. The manifest is <c>manifests/yyyy-MM-dd.json</c>. It records the sha256 of
-/// each file and the data-row count. Verification re-reads the bytes. Local rows are not deleted.
+/// <c>trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.vN.csv.gz</c> and the same path with
+/// <c>.parquet</c>, and the same shape under <c>tape-coverage/</c>. <c>N</c> is the day's
+/// generation. Footprint cells have no contract column, so those files are
+/// <c>footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.vN.csv.gz</c> and
+/// <c>.parquet</c>. The manifest is <c>manifests/yyyy-MM-dd.json</c>, written last by an atomic
+/// rename, and it is the only name a reader trusts. A crash can leave an unreferenced generation
+/// beside the previous manifest; it cannot pair new bytes with the old manifest's hashes.
+/// Verification re-reads the bytes. Local rows are not deleted, and neither is an older generation.
 /// </para>
 /// <para>
 /// A still-listening coverage row (<see cref="TapeCoverageRecord.StillListeningEnd"/>) is refused
@@ -75,6 +78,9 @@ public static class TapeExportArchive
         WriteIndented = true,
     };
 
+    /// <summary>One path segment: letters, digits, dot, underscore, hyphen. Not empty, not a traversal.</summary>
+    private static readonly Regex _segment = new("^[A-Za-z0-9._-]{1,64}$", RegexOptions.CultureInvariant);
+
     /// <summary>Relative path of one data file, using <c>/</c> separators.</summary>
     /// <param name="kind">trades, tape-coverage, or footprint-cells directory name.</param>
     /// <param name="venue">The venue.</param>
@@ -83,6 +89,7 @@ public static class TapeExportArchive
     /// <param name="resolutionMinutes">The bar size for footprint; zero otherwise.</param>
     /// <param name="day">The UTC day.</param>
     /// <param name="format"><see cref="CsvGzFormat"/> or <see cref="ParquetFormat"/>.</param>
+    /// <param name="generation">The day's file generation. The manifest names one generation.</param>
     /// <returns>The relative path.</returns>
     public static string RelativePath(
         string kind,
@@ -91,9 +98,10 @@ public static class TapeExportArchive
         string contractId,
         int resolutionMinutes,
         DateOnly day,
-        string format)
+        string format,
+        int generation = 1)
     {
-        string file = DayName(day) + Extension(format);
+        string file = DayName(day) + ".v" + generation.ToString(CultureInfo.InvariantCulture) + Extension(format);
         if (string.Equals(kind, FootprintDirectory, StringComparison.Ordinal)
             || string.Equals(kind, "footprint", StringComparison.Ordinal))
         {
@@ -127,6 +135,7 @@ public static class TapeExportArchive
     /// <param name="contractId">The venue contract.</param>
     /// <param name="day">The UTC day.</param>
     /// <param name="format"><see cref="CsvGzFormat"/> or <see cref="ParquetFormat"/>.</param>
+    /// <param name="generation">The day's file generation.</param>
     /// <returns>The absolute path.</returns>
     public static string TradesPath(
         string destination,
@@ -134,8 +143,9 @@ public static class TapeExportArchive
         string instrument,
         string contractId,
         DateOnly day,
-        string format = CsvGzFormat) =>
-        Absolute(destination, RelativePath(TradesDirectory, venue, instrument, contractId, 0, day, format));
+        string format = CsvGzFormat,
+        int generation = 1) =>
+        Absolute(destination, RelativePath(TradesDirectory, venue, instrument, contractId, 0, day, format, generation));
 
     /// <summary>The coverage gzip (or Parquet) for one contract on one day.</summary>
     /// <param name="destination">The volume directory.</param>
@@ -144,6 +154,7 @@ public static class TapeExportArchive
     /// <param name="contractId">The venue contract.</param>
     /// <param name="day">The UTC day.</param>
     /// <param name="format"><see cref="CsvGzFormat"/> or <see cref="ParquetFormat"/>.</param>
+    /// <param name="generation">The day's file generation.</param>
     /// <returns>The absolute path.</returns>
     public static string CoveragePath(
         string destination,
@@ -151,8 +162,9 @@ public static class TapeExportArchive
         string instrument,
         string contractId,
         DateOnly day,
-        string format = CsvGzFormat) =>
-        Absolute(destination, RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day, format));
+        string format = CsvGzFormat,
+        int generation = 1) =>
+        Absolute(destination, RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day, format, generation));
 
     /// <summary>The footprint gzip (or Parquet) for one instrument and resolution on one day.</summary>
     /// <param name="destination">The volume directory.</param>
@@ -161,6 +173,7 @@ public static class TapeExportArchive
     /// <param name="resolutionMinutes">The bar size.</param>
     /// <param name="day">The UTC day.</param>
     /// <param name="format"><see cref="CsvGzFormat"/> or <see cref="ParquetFormat"/>.</param>
+    /// <param name="generation">The day's file generation.</param>
     /// <returns>The absolute path.</returns>
     public static string FootprintPath(
         string destination,
@@ -168,10 +181,11 @@ public static class TapeExportArchive
         string instrument,
         int resolutionMinutes,
         DateOnly day,
-        string format = CsvGzFormat) =>
+        string format = CsvGzFormat,
+        int generation = 1) =>
         Absolute(
             destination,
-            RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolutionMinutes, day, format));
+            RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolutionMinutes, day, format, generation));
 
     /// <summary>The manifest for one day.</summary>
     /// <param name="destination">The volume directory.</param>
@@ -192,9 +206,59 @@ public static class TapeExportArchive
     public static string Sha256Of(string path) =>
         Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
 
+    /// <summary>How many Parquet row groups a file has. A day larger than one group is more than one.</summary>
+    /// <param name="path">The Parquet file.</param>
+    /// <param name="cancellationToken">Cancels the read.</param>
+    /// <returns>The row-group count.</returns>
+    public static Task<int> ParquetRowGroupCountAsync(string path, CancellationToken cancellationToken) =>
+        TapeExportParquet.RowGroupCountAsync(path, cancellationToken);
+
+    /// <summary>True when <paramref name="column"/> is a Parquet timestamp, not text.</summary>
+    /// <param name="path">The Parquet file.</param>
+    /// <param name="column">The column name.</param>
+    /// <param name="cancellationToken">Cancels the read.</param>
+    /// <returns>True when the column's logical type is a timestamp.</returns>
+    public static Task<bool> ParquetColumnIsTimestampAsync(
+        string path,
+        string column,
+        CancellationToken cancellationToken) =>
+        TapeExportParquet.ColumnIsTimestampAsync(path, column, cancellationToken);
+
+    /// <summary>Formats trades as CSV, quoting fields that contain a comma, a quote, or a newline.</summary>
+    /// <param name="rows">The rows, already in the order to write.</param>
+    /// <returns>The CSV, including the header.</returns>
+    public static string FormatTradesCsv(IReadOnlyList<TapeExportTradeRow> rows) => TradesCsv(rows);
+
+    /// <summary>Parses a trades CSV, including quoted commas, quotes, and newlines (RFC 4180).</summary>
+    /// <param name="csv">The file text.</param>
+    /// <returns>The rows.</returns>
+    public static IReadOnlyList<TapeExportTradeRow> ParseTradesCsv(string csv) =>
+        ParseRecords(csv, TradeHeader, 9).Select(ParseTrade).ToArray();
+
+    /// <summary>
+    /// Writes one generation of data files and does not touch the manifest. A crash here leaves the
+    /// previous manifest, which still names the previous generation.
+    /// </summary>
+    /// <param name="destination">The volume directory.</param>
+    /// <param name="day">The rows.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>The generation and the files. The manifest still names the previous generation.</returns>
+    public static async Task<TapeExportDraft> StageDayAsync(
+        string destination,
+        TapeExportDay day,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(day);
+        RefuseOpenCoverage(day);
+        int generation = NextGeneration(destination, day.Day);
+        List<TapeExportStoredFile> files = [];
+        await WriteGroupsAsync(destination, day, generation, files, cancellationToken).ConfigureAwait(false);
+        return new TapeExportDraft(generation, files);
+    }
+
     /// <summary>
     /// Writes gzip CSV and Parquet for each contract (and each footprint series) and then the
-    /// manifest. The manifest is replaced only after the data files are in place.
+    /// manifest. Data files use a new generation. The manifest is renamed into place last.
     /// </summary>
     /// <param name="destination">The volume directory.</param>
     /// <param name="day">The rows.</param>
@@ -203,7 +267,7 @@ public static class TapeExportArchive
     /// <returns>The verification of the files just written.</returns>
     /// <exception cref="InvalidOperationException">
     /// A coverage row uses the still-listening sentinel, or a path segment is not a single name.
-    /// Nothing is written.
+    /// The manifest is not replaced.
     /// </exception>
     public static async Task<TapeExportVerification> WriteDayAsync(
         string destination,
@@ -211,154 +275,8 @@ public static class TapeExportArchive
         DateTimeOffset exportedAtUtc,
         CancellationToken cancellationToken)
     {
-        ArgumentNullException.ThrowIfNull(day);
-
-        if (day.Coverage.Any(row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd))
-        {
-            throw new InvalidOperationException(
-                "Tape export refuses a still-listening coverage row for " + DayName(day.Day)
-                + ". An open listen is not a finished day and is not archived.");
-        }
-
-        List<TapeExportStoredFile> files = [];
-
-        foreach (IGrouping<(string Venue, string Instrument, string ContractId), TapeExportTradeRow> group in
-            day.Trades
-                .GroupBy(row => (row.Venue, row.Instrument, row.ContractId))
-                .OrderBy(group => group.Key.Venue, StringComparer.Ordinal)
-                .ThenBy(group => group.Key.Instrument, StringComparer.Ordinal)
-                .ThenBy(group => group.Key.ContractId, StringComparer.Ordinal))
-        {
-            List<TapeExportTradeRow> rows = [.. group.OrderBy(row => row.TradeTimeUtc).ThenBy(row => row.Sequence)];
-            (string venue, string instrument, string contractId) = group.Key;
-            files.Add(await WriteCsvAsync(
-                destination,
-                RelativePath(TradesDirectory, venue, instrument, contractId, 0, day.Day, CsvGzFormat),
-                TradesDirectory,
-                CsvGzFormat,
-                venue,
-                instrument,
-                contractId,
-                0,
-                TradesCsv(rows),
-                rows.Count,
-                cancellationToken).ConfigureAwait(false));
-            string parquet = Absolute(
-                destination,
-                RelativePath(TradesDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat));
-            await TapeExportParquet.WriteTradesAsync(parquet, rows, cancellationToken).ConfigureAwait(false);
-            files.Add(Describe(
-                TradesDirectory,
-                ParquetFormat,
-                venue,
-                instrument,
-                contractId,
-                0,
-                RelativePath(TradesDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat),
-                rows.Count,
-                Sha256Of(parquet)));
-        }
-
-        foreach (IGrouping<(string Venue, string Instrument, string ContractId), TapeExportCoverageRow> group in
-            day.Coverage
-                .GroupBy(row => (row.Venue, row.Instrument, row.ContractId))
-                .OrderBy(group => group.Key.Venue, StringComparer.Ordinal)
-                .ThenBy(group => group.Key.Instrument, StringComparer.Ordinal)
-                .ThenBy(group => group.Key.ContractId, StringComparer.Ordinal))
-        {
-            List<TapeExportCoverageRow> rows = [.. group.OrderBy(row => row.RangeStart).ThenBy(row => row.RangeEnd)];
-            (string venue, string instrument, string contractId) = group.Key;
-            files.Add(await WriteCsvAsync(
-                destination,
-                RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day.Day, CsvGzFormat),
-                CoverageDirectory,
-                CsvGzFormat,
-                venue,
-                instrument,
-                contractId,
-                0,
-                CoverageCsv(rows),
-                rows.Count,
-                cancellationToken).ConfigureAwait(false));
-            string parquet = Absolute(
-                destination,
-                RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat));
-            await TapeExportParquet.WriteCoverageAsync(parquet, rows, cancellationToken).ConfigureAwait(false);
-            files.Add(Describe(
-                CoverageDirectory,
-                ParquetFormat,
-                venue,
-                instrument,
-                contractId,
-                0,
-                RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat),
-                rows.Count,
-                Sha256Of(parquet)));
-        }
-
-        foreach (IGrouping<(string Venue, string Instrument, int Resolution), TapeExportFootprintRow> group in
-            day.Footprint
-                .GroupBy(row => (row.Venue, row.Instrument, row.ResolutionMinutes))
-                .OrderBy(group => group.Key.Venue, StringComparer.Ordinal)
-                .ThenBy(group => group.Key.Instrument, StringComparer.Ordinal)
-                .ThenBy(group => group.Key.ResolutionMinutes))
-        {
-            List<TapeExportFootprintRow> rows = [.. group.OrderBy(row => row.BucketStart).ThenBy(row => row.Price)];
-            (string venue, string instrument, int resolution) = group.Key;
-            files.Add(await WriteCsvAsync(
-                destination,
-                RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolution, day.Day, CsvGzFormat),
-                "footprint",
-                CsvGzFormat,
-                venue,
-                instrument,
-                string.Empty,
-                resolution,
-                FootprintCsv(rows),
-                rows.Count,
-                cancellationToken).ConfigureAwait(false));
-            string parquet = Absolute(
-                destination,
-                RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolution, day.Day, ParquetFormat));
-            await TapeExportParquet.WriteFootprintAsync(parquet, rows, cancellationToken).ConfigureAwait(false);
-            files.Add(Describe(
-                "footprint",
-                ParquetFormat,
-                venue,
-                instrument,
-                string.Empty,
-                resolution,
-                RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolution, day.Day, ParquetFormat),
-                rows.Count,
-                Sha256Of(parquet)));
-        }
-
-        ManifestDocument manifest = new()
-        {
-            Day = DayName(day.Day),
-            Format = ManifestFormat,
-            ExportedAtUtc = FormatInstant(exportedAtUtc),
-            Files = [.. files.Select(file => new ManifestFile
-            {
-                Kind = file.Kind,
-                Format = file.Format,
-                Venue = file.Venue,
-                Instrument = file.Instrument,
-                ContractId = file.ContractId,
-                ResolutionMinutes = file.ResolutionMinutes,
-                RelativePath = file.RelativePath,
-                Rows = file.Rows,
-                Sha256 = file.Sha256,
-            })],
-        };
-
-        string manifestPath = ManifestPath(destination, day.Day);
-        Directory.CreateDirectory(Path.GetDirectoryName(manifestPath)!);
-        string partial = manifestPath + ".partial";
-        await File.WriteAllTextAsync(partial, JsonSerializer.Serialize(manifest, _json), _utf8, cancellationToken)
-            .ConfigureAwait(false);
-        File.Move(partial, manifestPath, overwrite: true);
-
+        TapeExportDraft staged = await StageDayAsync(destination, day, cancellationToken).ConfigureAwait(false);
+        await PublishManifestAsync(destination, day.Day, staged, exportedAtUtc, cancellationToken).ConfigureAwait(false);
         return await VerifyAsync(destination, day.Day, cancellationToken).ConfigureAwait(false);
     }
 
@@ -497,15 +415,15 @@ public static class TapeExportArchive
             string csv = Gunzip(await File.ReadAllBytesAsync(Absolute(destination, file.RelativePath), cancellationToken).ConfigureAwait(false));
             if (file.Kind == "trades")
             {
-                trades.AddRange(DataLines(csv, TradeHeader).Select(ParseTrade));
+                trades.AddRange(ParseRecords(csv, TradeHeader, 9).Select(ParseTrade));
             }
             else if (file.Kind == "tape-coverage")
             {
-                coverage.AddRange(DataLines(csv, CoverageHeader).Select(ParseCoverage));
+                coverage.AddRange(ParseRecords(csv, CoverageHeader, 6).Select(ParseCoverage));
             }
             else if (file.Kind == "footprint")
             {
-                footprint.AddRange(DataLines(csv, FootprintHeader).Select(ParseFootprint));
+                footprint.AddRange(ParseRecords(csv, FootprintHeader, 8).Select(ParseFootprint));
             }
         }
 
@@ -593,7 +511,401 @@ public static class TapeExportArchive
         return (TradeDirection)value;
     }
 
-    private static async Task<TapeExportStoredFile> WriteCsvAsync(
+    private static void RefuseOpenCoverage(TapeExportDay day)
+    {
+        if (day.Coverage.Any(row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd))
+        {
+            throw new InvalidOperationException(
+                "Tape export refuses a still-listening coverage row for " + DayName(day.Day)
+                + ". An open listen is not a finished day and is not archived.");
+        }
+    }
+
+    /// <summary>The generation a new write should use. One higher than the manifest, or 1.</summary>
+    /// <param name="destination">The volume directory.</param>
+    /// <param name="day">The UTC day.</param>
+    /// <returns>The generation.</returns>
+    public static int AllocateGeneration(string destination, DateOnly day) => NextGeneration(destination, day);
+
+    /// <summary>Streams trades for one contract into gzip CSV. Rows are written as they arrive.</summary>
+    /// <param name="destination">The volume directory.</param>
+    /// <param name="generation">The generation to write. Not the manifest's generation until publish.</param>
+    /// <param name="day">The UTC day.</param>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The symbol.</param>
+    /// <param name="contractId">The contract.</param>
+    /// <param name="rows">The rows, in order.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>The stored file.</returns>
+    public static Task<TapeExportStoredFile> WriteTradeCsvAsync(
+        string destination,
+        int generation,
+        DateOnly day,
+        string venue,
+        string instrument,
+        string contractId,
+        IAsyncEnumerable<TapeExportTradeRow> rows,
+        CancellationToken cancellationToken) =>
+        WriteCsvStreamAsync(
+            destination,
+            RelativePath(TradesDirectory, venue, instrument, contractId, 0, day, CsvGzFormat, generation),
+            TradesDirectory,
+            CsvGzFormat,
+            venue,
+            instrument,
+            contractId,
+            0,
+            TradeHeader,
+            rows,
+            static row => TradeLine(row),
+            cancellationToken);
+
+    /// <summary>Streams trades for one contract into Parquet row groups.</summary>
+    /// <param name="destination">The volume directory.</param>
+    /// <param name="generation">The generation to write.</param>
+    /// <param name="day">The UTC day.</param>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The symbol.</param>
+    /// <param name="contractId">The contract.</param>
+    /// <param name="rows">The rows, in order.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>The stored file.</returns>
+    public static async Task<TapeExportStoredFile> WriteTradeParquetAsync(
+        string destination,
+        int generation,
+        DateOnly day,
+        string venue,
+        string instrument,
+        string contractId,
+        IAsyncEnumerable<TapeExportTradeRow> rows,
+        CancellationToken cancellationToken)
+    {
+        string relative = RelativePath(TradesDirectory, venue, instrument, contractId, 0, day, ParquetFormat, generation);
+        await TapeExportParquet.WriteTradesAsync(Absolute(destination, relative), rows, cancellationToken).ConfigureAwait(false);
+        return Describe(
+            TradesDirectory,
+            ParquetFormat,
+            venue,
+            instrument,
+            contractId,
+            0,
+            relative,
+            await TapeExportParquet.RowCountAsync(Absolute(destination, relative), cancellationToken).ConfigureAwait(false),
+            Sha256Of(Absolute(destination, relative)));
+    }
+
+    /// <summary>Streams closed coverage for one contract into gzip CSV.</summary>
+    /// <param name="destination">The volume directory.</param>
+    /// <param name="generation">The generation to write.</param>
+    /// <param name="day">The UTC day.</param>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The symbol.</param>
+    /// <param name="contractId">The contract.</param>
+    /// <param name="rows">The rows, in order.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>The stored file.</returns>
+    public static Task<TapeExportStoredFile> WriteCoverageCsvAsync(
+        string destination,
+        int generation,
+        DateOnly day,
+        string venue,
+        string instrument,
+        string contractId,
+        IAsyncEnumerable<TapeExportCoverageRow> rows,
+        CancellationToken cancellationToken) =>
+        WriteCsvStreamAsync(
+            destination,
+            RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day, CsvGzFormat, generation),
+            CoverageDirectory,
+            CsvGzFormat,
+            venue,
+            instrument,
+            contractId,
+            0,
+            CoverageHeader,
+            rows,
+            static row => CoverageLine(row),
+            cancellationToken);
+
+    /// <summary>Streams closed coverage for one contract into Parquet.</summary>
+    /// <param name="destination">The volume directory.</param>
+    /// <param name="generation">The generation to write.</param>
+    /// <param name="day">The UTC day.</param>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The symbol.</param>
+    /// <param name="contractId">The contract.</param>
+    /// <param name="rows">The rows, in order.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>The stored file.</returns>
+    public static async Task<TapeExportStoredFile> WriteCoverageParquetAsync(
+        string destination,
+        int generation,
+        DateOnly day,
+        string venue,
+        string instrument,
+        string contractId,
+        IAsyncEnumerable<TapeExportCoverageRow> rows,
+        CancellationToken cancellationToken)
+    {
+        string relative = RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day, ParquetFormat, generation);
+        await TapeExportParquet.WriteCoverageAsync(Absolute(destination, relative), rows, cancellationToken).ConfigureAwait(false);
+        return Describe(
+            CoverageDirectory,
+            ParquetFormat,
+            venue,
+            instrument,
+            contractId,
+            0,
+            relative,
+            await TapeExportParquet.RowCountAsync(Absolute(destination, relative), cancellationToken).ConfigureAwait(false),
+            Sha256Of(Absolute(destination, relative)));
+    }
+
+    /// <summary>Streams footprint cells for one instrument and resolution into gzip CSV.</summary>
+    /// <param name="destination">The volume directory.</param>
+    /// <param name="generation">The generation to write.</param>
+    /// <param name="day">The UTC day.</param>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The symbol.</param>
+    /// <param name="resolutionMinutes">The bar size.</param>
+    /// <param name="rows">The rows, in order.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>The stored file.</returns>
+    public static Task<TapeExportStoredFile> WriteFootprintCsvAsync(
+        string destination,
+        int generation,
+        DateOnly day,
+        string venue,
+        string instrument,
+        int resolutionMinutes,
+        IAsyncEnumerable<TapeExportFootprintRow> rows,
+        CancellationToken cancellationToken) =>
+        WriteCsvStreamAsync(
+            destination,
+            RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolutionMinutes, day, CsvGzFormat, generation),
+            "footprint",
+            CsvGzFormat,
+            venue,
+            instrument,
+            string.Empty,
+            resolutionMinutes,
+            FootprintHeader,
+            rows,
+            static row => FootprintLine(row),
+            cancellationToken);
+
+    /// <summary>Streams footprint cells for one instrument and resolution into Parquet.</summary>
+    /// <param name="destination">The volume directory.</param>
+    /// <param name="generation">The generation to write.</param>
+    /// <param name="day">The UTC day.</param>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The symbol.</param>
+    /// <param name="resolutionMinutes">The bar size.</param>
+    /// <param name="rows">The rows, in order.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>The stored file.</returns>
+    public static async Task<TapeExportStoredFile> WriteFootprintParquetAsync(
+        string destination,
+        int generation,
+        DateOnly day,
+        string venue,
+        string instrument,
+        int resolutionMinutes,
+        IAsyncEnumerable<TapeExportFootprintRow> rows,
+        CancellationToken cancellationToken)
+    {
+        string relative = RelativePath(
+            FootprintDirectory,
+            venue,
+            instrument,
+            string.Empty,
+            resolutionMinutes,
+            day,
+            ParquetFormat,
+            generation);
+        await TapeExportParquet.WriteFootprintAsync(Absolute(destination, relative), rows, cancellationToken).ConfigureAwait(false);
+        return Describe(
+            "footprint",
+            ParquetFormat,
+            venue,
+            instrument,
+            string.Empty,
+            resolutionMinutes,
+            relative,
+            await TapeExportParquet.RowCountAsync(Absolute(destination, relative), cancellationToken).ConfigureAwait(false),
+            Sha256Of(Absolute(destination, relative)));
+    }
+
+    /// <summary>Renames the manifest into place. Call this after every data file for the generation exists.</summary>
+    /// <param name="destination">The volume directory.</param>
+    /// <param name="day">The UTC day.</param>
+    /// <param name="staged">The generation and its files.</param>
+    /// <param name="exportedAtUtc">When the export happened. UTC.</param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>A task that completes after the directory sync.</returns>
+    public static Task PublishManifestAsync(
+        string destination,
+        DateOnly day,
+        TapeExportDraft staged,
+        DateTimeOffset exportedAtUtc,
+        CancellationToken cancellationToken) =>
+        PublishManifestCoreAsync(destination, day, staged, exportedAtUtc, cancellationToken);
+
+    private static int NextGeneration(string destination, DateOnly day)
+    {
+        string manifestPath = ManifestPath(destination, day);
+        if (!File.Exists(manifestPath))
+        {
+            return 1;
+        }
+
+        try
+        {
+            ManifestDocument? manifest = JsonSerializer.Deserialize<ManifestDocument>(
+                File.ReadAllText(manifestPath, _utf8),
+                _json);
+            int current = manifest?.Generation ?? 0;
+            return current < 1 ? 1 : current + 1;
+        }
+        catch (JsonException)
+        {
+            return 1;
+        }
+    }
+
+    private static async Task WriteGroupsAsync(
+        string destination,
+        TapeExportDay day,
+        int generation,
+        List<TapeExportStoredFile> files,
+        CancellationToken cancellationToken)
+    {
+        foreach (IGrouping<(string Venue, string Instrument, string ContractId), TapeExportTradeRow> group in
+            day.Trades
+                .GroupBy(row => (row.Venue, row.Instrument, row.ContractId))
+                .OrderBy(group => group.Key.Venue, StringComparer.Ordinal)
+                .ThenBy(group => group.Key.Instrument, StringComparer.Ordinal)
+                .ThenBy(group => group.Key.ContractId, StringComparer.Ordinal))
+        {
+            List<TapeExportTradeRow> rows = [.. group.OrderBy(row => row.TradeTimeUtc).ThenBy(row => row.Sequence)];
+            (string venue, string instrument, string contractId) = group.Key;
+            files.Add(await WriteCsvStreamAsync(
+                destination,
+                RelativePath(TradesDirectory, venue, instrument, contractId, 0, day.Day, CsvGzFormat, generation),
+                TradesDirectory,
+                CsvGzFormat,
+                venue,
+                instrument,
+                contractId,
+                0,
+                TradeHeader,
+                StreamRows(rows),
+                static row => TradeLine(row),
+                cancellationToken).ConfigureAwait(false));
+            string parquetRelative = RelativePath(TradesDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat, generation);
+            string parquet = Absolute(destination, parquetRelative);
+            await TapeExportParquet.WriteTradesAsync(parquet, StreamRows(rows), cancellationToken).ConfigureAwait(false);
+            files.Add(Describe(TradesDirectory, ParquetFormat, venue, instrument, contractId, 0, parquetRelative, rows.Count, Sha256Of(parquet)));
+        }
+
+        foreach (IGrouping<(string Venue, string Instrument, string ContractId), TapeExportCoverageRow> group in
+            day.Coverage
+                .GroupBy(row => (row.Venue, row.Instrument, row.ContractId))
+                .OrderBy(group => group.Key.Venue, StringComparer.Ordinal)
+                .ThenBy(group => group.Key.Instrument, StringComparer.Ordinal)
+                .ThenBy(group => group.Key.ContractId, StringComparer.Ordinal))
+        {
+            List<TapeExportCoverageRow> rows = [.. group.OrderBy(row => row.RangeStart).ThenBy(row => row.RangeEnd)];
+            (string venue, string instrument, string contractId) = group.Key;
+            files.Add(await WriteCsvStreamAsync(
+                destination,
+                RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day.Day, CsvGzFormat, generation),
+                CoverageDirectory,
+                CsvGzFormat,
+                venue,
+                instrument,
+                contractId,
+                0,
+                CoverageHeader,
+                StreamRows(rows),
+                static row => CoverageLine(row),
+                cancellationToken).ConfigureAwait(false));
+            string parquetRelative = RelativePath(CoverageDirectory, venue, instrument, contractId, 0, day.Day, ParquetFormat, generation);
+            string parquet = Absolute(destination, parquetRelative);
+            await TapeExportParquet.WriteCoverageAsync(parquet, StreamRows(rows), cancellationToken).ConfigureAwait(false);
+            files.Add(Describe(CoverageDirectory, ParquetFormat, venue, instrument, contractId, 0, parquetRelative, rows.Count, Sha256Of(parquet)));
+        }
+
+        foreach (IGrouping<(string Venue, string Instrument, int Resolution), TapeExportFootprintRow> group in
+            day.Footprint
+                .GroupBy(row => (row.Venue, row.Instrument, row.ResolutionMinutes))
+                .OrderBy(group => group.Key.Venue, StringComparer.Ordinal)
+                .ThenBy(group => group.Key.Instrument, StringComparer.Ordinal)
+                .ThenBy(group => group.Key.ResolutionMinutes))
+        {
+            List<TapeExportFootprintRow> rows = [.. group.OrderBy(row => row.BucketStart).ThenBy(row => row.Price)];
+            (string venue, string instrument, int resolution) = group.Key;
+            files.Add(await WriteCsvStreamAsync(
+                destination,
+                RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolution, day.Day, CsvGzFormat, generation),
+                "footprint",
+                CsvGzFormat,
+                venue,
+                instrument,
+                string.Empty,
+                resolution,
+                FootprintHeader,
+                StreamRows(rows),
+                static row => FootprintLine(row),
+                cancellationToken).ConfigureAwait(false));
+            string parquetRelative = RelativePath(FootprintDirectory, venue, instrument, string.Empty, resolution, day.Day, ParquetFormat, generation);
+            string parquet = Absolute(destination, parquetRelative);
+            await TapeExportParquet.WriteFootprintAsync(parquet, StreamRows(rows), cancellationToken).ConfigureAwait(false);
+            files.Add(Describe("footprint", ParquetFormat, venue, instrument, string.Empty, resolution, parquetRelative, rows.Count, Sha256Of(parquet)));
+        }
+    }
+
+    private static async Task PublishManifestCoreAsync(
+        string destination,
+        DateOnly day,
+        TapeExportDraft staged,
+        DateTimeOffset exportedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        ManifestDocument manifest = new()
+        {
+            Day = DayName(day),
+            Format = ManifestFormat,
+            Generation = staged.Generation,
+            ExportedAtUtc = FormatInstant(exportedAtUtc),
+            Files = [.. staged.Files.Select(file => new ManifestFile
+            {
+                Kind = file.Kind,
+                Format = file.Format,
+                Venue = file.Venue,
+                Instrument = file.Instrument,
+                ContractId = file.ContractId,
+                ResolutionMinutes = file.ResolutionMinutes,
+                RelativePath = file.RelativePath,
+                Rows = file.Rows,
+                Sha256 = file.Sha256,
+            })],
+        };
+
+        string manifestPath = ManifestPath(destination, day);
+        string json = JsonSerializer.Serialize(manifest, _json);
+        await TapeExportDurableFile.CommitAsync(
+            manifestPath,
+            async (stream, token) =>
+            {
+                await using StreamWriter writer = new(stream, _utf8, leaveOpen: true);
+                await writer.WriteAsync(json.AsMemory(), token).ConfigureAwait(false);
+                await writer.FlushAsync(token).ConfigureAwait(false);
+            },
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<TapeExportStoredFile> WriteCsvStreamAsync<T>(
         string destination,
         string relative,
         string kind,
@@ -602,17 +914,57 @@ public static class TapeExportArchive
         string instrument,
         string contractId,
         int resolutionMinutes,
-        string csv,
-        int rows,
+        string header,
+        IAsyncEnumerable<T> rows,
+        Func<T, string> line,
         CancellationToken cancellationToken)
     {
         string absolute = Absolute(destination, relative);
-        Directory.CreateDirectory(Path.GetDirectoryName(absolute)!);
-        string partial = absolute + ".partial";
-        byte[] gzip = Gzip(csv);
-        await File.WriteAllBytesAsync(partial, gzip, cancellationToken).ConfigureAwait(false);
-        File.Move(partial, absolute, overwrite: true);
-        return Describe(kind, format, venue, instrument, contractId, resolutionMinutes, relative, rows, Sha256Of(absolute));
+        int count = 0;
+        await TapeExportDurableFile.CommitAsync(
+            absolute,
+            async (stream, token) =>
+            {
+                GZipStream gzip = new(stream, CompressionLevel.Optimal, leaveOpen: true);
+                StreamWriter writer = new(gzip, _utf8, leaveOpen: true);
+                try
+                {
+                    await writer.WriteAsync(header).ConfigureAwait(false);
+                    await writer.WriteAsync("\n").ConfigureAwait(false);
+                    await foreach (T row in rows.WithCancellation(token).ConfigureAwait(false))
+                    {
+                        await writer.WriteAsync(line(row)).ConfigureAwait(false);
+                        await writer.WriteAsync("\n").ConfigureAwait(false);
+                        count++;
+                    }
+
+                    await writer.FlushAsync(token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    await writer.DisposeAsync().ConfigureAwait(false);
+                    await gzip.DisposeAsync().ConfigureAwait(false);
+                }
+
+                if (stream.CanSeek && stream.Length >= 8)
+                {
+                    stream.Position = 4;
+                    stream.Write(new byte[4], 0, 4);
+                    stream.Position = stream.Length;
+                }
+            },
+            cancellationToken).ConfigureAwait(false);
+
+        return Describe(kind, format, venue, instrument, contractId, resolutionMinutes, relative, count, Sha256Of(absolute));
+    }
+
+    private static async IAsyncEnumerable<T> StreamRows<T>(IEnumerable<T> rows)
+    {
+        foreach (T row in rows)
+        {
+            yield return row;
+            await Task.CompletedTask.ConfigureAwait(false);
+        }
     }
 
     private static TapeExportStoredFile Describe(
@@ -652,14 +1004,14 @@ public static class TapeExportArchive
         error = null;
         try
         {
-            string[] lines = DataLines(Gunzip(File.ReadAllBytes(path)), header);
-            if (rejectStillListening && lines.Any(IsStillListening))
+            List<string[]> records = ParseRecords(Gunzip(File.ReadAllBytes(path)), header, ExpectedFields(header));
+            if (rejectStillListening && records.Any(IsStillListening))
             {
                 error = "coverage file contains a still-listening range";
                 return -1;
             }
 
-            return lines.Length;
+            return records.Count;
         }
         catch (InvalidDataException exception)
         {
@@ -668,12 +1020,46 @@ public static class TapeExportArchive
         }
     }
 
-    private static bool IsStillListening(string line)
-    {
-        string[] parts = line.Split(',');
-        return parts.Length >= 5
-            && string.Equals(parts[4], FormatInstant(TapeCoverageRecord.StillListeningEnd), StringComparison.Ordinal);
-    }
+    private static int ExpectedFields(string header) => header.Count(character => character == ',') + 1;
+
+    private static bool IsStillListening(string[] fields) =>
+        fields.Length >= 5
+        && string.Equals(fields[4], FormatInstant(TapeCoverageRecord.StillListeningEnd), StringComparison.Ordinal);
+
+    private static string TradeLine(TapeExportTradeRow row) =>
+        string.Join(
+            ',',
+            Field(row.Venue),
+            Field(row.Instrument),
+            Field(row.ContractId),
+            FormatInstant(row.TradeTimeUtc),
+            row.Sequence.ToString(CultureInfo.InvariantCulture),
+            FormatDecimal(row.Price),
+            row.Size.ToString(CultureInfo.InvariantCulture),
+            ((int)row.Direction).ToString(CultureInfo.InvariantCulture),
+            FormatInstant(row.RecordedAt));
+
+    private static string CoverageLine(TapeExportCoverageRow row) =>
+        string.Join(
+            ',',
+            Field(row.Venue),
+            Field(row.Instrument),
+            Field(row.ContractId),
+            FormatInstant(row.RangeStart),
+            FormatInstant(row.RangeEnd),
+            FormatInstant(row.RecordedAt));
+
+    private static string FootprintLine(TapeExportFootprintRow row) =>
+        string.Join(
+            ',',
+            Field(row.Venue),
+            Field(row.Instrument),
+            row.ResolutionMinutes.ToString(CultureInfo.InvariantCulture),
+            FormatInstant(row.BucketStart),
+            FormatDecimal(row.Price),
+            row.BuyVolume.ToString(CultureInfo.InvariantCulture),
+            row.SellVolume.ToString(CultureInfo.InvariantCulture),
+            FormatInstant(row.RecordedAt));
 
     private static string TradesCsv(IReadOnlyList<TapeExportTradeRow> rows)
     {
@@ -681,59 +1067,14 @@ public static class TapeExportArchive
         csv.Append(TradeHeader).Append('\n');
         foreach (TapeExportTradeRow row in rows)
         {
-            csv.Append(Field(row.Venue)).Append(',')
-                .Append(Field(row.Instrument)).Append(',')
-                .Append(Field(row.ContractId)).Append(',')
-                .Append(FormatInstant(row.TradeTimeUtc)).Append(',')
-                .Append(row.Sequence.ToString(CultureInfo.InvariantCulture)).Append(',')
-                .Append(FormatDecimal(row.Price)).Append(',')
-                .Append(row.Size.ToString(CultureInfo.InvariantCulture)).Append(',')
-                .Append(((int)row.Direction).ToString(CultureInfo.InvariantCulture)).Append(',')
-                .Append(FormatInstant(row.RecordedAt)).Append('\n');
+            csv.Append(TradeLine(row)).Append('\n');
         }
 
         return csv.ToString();
     }
 
-    private static string CoverageCsv(IReadOnlyList<TapeExportCoverageRow> rows)
+    private static TapeExportTradeRow ParseTrade(string[] parts)
     {
-        StringBuilder csv = new();
-        csv.Append(CoverageHeader).Append('\n');
-        foreach (TapeExportCoverageRow row in rows)
-        {
-            csv.Append(Field(row.Venue)).Append(',')
-                .Append(Field(row.Instrument)).Append(',')
-                .Append(Field(row.ContractId)).Append(',')
-                .Append(FormatInstant(row.RangeStart)).Append(',')
-                .Append(FormatInstant(row.RangeEnd)).Append(',')
-                .Append(FormatInstant(row.RecordedAt)).Append('\n');
-        }
-
-        return csv.ToString();
-    }
-
-    private static string FootprintCsv(IReadOnlyList<TapeExportFootprintRow> rows)
-    {
-        StringBuilder csv = new();
-        csv.Append(FootprintHeader).Append('\n');
-        foreach (TapeExportFootprintRow row in rows)
-        {
-            csv.Append(Field(row.Venue)).Append(',')
-                .Append(Field(row.Instrument)).Append(',')
-                .Append(row.ResolutionMinutes.ToString(CultureInfo.InvariantCulture)).Append(',')
-                .Append(FormatInstant(row.BucketStart)).Append(',')
-                .Append(FormatDecimal(row.Price)).Append(',')
-                .Append(row.BuyVolume.ToString(CultureInfo.InvariantCulture)).Append(',')
-                .Append(row.SellVolume.ToString(CultureInfo.InvariantCulture)).Append(',')
-                .Append(FormatInstant(row.RecordedAt)).Append('\n');
-        }
-
-        return csv.ToString();
-    }
-
-    private static TapeExportTradeRow ParseTrade(string line)
-    {
-        string[] parts = Split(line, 9);
         return new TapeExportTradeRow(
             parts[0],
             parts[1],
@@ -746,9 +1087,8 @@ public static class TapeExportArchive
             ParseInstant(parts[8]));
     }
 
-    private static TapeExportCoverageRow ParseCoverage(string line)
+    private static TapeExportCoverageRow ParseCoverage(string[] parts)
     {
-        string[] parts = Split(line, 6);
         return new TapeExportCoverageRow(
             parts[0],
             parts[1],
@@ -758,9 +1098,8 @@ public static class TapeExportArchive
             ParseInstant(parts[5]));
     }
 
-    private static TapeExportFootprintRow ParseFootprint(string line)
+    private static TapeExportFootprintRow ParseFootprint(string[] parts)
     {
-        string[] parts = Split(line, 8);
         return new TapeExportFootprintRow(
             parts[0],
             parts[1],
@@ -772,30 +1111,107 @@ public static class TapeExportArchive
             ParseInstant(parts[7]));
     }
 
-    private static string[] DataLines(string csv, string header)
+    private static List<string[]> ParseRecords(string csv, string header, int expected)
     {
-        string[] lines = csv.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n')
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries);
-
-        if (lines.Length == 0 || !string.Equals(lines[0], header, StringComparison.Ordinal))
+        List<string[]> records = ReadRecords(csv);
+        if (records.Count == 0)
         {
             throw new InvalidDataException("CSV header is not '" + header + "'");
         }
 
-        return lines.Length == 1 ? [] : lines[1..];
-    }
-
-    private static string[] Split(string line, int expected)
-    {
-        string[] parts = line.Split(',');
-        if (parts.Length != expected)
+        if (!string.Equals(string.Join(',', records[0]), header, StringComparison.Ordinal))
         {
-            throw new InvalidDataException(
-                "CSV row has " + parts.Length.ToString(CultureInfo.InvariantCulture)
-                + " fields and needs " + expected.ToString(CultureInfo.InvariantCulture));
+            throw new InvalidDataException("CSV header is not '" + header + "'");
         }
 
-        return parts;
+        List<string[]> rows = records.Count == 1 ? [] : records[1..];
+        foreach (string[] row in rows)
+        {
+            if (row.Length != expected)
+            {
+                throw new InvalidDataException(
+                    "CSV row has " + row.Length.ToString(CultureInfo.InvariantCulture)
+                    + " fields and needs " + expected.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        return rows;
+    }
+
+    /// <summary>RFC 4180 records. A quoted field may contain commas, quotes, and newlines.</summary>
+    private static List<string[]> ReadRecords(string csv)
+    {
+        List<string[]> records = [];
+        List<string> fields = [];
+        StringBuilder value = new();
+        bool quoted = false;
+        for (int i = 0; i < csv.Length; i++)
+        {
+            char character = csv[i];
+            if (quoted)
+            {
+                if (character == '"')
+                {
+                    if (i + 1 < csv.Length && csv[i + 1] == '"')
+                    {
+                        value.Append('"');
+                        i++;
+                    }
+                    else
+                    {
+                        quoted = false;
+                    }
+                }
+                else
+                {
+                    value.Append(character);
+                }
+
+                continue;
+            }
+
+            if (character == '"')
+            {
+                quoted = true;
+                continue;
+            }
+
+            if (character == ',')
+            {
+                fields.Add(value.ToString());
+                value.Clear();
+                continue;
+            }
+
+            if (character is '\n' or '\r')
+            {
+                if (character == '\r' && i + 1 < csv.Length && csv[i + 1] == '\n')
+                {
+                    i++;
+                }
+
+                fields.Add(value.ToString());
+                value.Clear();
+                records.Add([.. fields]);
+                fields.Clear();
+                continue;
+            }
+
+            value.Append(character);
+        }
+
+        if (quoted)
+        {
+            throw new InvalidDataException("CSV row has an unterminated quote");
+        }
+
+        if (value.Length > 0 || fields.Count > 0)
+        {
+            fields.Add(value.ToString());
+            records.Add([.. fields]);
+        }
+
+        return records;
     }
 
     private static string Field(string value)
@@ -814,29 +1230,6 @@ public static class TapeExportArchive
     private static string FormatDecimal(decimal value) =>
         value.ToString("0.############################", CultureInfo.InvariantCulture);
 
-    private static byte[] Gzip(string csv)
-    {
-        using MemoryStream stream = new();
-        using (GZipStream gzip = new(stream, CompressionLevel.Optimal, leaveOpen: true))
-        using (StreamWriter writer = new(gzip, _utf8))
-        {
-            writer.Write(csv);
-        }
-
-        byte[] bytes = stream.ToArray();
-
-        // The header mtime is the clock. Zero it so the same rows write the same bytes.
-        if (bytes.Length >= 8)
-        {
-            bytes[4] = 0;
-            bytes[5] = 0;
-            bytes[6] = 0;
-            bytes[7] = 0;
-        }
-
-        return bytes;
-    }
-
     private static string Gunzip(byte[] gzip)
     {
         using MemoryStream stream = new(gzip);
@@ -850,9 +1243,13 @@ public static class TapeExportArchive
 
     private static string Segment(string value, string what)
     {
-        if (string.IsNullOrWhiteSpace(value)
+        if (value is null
+            || value.Contains('\0', StringComparison.Ordinal)
+            || value.Contains('/', StringComparison.Ordinal)
+            || value.Contains('\\', StringComparison.Ordinal)
+            || Path.IsPathRooted(value)
             || value is "." or ".."
-            || value.IndexOfAny(['/', '\\', '\0']) >= 0)
+            || !_segment.IsMatch(value))
         {
             throw new InvalidOperationException(
                 "Tape export refuses a " + what + " that is not one path segment.");
@@ -861,21 +1258,79 @@ public static class TapeExportArchive
         return value;
     }
 
-    private static string Absolute(string destination, string relative) =>
-        Path.GetFullPath(Path.Combine(destination, relative.Replace('/', Path.DirectorySeparatorChar)));
+    private static string Absolute(string destination, string relative)
+    {
+        if (!TryAbsolute(destination, relative, out string absolute))
+        {
+            throw new InvalidOperationException("Tape export path leaves the export root.");
+        }
+
+        return absolute;
+    }
 
     private static bool TryAbsolute(string destination, string relative, out string absolute)
     {
         absolute = string.Empty;
-        if (relative.Contains("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+        if (string.IsNullOrWhiteSpace(relative)
+            || relative.Contains('\0', StringComparison.Ordinal)
+            || relative.Contains("..", StringComparison.Ordinal)
+            || Path.IsPathRooted(relative))
         {
             return false;
         }
 
         string root = Path.GetFullPath(destination);
-        absolute = Absolute(destination, relative);
+        string combined = Path.GetFullPath(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
         string prefix = root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        return absolute.StartsWith(prefix, StringComparison.Ordinal);
+        if (!combined.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (WalksASymlink(root, combined))
+        {
+            return false;
+        }
+
+        absolute = combined;
+        return true;
+    }
+
+    private static bool WalksASymlink(string root, string full)
+    {
+        if (IsLink(root))
+        {
+            return true;
+        }
+
+        string current = root;
+        string rest = Path.GetRelativePath(root, full);
+        foreach (string part in rest.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            if (part.Length == 0)
+            {
+                continue;
+            }
+
+            current = Path.Combine(current, part);
+            if ((File.Exists(current) || Directory.Exists(current)) && IsLink(current))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsLink(string path)
+    {
+        FileAttributes attributes = File.GetAttributes(path);
+        if (attributes.HasFlag(FileAttributes.ReparsePoint))
+        {
+            return true;
+        }
+
+        return new FileInfo(path).LinkTarget is not null;
     }
 
     private static string DayName(DateOnly day) =>
@@ -889,6 +1344,8 @@ public static class TapeExportArchive
         public string Day { get; set; } = string.Empty;
 
         public string Format { get; set; } = string.Empty;
+
+        public int Generation { get; set; }
 
         public string ExportedAtUtc { get; set; } = string.Empty;
 

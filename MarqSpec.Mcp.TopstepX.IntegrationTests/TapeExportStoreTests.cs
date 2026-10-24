@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Data.Common;
 using System.IO.Compression;
 using System.Text;
 using FluentAssertions;
@@ -8,6 +10,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -89,7 +92,8 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         (await CountTradesAsync()).Should().Be(1);
         TapeExportReceipt receipt = await _database.TapeExportReceipts.SingleAsync(row =>
             row.Format == TapeExportArchive.CsvGzFormat && row.Kind == "trades");
-        receipt.UploadState.Should().Be(TapeExportReceipt.StateLocal);
+        receipt.UploadState.Should().Be(TapeExportReceipt.StateDriveDisabled);
+        receipt.UploadState.Should().NotBe(TapeExportReceipt.StatePending);
         receipt.ContractId.Should().Be(Contract);
         receipt.RowCount.Should().Be(1);
         receipt.DriveFileId.Should().BeNull();
@@ -164,21 +168,30 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Export_WhenOpenCoverageRemains_SecondPassDoesNotStripTheArchive()
+    public async Task Export_WhenAnOpenRunOverlapsTheDay_WritesNothingUntilTheRunCloses()
     {
         await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
         await SeedOpenCoverageAsync(On(_oldDay, 15));
-        await Pass(new HostTelemetry()).ExportAsync(null, CancellationToken.None);
-        string trades = TapeExportArchive.TradesPath(_destination, Venue, "ES", Contract, _oldDay);
-        byte[] first = await File.ReadAllBytesAsync(trades);
 
-        await Pass(new HostTelemetry()).ExportAsync(null, CancellationToken.None);
+        TapeExportReport blocked = await Pass(new HostTelemetry()).ExportAsync(null, CancellationToken.None);
 
-        (await File.ReadAllBytesAsync(trades)).Should().Equal(first);
-        Gunzip(first).Should().Contain("5123.25");
-        (await _database.Trades.CountAsync()).Should().Be(1);
-        (await _database.TapeCoverage.CountAsync(row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd))
-            .Should().Be(1);
+        blocked.DaysExported.Should().Be(0);
+        blocked.RowsExported.Should().Be(0);
+        File.Exists(TapeExportArchive.ManifestPath(_destination, _oldDay)).Should().BeFalse();
+        (await CountTradesAsync()).Should().Be(1);
+
+        await _database.Database.ExecuteSqlInterpolatedAsync(
+            $"""UPDATE "TapeCoverage" SET "RangeEnd" = {On(_oldDay, 16)} WHERE "RangeEnd" = {TapeCoverageRecord.StillListeningEnd}""");
+        _database.ChangeTracker.Clear();
+
+        TapeExportReport closed = await Pass(new HostTelemetry()).ExportAsync(null, CancellationToken.None);
+
+        closed.DaysExported.Should().Be(1);
+        closed.RowsExported.Should().Be(2);
+        (await TapeExportArchive.VerifyAsync(_destination, _oldDay, CancellationToken.None)).Verified.Should().BeTrue();
+        (await TapeExportArchive.ReadDayAsync(_destination, _oldDay, CancellationToken.None)).Trades
+            .Should().ContainSingle().Which.Price.Should().Be(5123.25m);
+        (await CountTradesAsync()).Should().Be(1);
     }
 
     [Fact]
@@ -273,7 +286,7 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Export_WhenTheUploadIsRetried_RecordsOneReceiptAndDoesNotDuplicateTheFile()
+    public async Task Export_WhenATransientUploadThenSucceeds_SecondPassExportsNothing()
     {
         await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
         using HostTelemetry telemetry = new();
@@ -282,23 +295,81 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         TapeExportReport first = await Pass(telemetry, new RetryingTapeDriveUploader(client, telemetry))
             .ExportAsync(null, CancellationToken.None);
         int filesAfterFirst = client.Files.Count;
-        TapeExportReport second = await Pass(telemetry, new RetryingTapeDriveUploader(client, telemetry))
+        int scans = 0;
+        PriceScanInterceptor interceptor = new(() => scans++);
+        await using TopstepXDbContext secondDatabase = _fixture.CreateContext(interceptor);
+        TapeExportReport second = await Pass(
+                telemetry,
+                new RetryingTapeDriveUploader(client, telemetry),
+                secondDatabase)
             .ExportAsync(null, CancellationToken.None);
 
         first.DaysExported.Should().Be(1);
-        second.DaysExported.Should().Be(1);
+        second.DaysExported.Should().Be(0);
+        scans.Should().Be(0);
         (await CountTradesAsync()).Should().Be(1);
         client.Files.Should().HaveCount(filesAfterFirst);
-        client.Replacements.Should().BeGreaterThan(0);
+        client.Creates.Should().Be(filesAfterFirst);
         (await _database.TapeExportReceipts.CountAsync(row => row.Day == _oldDay && row.Kind == "trades"))
             .Should().Be(2);
         (await _database.TapeExportReceipts.CountAsync(row => row.UploadState == TapeExportReceipt.StateUploaded))
             .Should().BeGreaterThan(0);
     }
 
-    private TapeExportPass Pass(HostTelemetry telemetry, ITapeDriveUploader? drive = null) =>
+    [Fact]
+    public async Task Export_WhenALaterUploadFails_KeepsTheLastDriveFileId()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        using HostTelemetry telemetry = new();
+        FakeTapeDriveClient client = new();
+        await Pass(telemetry, new RetryingTapeDriveUploader(client, telemetry))
+            .ExportAsync(null, CancellationToken.None);
+        _database.ChangeTracker.Clear();
+        TapeExportReceipt stored = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Format == TapeExportArchive.CsvGzFormat && row.Kind == "trades");
+        string fileId = stored.DriveFileId!;
+        string path = Path.Combine(_destination, stored.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+        byte[] bytes = await File.ReadAllBytesAsync(path);
+        bytes[^1] ^= 0xFF;
+        await File.WriteAllBytesAsync(path, bytes);
+        client.Permanent = true;
+
+        TapeExportReport report = await Pass(telemetry, new RetryingTapeDriveUploader(client, telemetry))
+            .ExportAsync(null, CancellationToken.None);
+
+        report.DaysExported.Should().Be(0);
+        _database.ChangeTracker.Clear();
+        TapeExportReceipt after = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Format == TapeExportArchive.CsvGzFormat && row.Kind == "trades");
+        after.DriveFileId.Should().Be(fileId);
+        after.UploadState.Should().Be(TapeExportReceipt.StateFailed);
+        after.FailureType.Should().Be("GoogleApiException");
+        after.FailureStatus.Should().Be(403);
+        (await CountTradesAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Export_WhenDriveIsOn_RecordsPendingBeforeTheUploadCompletes()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        ObservingUploader uploader = new(_database);
+
+        await Pass(new HostTelemetry(), uploader).ExportAsync(null, CancellationToken.None);
+
+        uploader.Seen.Should().Be(TapeExportReceipt.StatePending);
+        _database.ChangeTracker.Clear();
+        TapeExportReceipt receipt = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Format == TapeExportArchive.CsvGzFormat && row.Kind == "trades");
+        receipt.UploadState.Should().Be(TapeExportReceipt.StateUploaded);
+        receipt.DriveFileId.Should().Be("observed-file");
+    }
+
+    private TapeExportPass Pass(
+        HostTelemetry telemetry,
+        ITapeDriveUploader? drive = null,
+        TopstepXDbContext? database = null) =>
         new(
-            _database,
+            database ?? _database,
             Options.Create(new TapeExportOptions
             {
                 Enabled = true,
@@ -308,7 +379,7 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             }),
             new FakeTimeProvider(_now),
             telemetry,
-            drive ?? new DisabledTapeDriveUploader(telemetry),
+            drive ?? new DisabledTapeDriveUploader(),
             NullLogger<TapeExportPass>.Instance);
 
     private async Task SeedTradeAsync(
@@ -381,40 +452,119 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         return reader.ReadToEnd();
     }
 
-    private sealed class FakeTapeDriveClient : ITapeDriveClient
+    private sealed class PriceScanInterceptor(Action onScan) : DbCommandInterceptor
     {
-        public int FailuresBeforeSuccess { get; init; }
+        public override InterceptionResult<DbDataReader> ReaderExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result)
+        {
+            Note(command);
+            return base.ReaderExecuting(command, eventData, result);
+        }
 
-        public int Attempts { get; private set; }
-
-        public int Replacements { get; private set; }
-
-        public Dictionary<string, byte[]> Files { get; } = new(StringComparer.Ordinal);
-
-        public async Task<string> UploadAsync(
-            string relativePath,
-            Stream content,
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
             CancellationToken cancellationToken)
         {
-            Attempts++;
-            if (Attempts <= FailuresBeforeSuccess)
-            {
-                throw new IOException("drive unavailable");
-            }
+            Note(command);
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
 
-            using MemoryStream buffer = new();
-            await content.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
-            if (!Files.ContainsKey(relativePath))
+        private void Note(DbCommand command)
+        {
+            if (command.CommandText.Contains("\"Price\"", StringComparison.Ordinal)
+                && command.CommandText.Contains("\"Trades\"", StringComparison.Ordinal))
             {
-                Files[relativePath] = buffer.ToArray();
+                onScan();
             }
-            else
-            {
-                Replacements++;
-                Files[relativePath] = buffer.ToArray();
-            }
+        }
+    }
 
-            return "file";
+    private sealed class ObservingUploader(TopstepXDbContext database) : ITapeDriveUploader
+    {
+        public bool IsEnabled => true;
+
+        public string? Seen { get; private set; }
+
+        public async Task<TapeDriveUploadResult> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+        {
+            Seen = await database.TapeExportReceipts.AsNoTracking()
+                .Where(row => row.Kind == upload.Identity.Kind && row.Format == upload.Identity.Format)
+                .Select(row => row.UploadState)
+                .FirstOrDefaultAsync(cancellationToken)
+                .ConfigureAwait(false);
+            return new TapeDriveUploadResult(TapeDriveUploadStatus.Uploaded, "observed-file", 1, null, null);
+        }
+    }
+
+    private sealed class FakeTapeDriveClient : ITapeDriveClient
+    {
+        private readonly ConcurrentDictionary<string, SemaphoreSlim> _gates = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, string> _ids = new(StringComparer.Ordinal);
+        private int _attempts;
+        private int _creates;
+
+        public int FailuresBeforeSuccess { get; init; }
+
+        public bool Permanent { get; set; }
+
+        public int Attempts => _attempts;
+
+        public int Creates => _creates;
+
+        public ConcurrentDictionary<string, byte[]> Files { get; } = new(StringComparer.Ordinal);
+
+        public async Task<string> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+        {
+            string key = upload.Identity.Canonical();
+            SemaphoreSlim gate = _gates.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                int attempt = Interlocked.Increment(ref _attempts);
+                if (Permanent)
+                {
+                    throw new TapeDriveException(
+                        "Drive request failed.",
+                        403,
+                        permanent: true,
+                        failureType: "GoogleApiException");
+                }
+
+                if (attempt <= FailuresBeforeSuccess)
+                {
+                    throw new TapeDriveException(
+                        "Drive request failed.",
+                        503,
+                        permanent: false,
+                        failureType: "IOException");
+                }
+
+                await using Stream content = upload.Open();
+                using MemoryStream buffer = new();
+                await content.CopyToAsync(buffer, cancellationToken).ConfigureAwait(false);
+                if (_ids.TryGetValue(key, out string? existing))
+                {
+                    Files[existing] = buffer.ToArray();
+                    return existing;
+                }
+
+                string created = "id-" + Interlocked.Increment(ref _creates).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (!_ids.TryAdd(key, created))
+                {
+                    return _ids[key];
+                }
+
+                Files[created] = buffer.ToArray();
+                return created;
+            }
+            finally
+            {
+                gate.Release();
+            }
         }
     }
 }

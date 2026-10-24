@@ -295,7 +295,7 @@ public sealed class HostTelemetry : IDisposable
         _tapeUploads = _meter.CreateCounter<long>(
             TapeUploadsInstrument,
             unit: "{upload}",
-            description: "Drive uploads of one export file, by whether Drive was off, the file landed, a retry ran, or the attempts failed.");
+            description: "Drive uploads of one export file, by whether Drive was disabled, the file landed, retries ran, or the attempt failed.");
     }
 
     /// <summary>
@@ -1211,8 +1211,11 @@ public static class SessionRecoveryLogin
 /// <summary>What a tape-export pass did — the <c>outcome</c> tag's vocabulary for <c>mcp.tape.exports</c>.</summary>
 public static class TapeExportOutcome
 {
-    /// <summary>The UTC day has not ended, so it was not archived. Local rows stay.</summary>
+    /// <summary>The UTC day has not ended, or an open listen still covers it. Local rows stay.</summary>
     public const string SkippedOpen = "skipped_open";
+
+    /// <summary>A day whose receipt hash matches the file, so the pass did not read its rows.</summary>
+    public const string SkippedReceipt = "skipped_receipt";
 
     /// <summary>A day whose files verified.</summary>
     public const string DaysExported = "days_exported";
@@ -1239,6 +1242,7 @@ public static class TapeExportOutcome
     public static IReadOnlyList<string> All { get; } =
         [
             SkippedOpen,
+            SkippedReceipt,
             DaysExported,
             RowsExported,
             VerificationFailed,
@@ -1252,18 +1256,21 @@ public static class TapeExportOutcome
 /// <summary>What a Drive upload did — the <c>outcome</c> tag's vocabulary for <c>mcp.tape.uploads</c>.</summary>
 public static class TapeUploadOutcome
 {
-    /// <summary>The folder or the service account is unset. No network call.</summary>
-    public const string Off = "drive_off";
+    /// <summary>The folder or the service account is unset. Recorded once per pass, not once per file.</summary>
+    public const string Disabled = "drive_disabled";
 
-    /// <summary>An attempt failed and another will run in this pass.</summary>
+    /// <summary>How many transient attempts were repeated before the final outcome. One measurement per file.</summary>
     public const string Retried = "drive_retried";
 
-    /// <summary>The file is the single Drive object for that relative path.</summary>
+    /// <summary>The file is the Drive object for that identity.</summary>
     public const string Uploaded = "drive_uploaded";
 
-    /// <summary>Every attempt failed. The local file and the local rows stay.</summary>
+    /// <summary>Transient attempts were exhausted. The local file and the local rows stay.</summary>
     public const string Failed = "drive_failed";
 
+    /// <summary>The error will not succeed on another try: bad credentials, or HTTP 400, 401, 403, or 404.</summary>
+    public const string Permanent = "drive_permanent";
+
     /// <summary>Every value.</summary>
-    public static IReadOnlyList<string> All { get; } = [Off, Retried, Uploaded, Failed];
+    public static IReadOnlyList<string> All { get; } = [Disabled, Retried, Uploaded, Failed, Permanent];
 }

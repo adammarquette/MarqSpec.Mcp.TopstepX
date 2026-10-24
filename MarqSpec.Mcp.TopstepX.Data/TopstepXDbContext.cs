@@ -329,6 +329,7 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.Property(receipt => receipt.Sha256).HasMaxLength(64);
             entity.Property(receipt => receipt.DriveFileId).HasMaxLength(128);
             entity.Property(receipt => receipt.UploadState).HasMaxLength(16);
+            entity.Property(receipt => receipt.FailureType).HasMaxLength(128);
 
             // The read a later retention decision would make: one day, and whether each file landed.
             entity.HasIndex(receipt => new { receipt.Day, receipt.UploadState });

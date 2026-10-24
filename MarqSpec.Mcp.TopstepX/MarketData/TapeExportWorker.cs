@@ -7,8 +7,8 @@ using Microsoft.Extensions.Options;
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
-/// Runs <see cref="ITapeExportPass"/> once at start and then daily at
-/// <see cref="TapeExportOptions.Schedule"/> (gh#755).
+/// Runs <see cref="ITapeExportPass"/> at <see cref="TapeExportOptions.Schedule"/> when this process
+/// holds a recorder lease (gh#755). A restart does not export before the next schedule.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -26,12 +26,14 @@ public sealed class TapeExportWorker(
     IServiceScopeFactory scopes,
     IOptions<TapeExportOptions> options,
     IOptions<McpOptions> mcp,
+    ITapeExportSchedulerGate gate,
     TimeProvider clock,
     ILogger<TapeExportWorker> logger) : BackgroundService
 {
     private readonly IServiceScopeFactory _scopes = scopes;
     private readonly TapeExportOptions _options = options.Value;
     private readonly McpOptions _mcp = mcp.Value;
+    private readonly ITapeExportSchedulerGate _gate = gate;
     private readonly TimeProvider _clock = clock;
     private readonly ILogger<TapeExportWorker> _logger = logger;
 
@@ -49,24 +51,6 @@ public sealed class TapeExportWorker(
 
         while (!stoppingToken.IsCancellationRequested)
         {
-            try
-            {
-                using IServiceScope scope = _scopes.CreateScope();
-                await scope.ServiceProvider.GetRequiredService<ITapeExportPass>()
-                    .ExportAsync(onlyDay: null, stoppingToken)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception exception)
-            {
-                _logger.LogError(
-                    exception,
-                    "Scheduled tape export failed. Local tape was not deleted by this pass.");
-            }
-
             DateTimeOffset next = TapeExportPolicy.NextRun(_options.ParsedSchedule(), _clock.GetUtcNow());
             TimeSpan delay = next - _clock.GetUtcNow();
             if (delay < TimeSpan.Zero)
@@ -82,6 +66,47 @@ public sealed class TapeExportWorker(
             {
                 return;
             }
+
+            if (!_gate.RecorderHoldsAClaim)
+            {
+                _logger.LogInformation(
+                    "Tape export waited for the schedule and skipped the pass because this process holds no recorder lease.");
+                continue;
+            }
+
+            try
+            {
+                using IServiceScope scope = _scopes.CreateScope();
+                await scope.ServiceProvider.GetRequiredService<ITapeExportPass>()
+                    .ExportAsync(onlyDay: null, stoppingToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(
+                    "Scheduled tape export failed ({ExceptionType}). Local tape was not deleted by this pass.",
+                    exception.GetType().Name);
+            }
         }
     }
+}
+
+/// <summary>Whether this process may run the scheduled export. The recorder's lease is the claim.</summary>
+public interface ITapeExportSchedulerGate
+{
+    /// <summary>True when <see cref="TradeTapeRecorder"/> holds at least one instrument claim.</summary>
+    bool RecorderHoldsAClaim { get; }
+}
+
+/// <summary>Reads <see cref="TradeTapeRecorder.HoldsRecorderLease"/> on the hosted recorder instance.</summary>
+public sealed class RecorderLeaseGate(TradeTapeRecorder recorder) : ITapeExportSchedulerGate
+{
+    private readonly TradeTapeRecorder _recorder = recorder;
+
+    /// <inheritdoc />
+    public bool RecorderHoldsAClaim => _recorder.HoldsRecorderLease;
 }

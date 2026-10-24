@@ -703,12 +703,16 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
   `FootprintCells` as **both** gzip CSV and Parquet under `TapeExport__Path`. Trades and coverage are
   one pair of files per contract per UTC day. Footprint cells have no contract column, so those files
   are one pair per instrument and resolution per day. The worker runs only when the transport is HTTP
-  **and** `TapeExport__Enabled` is true. The default is **false**. It runs once at process start, then
-  daily at `TapeExport__Schedule` (default `06:00`, UTC, exact `HH:mm`). The `export-tape` and
+  **and** `TapeExport__Enabled` is true. The default is **false**. It waits until
+  `TapeExport__Schedule` (default `06:00`, UTC, exact `HH:mm`) and runs only while this process holds
+  a recorder lease. A restart does not take a pass before that time. The `export-tape` and
   `import-tape` verbs do not read `Enabled`.
 - **R-10.2** A UTC day is copied only after its exclusive end (00:00 UTC the next day). The current
-  day is not written. The manifest sha256 and row counts must match the files just written. A mismatch
-  refuses that day. The pass does not delete local rows on success or on failure.
+  day is not written. A day a still-open listen overlaps is not written. Rows stream into the gzip and
+  the Parquet row groups. The manifest is renamed into place last and names one generation
+  (`yyyy-MM-dd.vN`). Its sha256 and row counts must match those files. A mismatch refuses that day.
+  A day whose receipt hash still matches is not read again. The pass does not delete local rows, an
+  older generation, or a Drive file.
 - **R-10.3** `import-tape` restores a verified day into Postgres and refuses a checksum or row-count
   mismatch, inserting nothing for that day. A second import of the same rows inserts nothing
   (`ON CONFLICT DO NOTHING`).
@@ -716,16 +720,20 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
   volume**. The default is `/data/tape-exports`. The process creates subdirectories there; it does not
   create the volume. An `s3://` URI and a relative path are refused as that path. The only accepted
   `TapeExport__Format` is `csv.gz+parquet`.
-- **R-10.5** A still-listening coverage range (exclusive end `9999-12-31`) is not exported. The row
-  stays in Postgres, as does every other tape row.
+- **R-10.5** A still-listening coverage range (exclusive end `9999-12-31`) is not exported. While any
+  such range overlaps a UTC day, that day is not exported. The rows stay in Postgres.
 - **R-10.6** Google Drive is a second copy of the same files. It runs only when
   `TapeExport__Drive__FolderId` and either `TapeExport__Drive__ServiceAccountJson` or
-  `TapeExport__Drive__ServiceAccountJsonPath` are set. Otherwise it makes no network call. A repeat
-  of the same relative path replaces the Drive file and does not create another. A failed upload is
-  retried in the pass; the local file and the local rows stay.
-- **R-10.7** Each file writes one `TapeExportReceipts` row (`local`, `uploaded`, or `failed`) so a
-  later retention decision can see whether the copy finished. This requirement does not delete tape.
-  `Retention__*` is not read and needs its own ADR (gh#758).
+  `TapeExport__Drive__ServiceAccountJsonPath` are set. Otherwise it makes no network call. The OAuth
+  scope is `drive.file` ([ADR-0025](adr/0025-drive-file-scope-for-tape-export.md)). Prefer the path: a
+  mounted secret file. Inline JSON is visible to anyone who can inspect the container. The same
+  identity updates one Drive file (`appProperties`, or the stored file id). Nothing is trashed. A
+  transient failure is retried with backoff. A permanent failure (credential, HTTP 400, 401, 403, 404)
+  is not. The local file and the local rows stay, and the last good file id stays.
+- **R-10.7** Each file writes one `TapeExportReceipts` row. `pending` is the in-flight upload.
+  `drive_disabled` means Drive was off. `uploaded` and `failed` are the outcomes. A failure stores the
+  exception type and the HTTP status, never the credential, and does not clear `DriveFileId`. This
+  requirement does not delete tape. `Retention__*` is not read and needs its own ADR (gh#758).
 
 ## Open questions
 

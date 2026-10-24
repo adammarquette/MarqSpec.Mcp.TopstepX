@@ -7,53 +7,88 @@ using ModelContextProtocol.Server;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 
-/// <summary>MCP order tools ship in gh#713/#715 — this branch must not register them (gh#740).</summary>
-public sealed class McpTradingOrderToolsAbsentTests
+/// <summary>
+/// The five order tools are the whole write surface, and each one is routed through
+/// <see cref="TradingRiskGate"/> (ADR-0024, gh#750). gh#740 asserted the opposite while the tools were withheld.
+/// </summary>
+[Trait("Gate", "ADR-0024")]
+public sealed class McpTradingOrderToolsRegistrationTests
 {
+    private static readonly string[] _orderTools =
+    [
+        TradingMcpTools.PlaceOrderOperation,
+        TradingMcpTools.ModifyOrderOperation,
+        TradingMcpTools.CancelOrderOperation,
+        TradingMcpTools.ClosePositionOperation,
+        TradingMcpTools.PartialClosePositionOperation,
+    ];
+
     [Fact]
-    public void RegisteredMcpTools_DoNotTakeExecutionWriteDependencies()
+    public void TradingRiskGate_OrderTools_AreExactlyTheFiveRegisteredWrites_AndEachIsGateRouted()
     {
         Assembly assembly = typeof(ToolPayloads).Assembly;
-        IEnumerable<Type> toolTypes = assembly
-            .GetTypes()
-            .Where(type => type.GetCustomAttribute<McpServerToolTypeAttribute>() is not null);
+        List<Type> toolTypes =
+        [
+            .. assembly.GetTypes().Where(type => type.GetCustomAttribute<McpServerToolTypeAttribute>() is not null),
+        ];
 
+        List<MethodInfo> orderMethods = [];
         foreach (Type toolType in toolTypes)
         {
             foreach (ConstructorInfo ctor in toolType.GetConstructors())
             {
-                foreach (ParameterInfo parameter in ctor.GetParameters())
+                ParameterInfo[] parameters = ctor.GetParameters();
+                if (toolType == typeof(TradingOrderTools))
                 {
-                    parameter.ParameterType.Should().NotBe(
-                        typeof(TradingRiskGate),
-                        because: $"{toolType.Name} must not expose venue writes on the MCP surface");
-                    parameter.ParameterType.Should().NotBe(
-                        typeof(IExecutionGateway),
-                        because: $"{toolType.Name} must not expose venue writes on the MCP surface");
+                    parameters.Select(parameter => parameter.ParameterType).Should().Equal(typeof(TradingRiskGate));
                 }
+                else
+                {
+                    parameters.Should().NotContain(
+                        parameter => parameter.ParameterType == typeof(TradingRiskGate),
+                        because: toolType.Name + " must not take the trading gate");
+                }
+
+                parameters.Should().NotContain(
+                    parameter => parameter.ParameterType == typeof(IExecutionGateway),
+                    because: toolType.Name + " must call TradingRiskGate rather than the execution gateway");
             }
-        }
-    }
 
-    [Fact]
-    public void RegisteredMcpToolMethods_AreReadOnlyOrLocalDatabaseOnly()
-    {
-        Assembly assembly = typeof(ToolPayloads).Assembly;
-        IEnumerable<MethodInfo> toolMethods = assembly
-            .GetTypes()
-            .Where(type => type.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
-            .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
-            .Where(method => method.GetCustomAttribute<McpServerToolAttribute>() is not null);
-
-        foreach (MethodInfo method in toolMethods)
-        {
-            McpServerToolAttribute attribute = method.GetCustomAttribute<McpServerToolAttribute>()!;
-            if (method.DeclaringType == typeof(ObservationTools))
+            foreach (MethodInfo method in toolType.GetMethods(
+                         BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
             {
-                continue;
-            }
+                McpServerToolAttribute? attribute = method.GetCustomAttribute<McpServerToolAttribute>();
+                if (attribute is null)
+                {
+                    continue;
+                }
 
-            attribute.ReadOnly.Should().BeTrue(because: $"{method.DeclaringType!.Name}.{method.Name} must not transmit to the venue");
+                if (toolType == typeof(TradingOrderTools))
+                {
+                    orderMethods.Add(method);
+                    continue;
+                }
+
+                // record_observation writes this server's database. Every other non-order tool stays read-only.
+                if (toolType == typeof(ObservationTools))
+                {
+                    continue;
+                }
+
+                attribute.ReadOnly.Should().BeTrue(
+                    because: toolType.Name + "." + method.Name + " is not one of the five gated order tools");
+                _orderTools.Should().NotContain(attribute.Name ?? string.Empty);
+            }
         }
+
+        orderMethods.Should().HaveCount(_orderTools.Length);
+        orderMethods.Select(method => method.GetCustomAttribute<McpServerToolAttribute>()!.Name)
+            .Should()
+            .BeEquivalentTo(_orderTools);
+        orderMethods.Should().OnlyContain(method =>
+            method.GetCustomAttribute<McpServerToolAttribute>()!.ReadOnly == false
+            && method.GetCustomAttribute<McpServerToolAttribute>()!.Idempotent == false
+            && method.GetCustomAttribute<McpServerToolAttribute>()!.Destructive == true
+            && method.Name.StartsWith("Submit", StringComparison.Ordinal));
     }
 }

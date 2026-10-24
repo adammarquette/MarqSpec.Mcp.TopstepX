@@ -59,11 +59,11 @@ public sealed class TradeInstrumentTimeIndexTests : IAsyncLifetime
             connection,
             """
             SELECT count(*)
-            FROM show_chunks('public."Trades"') AS chunk
+            FROM show_chunks('public."Trades"') AS chunk(relid)
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM pg_index child
-                WHERE child.indrelid = chunk.show_chunks
+                WHERE child.indrelid = chunk.relid
                   AND child.indisvalid
                   AND child.indkey = (
                       SELECT parent.indkey

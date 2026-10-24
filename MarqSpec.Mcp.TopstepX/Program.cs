@@ -670,6 +670,7 @@ public static class Program
             .Bind(builder.Configuration.GetSection(MigrationOptions.SectionName))
             .ValidateDataAnnotations()
             .ValidateOnStart();
+        services.AddSingleton<IMigrationApplier, MigrationApplier>();
 
         // Trading write controls (ADR-0024 v1, gh#708). Default Trading__Enabled=false. Order tools call
         // TradingRiskGate only. Idempotency is the pre-send Unknown audit row, unique per account, tool
@@ -1119,7 +1120,7 @@ public static class Program
         {
             // The same token ReachAsync uses. It cannot fire before the host starts. The comment above
             // is why a later move of this call, to after StartAsync, would still need the stop catch.
-            await MigrationCommandTimeout
+            await scope.ServiceProvider.GetRequiredService<IMigrationApplier>()
                 .ApplyAsync(
                     database.Database,
                     migrations.CommandTimeoutSeconds,

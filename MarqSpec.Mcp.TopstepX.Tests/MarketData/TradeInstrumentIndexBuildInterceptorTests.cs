@@ -161,6 +161,8 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
         connection.Created.Should().ContainSingle();
         connection.Created[0].CommandTimeout.Should().Be(123);
         connection.Created[0].CommandText.Should().Be(TradeInstrumentIndexBuildInterceptor.ReleaseLockSql);
+        connection.Created[0].AsyncScalarCalls.Should().Be(1);
+        connection.Created[0].SyncScalarCalls.Should().Be(0);
     }
 
     [Fact]
@@ -249,7 +251,8 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
         {
             CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
         };
-        using ILoggerFactory factory = LoggerFactory.Create(builder => builder.AddProvider(new ThrowingLoggerProvider()));
+        using ILoggerFactory factory = LoggerFactory.Create(builder =>
+            builder.AddProvider(new ThrowingLoggerProvider(new InvalidOperationException("the unlock warning could not be written"))));
         using TopstepXDbContext context = new(new DbContextOptionsBuilder<TopstepXDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .UseLoggerFactory(factory)
@@ -260,6 +263,28 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
             Error(command, context, new InvalidOperationException("the build failed")));
 
         await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task CommandFailedAsync_WhenWritingTheUnlockWarningRunsOutOfMemory_PropagatesIt()
+    {
+        using ScriptedConnection connection = new() { ScalarFailure = new UnlockFailure("the server is gone") };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
+        };
+        using ILoggerFactory factory = LoggerFactory.Create(builder =>
+            builder.AddProvider(new ThrowingLoggerProvider(new OutOfMemoryException("log"))));
+        using TopstepXDbContext context = new(new DbContextOptionsBuilder<TopstepXDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .UseLoggerFactory(factory)
+            .Options);
+
+        Func<Task> act = () => new TradeInstrumentIndexBuildInterceptor().CommandFailedAsync(
+            command,
+            Error(command, context, new InvalidOperationException("the build failed")));
+
+        await act.Should().ThrowAsync<OutOfMemoryException>();
     }
 
     private static CommandErrorEventData Error(DbCommand command, DbContext? context, Exception? original = null) =>
@@ -306,15 +331,15 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
 
     private sealed class UnlockFailure(string message) : DbException(message);
 
-    private sealed class ThrowingLoggerProvider : ILoggerProvider
+    private sealed class ThrowingLoggerProvider(Exception failure) : ILoggerProvider
     {
-        public ILogger CreateLogger(string categoryName) => new Logger();
+        public ILogger CreateLogger(string categoryName) => new Logger(failure);
 
         public void Dispose()
         {
         }
 
-        private sealed class Logger : ILogger
+        private sealed class Logger(Exception failure) : ILogger
         {
             public IDisposable? BeginScope<TState>(TState state)
                 where TState : notnull => null;
@@ -330,7 +355,7 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
             {
                 if (formatter(state, exception).Contains("was not released", StringComparison.Ordinal))
                 {
-                    throw new InvalidOperationException("the unlock warning could not be written");
+                    throw failure;
                 }
             }
         }
@@ -438,9 +463,26 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
         {
         }
 
+        public int SyncScalarCalls { get; private set; }
+
+        public int AsyncScalarCalls { get; private set; }
+
         public override int ExecuteNonQuery() => 0;
 
         public override object? ExecuteScalar()
+        {
+            SyncScalarCalls++;
+            return FinishScalar();
+        }
+
+        public override Task<object?> ExecuteScalarAsync(CancellationToken cancellationToken)
+        {
+            AsyncScalarCalls++;
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(FinishScalar());
+        }
+
+        private object? FinishScalar()
         {
             if (_connection.ScalarFailure is not null)
             {
@@ -448,12 +490,6 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
             }
 
             return _connection.Scalar;
-        }
-
-        public override Task<object?> ExecuteScalarAsync(CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(ExecuteScalar());
         }
 
         public override void Prepare()

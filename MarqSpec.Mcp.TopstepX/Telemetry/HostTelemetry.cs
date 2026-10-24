@@ -90,6 +90,12 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A renewal or login that was refused (gh#757).</summary>
     public const string SessionRenewalRefusalsInstrument = "mcp.session.renewal_refusals";
 
+    /// <summary>A held session that was opened for a recovery login (gh#757).</summary>
+    public const string SessionRenewalReopensInstrument = "mcp.session.renewal_reopens";
+
+    /// <summary>One budgeted recovery login (gh#757).</summary>
+    public const string SessionRecoveryLoginsInstrument = "mcp.session.recovery_logins";
+
     /// <summary>Indicator values a projection pass wrote.</summary>
     public const string IndicatorProjectionsInstrument = "mcp.indicator.projections";
 
@@ -168,6 +174,8 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _recorderHealthReads;
     private readonly Counter<long> _tapeSessionConflicts;
     private readonly Counter<long> _sessionRenewalRefusals;
+    private readonly Counter<long> _sessionRenewalReopens;
+    private readonly Counter<long> _sessionRecoveryLogins;
     private readonly Counter<long> _indicatorProjections;
     private readonly Counter<long> _executionWrites;
     private readonly Counter<long> _bookkeepingFaults;
@@ -236,6 +244,16 @@ public sealed class HostTelemetry : IDisposable
             SessionRenewalRefusalsInstrument,
             unit: "{refusal}",
             description: "Held-session renewals and logins that were refused, by why.");
+
+        _sessionRenewalReopens = _meter.CreateCounter<long>(
+            SessionRenewalReopensInstrument,
+            unit: "{reopen}",
+            description: "Held sessions opened for a recovery login, by why.");
+
+        _sessionRecoveryLogins = _meter.CreateCounter<long>(
+            SessionRecoveryLoginsInstrument,
+            unit: "{login}",
+            description: "Budgeted recovery logins, by whether a new bearer was stored.");
 
         _indicatorProjections = _meter.CreateCounter<long>(
             IndicatorProjectionsInstrument,
@@ -487,6 +505,47 @@ public sealed class HostTelemetry : IDisposable
         span?.SetTag(ReasonTag, reason);
 
         _sessionRenewalRefusals.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+        return span;
+    }
+
+    /// <summary>
+    /// Records one moment login was opened so a dead held session can recover, as a counter and a span.
+    /// </summary>
+    /// <param name="reason">Why it opened, from <see cref="SessionRenewalReopen"/>.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    /// <remarks>
+    /// <b>The reason only.</b> A validate body, a bearer, and a vendor sentence are not tags.
+    /// <see cref="SessionRenewalReopen.Expired"/> and <see cref="SessionRenewalReopen.Exhausted"/> are
+    /// opens, not refusals.
+    /// </remarks>
+    public Activity? SessionRenewalReopen(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+
+        Activity? span = Activities.StartActivity("session.renewal_reopen", ActivityKind.Internal);
+        span?.SetTag(ReasonTag, reason);
+
+        _sessionRenewalReopens.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+        return span;
+    }
+
+    /// <summary>
+    /// Records one budgeted recovery login, as a counter and a span.
+    /// </summary>
+    /// <param name="outcome">What the attempt did, from <see cref="SessionRecoveryLogin"/>.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    /// <remarks>
+    /// <b>The outcome only.</b> The bearer is not a tag. A match against the rejected bearer is
+    /// <see cref="SessionRecoveryLogin.CachedToken"/>, which is a failed attempt.
+    /// </remarks>
+    public Activity? SessionRecoveryLogin(string outcome)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outcome);
+
+        Activity? span = Activities.StartActivity("session.recovery_login", ActivityKind.Internal);
+        span?.SetTag(ReasonTag, outcome);
+
+        _sessionRecoveryLogins.Add(1, new KeyValuePair<string, object?>(ReasonTag, outcome));
         return span;
     }
 
@@ -1026,21 +1085,60 @@ public static class SessionRenewalRefusal
     /// <summary>The stop was already latched, so validate was not posted.</summary>
     public const string Latched = "latched";
 
-    /// <summary>Validate reported <c>ExpiredToken</c>. The bearer can never become valid.</summary>
-    public const string Expired = "expired";
-
     /// <summary>Validate failed while the held token was still fresh. Login stays closed.</summary>
     public const string Outage = "outage";
 
-    /// <summary>Validate failed and the held token is inside its refresh window. One login may run.</summary>
-    public const string Exhausted = "exhausted";
-
-    /// <summary>Validate reported another session. Login stays closed.</summary>
+    /// <summary>Validate reported another session. Login stays closed when the switch is on.</summary>
     public const string Conflict = "conflict";
 
-    /// <summary>A <c>loginKey</c> was refused because the login gate was closed.</summary>
-    public const string Closed = "closed";
+    /// <summary>A <c>loginKey</c> was refused because a hub drop is still unresolved.</summary>
+    public const string ClosedSuspecting = "closed_suspecting";
+
+    /// <summary>A <c>loginKey</c> was refused because a validate probe is in flight.</summary>
+    public const string ClosedProbe = "closed_probe";
+
+    /// <summary>A <c>loginKey</c> was refused because a renewal or recovery backoff is in effect.</summary>
+    public const string ClosedBackoff = "closed_backoff";
+
+    /// <summary>A <c>loginKey</c> was refused because the stop is latched.</summary>
+    public const string ClosedLatched = "closed_latched";
 
     /// <summary>Every value.</summary>
-    public static IReadOnlyList<string> All { get; } = [Latched, Expired, Outage, Exhausted, Conflict, Closed];
+    public static IReadOnlyList<string> All { get; } =
+        [Latched, Outage, Conflict, ClosedSuspecting, ClosedProbe, ClosedBackoff, ClosedLatched];
+}
+
+/// <summary>
+/// Why login was opened for a dead held session — the <c>reason</c> tag's closed vocabulary for
+/// <see cref="HostTelemetry.SessionRenewalReopensInstrument"/> (gh#757). These are opens, not refusals.
+/// </summary>
+public static class SessionRenewalReopen
+{
+    /// <summary>Validate reported <c>ExpiredToken</c>. The bearer can never become valid.</summary>
+    public const string Expired = "expired";
+
+    /// <summary>Validate failed and the held token is inside its refresh window.</summary>
+    public const string Exhausted = "exhausted";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Expired, Exhausted];
+}
+
+/// <summary>
+/// What one budgeted recovery login did — the <c>reason</c> tag's closed vocabulary for
+/// <see cref="HostTelemetry.SessionRecoveryLoginsInstrument"/> (gh#757).
+/// </summary>
+public static class SessionRecoveryLogin
+{
+    /// <summary>The venue client threw. The next attempt waits out the backoff.</summary>
+    public const string Failed = "recovery_failed";
+
+    /// <summary>The client returned the bearer this process already rejected.</summary>
+    public const string CachedToken = "recovery_cached_token";
+
+    /// <summary>A different bearer was stored.</summary>
+    public const string Succeeded = "recovery_succeeded";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Failed, CachedToken, Succeeded];
 }

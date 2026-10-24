@@ -93,13 +93,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `POST /api/Auth/validate` whenever the venue client is configured, before the client's 54-minute
   refresh, so a quiet process does not call `loginKey` on a timer. A renewal failure closes login
   only while that token is still fresh. `ExpiredToken`, or a token that has reached its refresh
-  window, allows one `loginKey` so the process can recover. A latched stop posts no further
-  validate. Freshness follows a monotonic clock. After a conflict stop, tools may keep using the
-  held token until it ages out and then fail rather than calling `loginKey`.
-  `mcp.tape.session_conflicts` and the `tape.session_conflict` span record `source` = `hub` or
-  `api`. `mcp.session.renewal_refusals` and the `session.renewal_refusal` span record why a renewal
-  or a login was refused. This repository does not log the vendor's sentence. The venue client
-  still logs its own text when its login methods run.
+  window, allows a budgeted `loginKey` so the process can recover. The first attempt runs
+  immediately; a failure, including the venue client returning the bearer that was just rejected,
+  waits from 30 seconds, doubling up to 5 minutes. That login disconnects whatever session is live
+  on the account, including a healthy trading platform. With the switch off, replicas (gh#772) kick
+  each other about once per 54-minute cycle; with it on, the other replica latches until restart.
+  A conflict with the switch off backs off the same way instead of re-validating every 30 seconds.
+  A latched stop posts no further validate. Freshness follows a monotonic clock, which stalls
+  across a Linux suspend; REST then fails until the next validate, at most 35 minutes. After a
+  conflict stop, tools may keep using the held token until it ages out and then fail rather than
+  calling `loginKey`. `mcp.tape.session_conflicts` and the `tape.session_conflict` span record
+  `source` = `hub` or `api`. `mcp.session.renewal_refusals` and the `session.renewal_refusal` span
+  record a refusal (`latched`, `outage`, `conflict`, `closed_suspecting`, `closed_probe`,
+  `closed_backoff`, `closed_latched`). `mcp.session.renewal_reopens` records `expired` and
+  `exhausted`. `mcp.session.recovery_logins` records each budgeted recovery attempt. This
+  repository does not log the vendor's sentence. The venue client still logs its own text when its
+  login methods run.
 
 - **`TradingRiskGate` (gh#711).** Central practice-only gate with allowlist, symbol denylist, per-order and
   daily caps, dry-run preview, and append-only audit rows before every outcome. Future MCP order tools will call

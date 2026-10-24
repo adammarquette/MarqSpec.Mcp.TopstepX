@@ -446,18 +446,38 @@ refresh starts about 54 minutes after the token was stored. A probe that called 
 `AccessTokenProvider` and the REST `AuthenticationHandler` both call. The concrete
 `AuthenticationService` is not registered, so a resolve cannot skip the gate. A token that is still
 fresh is returned and not logged. When it is not fresh, `loginKey` runs only if no probe is in
-flight, no conflict is suspected, no renewal backoff is in effect, and no stop is latched. Otherwise
-the call fails. Logins take one lock and check the gate again after `loginKey` returns. A result
-that lost that race is not remembered and not returned. A `loginKey` request already sent cannot be
-recalled — that window is irreducible, and the call may still have opened a session at the venue.
-Marking the suspicion does not wait on that lock. The SignalR callback must not block for the HTTP
-timeout.
+flight, no conflict is suspected, and no stop is latched. A renewal backoff also closes login while
+the token is still fresh. Once the token is inside the one-minute refresh buffer, that backoff alone
+does not keep login closed: the next read recovers then, rather than waiting for the renewer's next
+validate (that wait is up to the 5-minute failure cap). Logins take one lock and check the gate
+again after `loginKey` returns. A result that lost that race is not remembered and not returned. A
+`loginKey` request already sent cannot be recalled — that window is irreducible, and the call may
+still have opened a session at the venue. Marking the suspicion does not take the login lock. The
+SignalR callback must return without waiting for the HTTP timeout.
 `RefreshTokenAsync` remembers a refresh that has already completed, so the next read does not log in
 a second time. `ValidateSessionAsync` throws: the client's implementation clears its cache on any
 unsuccessful body, and the next read then logs in. A `newToken` on a **valid** validate body is
-stored in `HeldSession` (another 55 minutes). A valid body with no `newToken` stores the same bearer
-again so that window slides. The token is never written to a log. The validate body is not logged.
-Vendor text is not passed to the logger from this path.
+stored in `HeldSession` (another 55 minutes) only when the held bearer is still the one that was
+posted. A valid body with no `newToken` stores the same bearer again so that window slides. The
+token is never written to a log. The validate body is not logged. Vendor text is not passed to the
+logger from this path.
+
+A recovery login is budgeted. `ExpiredToken`, or a failed renewal once the held token is inside its
+refresh window, arms one attempt. The first attempt runs immediately and calls `RefreshTokenAsync`
+before it reads the bearer. A failure, including the client returning the bearer that was just
+rejected, waits 30 seconds and doubles up to 5 minutes. The next REST call does not post `loginKey`
+again until that wait has elapsed. In `MarqSpec.Client.ProjectX` 3.0.0, `GetAccessTokenAsync`
+returns `_accessToken` while `_tokenExpiration` is more than one minute away, and a successful
+`loginKey` sets that expiry to 55 minutes from `UtcNow`. `RefreshTokenAsync` always posts
+`loginKey`. The compare is what treats a cached copy of the rejected bearer as a failed attempt.
+
+That recovery `loginKey` disconnects whatever session is live on the account. `ExpiredToken` means
+**this process's** bearer is dead. The trading platform's session can still be healthy, and the
+recovery login kicks it. The same kick happens when a validate outage lasts until the held token is
+inside its refresh window. Across replicas (gh#772, still open), with the switch on, a recovery
+login on one replica kicks the other, which then sees `InvalidSession` and latches until restart.
+With the switch off on both, each replica's held token ages out while login is open, so they kick
+each other about once per 54-minute cycle. A crash-looping pod is one `loginKey` per restart.
 
 The held token is kept fresh by a periodic `POST /api/Auth/validate` with the bearer already held.
 That call creates no new session and does not use `loginKey`. It runs whenever the venue client is
@@ -466,16 +486,27 @@ configured, not only while the recorder is running. The steady interval is 30 mi
 client's 54-minute refresh. A renewal that fails backs off from 30 seconds, doubling up to 5 minutes,
 and closes login while the held token is still fresh. That close is not the one-way stop. Login
 opens again when a later validate succeeds, when validate returns `ExpiredToken` (the bearer can
-never become valid), or when the token's remaining life is inside the one-minute refresh buffer, so
-one `loginKey` can recover the process. `ExpiredToken` drops the held bearer. A latched stop does
-not reopen login, and the renewer posts no further validate once the stop is latched. No token has
-been stored yet is a short poll that leaves login permitted, so the first connect can still log in.
+never become valid), or when the token's remaining life is inside the one-minute refresh buffer.
+`ExpiredToken` drops the held bearer only when it is still the bearer that was validated. A latched
+stop does not reopen login, and the renewer posts no further validate once the stop is latched. With
+the switch off, a positive conflict does not latch, and the renewer uses that same failure backoff
+instead of validating the refused bearer every 30 seconds. No token has been stored yet is a short
+poll that leaves login permitted, so the first connect can still log in.
 Freshness is monotonic elapsed time (`TimeProvider.GetTimestamp` and `GetElapsedTime`), so a forward
-jump of the wall clock does not bring that hourly `loginKey` back. A probe and a renewal validate
-take one shared lock. `mcp.session.renewal_refusals` and the `session.renewal_refusal` span record
-`reason` = `latched`, `expired`, `outage`, `exhausted`, `conflict`, or `closed`. This replaces the
-hourly `loginKey` the client would otherwise post once the cache was inside its last minute, which
-is the login that kicks the platform.
+jump of the wall clock does not bring that hourly `loginKey` back. The monotonic clock does not
+advance while Linux is suspended, so after a long suspend the held token can look fresh here and be
+dead at the venue. REST then fails until the renewer's next timer fires and validate returns
+`ExpiredToken`, at most the 35-minute happy-path interval. That bound is self-healing. Freshness
+stays on the monotonic clock so an NTP step cannot force `loginKey`. A probe and a renewal validate
+take one shared lock, and the bearer is read after the lock is taken, so a call queued behind a
+rotation posts the new bearer. `mcp.session.renewal_refusals` and the `session.renewal_refusal` span
+record `reason` = `latched`, `outage`, `conflict`, `closed_suspecting`, `closed_probe`,
+`closed_backoff`, or `closed_latched`. `mcp.session.renewal_reopens` and the
+`session.renewal_reopen` span record `expired` and `exhausted`, which open login. 
+`mcp.session.recovery_logins` and the `session.recovery_login` span record `recovery_failed`,
+`recovery_cached_token`, or `recovery_succeeded`. This replaces the hourly `loginKey` the client
+would otherwise post once the cache was inside its last minute, which is the login that kicks the
+platform.
 
 **The one-way stop latches only on positive conflict evidence:** a hub close whose text contains a
 documented validate name, HTTP 401, `InvalidSession`, or `SessionNotFound`. A missing token, a
@@ -525,8 +556,9 @@ not say the process never touches the venue while a fresh token remains.
 
 `mcp.tape.session_conflicts` counts a conflict stop, tagged `source` = `hub` or `api`. The span is
 `tape.session_conflict` with that tag only. `mcp.session.renewal_refusals` counts a renewal or login
-refusal, tagged `reason`, and the span is `session.renewal_refusal`. The log line is this server's
-own sentence.
+refusal, tagged `reason`, and the span is `session.renewal_refusal`. `mcp.session.renewal_reopens`
+counts an open (`expired`, `exhausted`). `mcp.session.recovery_logins` counts one budgeted recovery
+login. The log line is this server's own sentence.
 
 **Residual.** The user hub is not connected by this recorder. The shared options still keep
 automatic reconnect off for it while the recorder is alive. With the switch off, a documented hub
@@ -552,3 +584,6 @@ the wire when a suspicion started cannot be recalled.
 - gh#390 — the coverage ledger is its own type. Landed.
 - gh#404 — a store-backed per-instrument claim refuses a second concurrent recorder. Landed; recorded
   in the update above.
+- gh#772 — more than one replica. A recovery login with the switch on latches the other replica
+  until restart. With the switch off, the replicas kick each other about once per 54-minute cycle.
+  Still open.

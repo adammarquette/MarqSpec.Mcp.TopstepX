@@ -514,7 +514,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   stop latches only on positive conflict evidence. A missing token does not close login for
   these tools. The held session is renewed with validate whenever the venue client is configured,
   not `loginKey`. A latched stop posts no further validate. An expired token, or one inside its
-  refresh window after a failed renewal, may log in once. Tools may
+  refresh window after a failed renewal, may post a budgeted `loginKey`. That login disconnects
+  any live session on the account. A failed login waits before it tries again. Tools may
   keep using the token already held until it ages out. Another symbol's subscribe does not
   make this one healthy. Reads refuse rather than truncate when over cap.
 - **R-5.9** **`get_contract_roll`** reports the most recent tape changeover a symbol's stored

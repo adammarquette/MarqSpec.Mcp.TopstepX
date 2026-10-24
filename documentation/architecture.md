@@ -1155,8 +1155,12 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   the stop. The held token is renewed with `POST /api/Auth/validate` whenever the venue client is
   configured, well before the client's 54-minute refresh, so a quiet process does not log in on a
   timer. A latched stop posts no further validate. A renewal failure closes login only while the
-  token is still fresh; `ExpiredToken`, or a token that has reached its refresh window, allows one
-  `loginKey` so the process can recover. Freshness follows a monotonic clock. An inconclusive probe does not
+  token is still fresh; `ExpiredToken`, or a token that has reached its refresh window, allows a
+  budgeted `loginKey` so the process can recover. That login disconnects any live session on the
+  account, including a healthy trading platform. A failed recovery waits, from 30 seconds doubling
+  to 5 minutes, before the next REST call tries again. With the switch off, replicas (gh#772) kick
+  each other about once per 54-minute cycle; with it on, the other replica latches until restart.
+  Freshness follows a monotonic clock, which does not advance across a Linux suspend. An inconclusive probe does not
   reconnect and does not latch login; a still-fresh token is probed again on its own interval
   (one second, doubling to 30 seconds), and no fresh token stops the recorder rather than logging in
   without closing login for REST tools. The one-way latch is only a documented hub name, HTTP 401,

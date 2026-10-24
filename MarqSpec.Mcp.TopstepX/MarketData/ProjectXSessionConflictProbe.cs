@@ -24,8 +24,9 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <see cref="SessionProbeVerdict.Conflict"/>: the bearer was refused, which is the same practical outcome
 /// as a killed session. A valid body stores <c>newToken</c> when one is present, and otherwise stores the
 /// same bearer again so the 55-minute window slides. The token and the response body are not logged.
-/// <see cref="ProbeAsync"/> and <see cref="ValidateHeldTokenAsync"/> share one lock, so a probe and the
-/// renewer cannot validate at the same time.
+/// <see cref="ProbeAsync"/> and <see cref="ValidateHeldTokenAsync"/> share one lock. The bearer is read
+/// after that lock is taken, so a call queued behind a rotation posts the new bearer. A result is stored
+/// or dropped only when the held bearer is still the one that was posted.
 /// </para>
 /// </remarks>
 public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
@@ -36,8 +37,8 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
     private static readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
 
     private readonly SemaphoreSlim _validate = new(1, 1);
-    private readonly HeldSession _held;
     private int _validateWaiting;
+    private readonly HeldSession _held;
     private readonly IHttpClientFactory _http;
     private readonly ILogger<ProjectXSessionConflictProbe> _logger;
     private readonly TimeProvider _clock;
@@ -67,36 +68,25 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
     internal int ValidateWaiting => Volatile.Read(ref _validateWaiting);
 
     /// <inheritdoc />
-    public Task<SessionProbeVerdict> ProbeAsync(CancellationToken cancellationToken)
+    public async Task<SessionProbeVerdict> ProbeAsync(CancellationToken cancellationToken)
     {
-        if (!_held.TryReadFresh(_clock, out string token))
-        {
-            _logger.LogWarning(
-                "The session probe has no fresh TopstepX token to validate. The result is inconclusive, and this process will not call loginKey.");
-            return Task.FromResult(SessionProbeVerdict.Inconclusive);
-        }
-
-        return ValidateBearerAsync(token, cancellationToken);
+        HeldTokenValidation validation = await ValidateAsync(requireFresh: true, cancellationToken)
+            .ConfigureAwait(false);
+        return validation.Verdict;
     }
 
     /// <summary>
     /// Posts validate with whatever bearer is held, including one inside the client's refresh buffer.
     /// The renewal loop uses this so a quiet process does not call <c>loginKey</c> at about 54 minutes.
-    /// No held token is inconclusive and does not log in.
+    /// No held token is inconclusive and does not log in. The bearer is read after the shared lock is
+    /// taken.
     /// </summary>
     /// <param name="cancellationToken">The stopping token.</param>
-    /// <returns>What validate could decide.</returns>
-    public Task<SessionProbeVerdict> ValidateHeldTokenAsync(CancellationToken cancellationToken)
-    {
-        if (!_held.TryRead(out string token))
-        {
-            return Task.FromResult(SessionProbeVerdict.Inconclusive);
-        }
+    /// <returns>What validate could decide, and whether that decision still applies to the held bearer.</returns>
+    public Task<HeldTokenValidation> ValidateHeldTokenAsync(CancellationToken cancellationToken) =>
+        ValidateAsync(requireFresh: false, cancellationToken);
 
-        return ValidateBearerAsync(token, cancellationToken);
-    }
-
-    private async Task<SessionProbeVerdict> ValidateBearerAsync(string token, CancellationToken cancellationToken)
+    private async Task<HeldTokenValidation> ValidateAsync(bool requireFresh, CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref _validateWaiting);
         try
@@ -110,8 +100,25 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
         }
 
         Interlocked.Decrement(ref _validateWaiting);
+        string? posted = null;
         try
         {
+            string token = string.Empty;
+            bool have = requireFresh
+                ? _held.TryReadFresh(_clock, out token)
+                : _held.TryRead(out token);
+            if (!have)
+            {
+                if (requireFresh)
+                {
+                    _logger.LogWarning(
+                        "The session probe has no fresh TopstepX token to validate. The result is inconclusive, and this process will not call loginKey.");
+                }
+
+                return new HeldTokenValidation(SessionProbeVerdict.Inconclusive, false, null);
+            }
+
+            posted = token;
             using HttpClient http = _http.CreateClient(HttpClientName);
             using HttpRequestMessage request = new(HttpMethod.Post, "/api/Auth/validate");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -122,10 +129,18 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
 
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
+                bool stillHeld = _held.IsHeld(token);
+                if (!stillHeld)
+                {
+                    _logger.LogWarning(
+                        "The session probe was refused for a bearer this process no longer holds. The result is inconclusive, and this process will not call loginKey.");
+                    return new HeldTokenValidation(SessionProbeVerdict.Inconclusive, false, token);
+                }
+
                 _logger.LogWarning(
                     "The session probe was refused (HTTP {StatusCode}). The held session is being treated as ended, and this process will not call loginKey.",
                     (int)response.StatusCode);
-                return SessionProbeVerdict.Conflict;
+                return new HeldTokenValidation(SessionProbeVerdict.Conflict, true, token);
             }
 
             if (!response.IsSuccessStatusCode)
@@ -133,7 +148,7 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
                 _logger.LogWarning(
                     "The session probe could not validate the TopstepX session (HTTP {StatusCode}). The result is inconclusive, and this process will not call loginKey.",
                     (int)response.StatusCode);
-                return SessionProbeVerdict.Inconclusive;
+                return new HeldTokenValidation(SessionProbeVerdict.Inconclusive, _held.IsHeld(token), token);
             }
 
             ValidatePayload? payload = await response.Content
@@ -142,19 +157,26 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
 
             if (payload is null)
             {
-                return SessionProbeVerdict.Inconclusive;
+                return new HeldTokenValidation(SessionProbeVerdict.Inconclusive, _held.IsHeld(token), token);
             }
 
             SessionProbeVerdict verdict = SessionConflictSignals.FromValidate(payload.Success, payload.ErrorCode);
             if (verdict == SessionProbeVerdict.Valid)
             {
                 // A success with no newToken still slides the client's 55-minute window. The string
-                // remembered here is never logged.
+                // remembered here is never logged. A bearer stored while this call was in flight is kept.
                 string keep = string.IsNullOrEmpty(payload.NewToken) ? token : payload.NewToken;
-                _held.Remember(keep, _clock);
+                bool stored = _held.RememberIfCurrent(token, keep, _clock);
+                return new HeldTokenValidation(SessionProbeVerdict.Valid, stored, token);
             }
 
-            return verdict;
+            if (verdict == SessionProbeVerdict.NeverValid)
+            {
+                bool dropped = _held.ForgetIf(token);
+                return new HeldTokenValidation(SessionProbeVerdict.NeverValid, dropped, token);
+            }
+
+            return new HeldTokenValidation(verdict, _held.IsHeld(token), token);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -164,24 +186,30 @@ public sealed class ProjectXSessionConflictProbe : ISessionConflictProbe
         {
             _logger.LogWarning(
                 "The session probe timed out before TopstepX answered. The result is inconclusive, and this process will not call loginKey.");
-            return SessionProbeVerdict.Inconclusive;
+            return InconclusiveFor(posted);
         }
         catch (HttpRequestException)
         {
             _logger.LogWarning(
                 "The session probe could not reach TopstepX to validate the session. The result is inconclusive, and this process will not call loginKey.");
-            return SessionProbeVerdict.Inconclusive;
+            return InconclusiveFor(posted);
         }
         catch (JsonException)
         {
             _logger.LogWarning(
                 "The session probe could not read the TopstepX validate response. The result is inconclusive, and this process will not call loginKey.");
-            return SessionProbeVerdict.Inconclusive;
+            return InconclusiveFor(posted);
         }
         finally
         {
             _validate.Release();
         }
+    }
+
+    private HeldTokenValidation InconclusiveFor(string? posted)
+    {
+        bool stillHeld = posted is not null && _held.IsHeld(posted);
+        return new HeldTokenValidation(SessionProbeVerdict.Inconclusive, stillHeld, posted);
     }
 
     private sealed class ValidatePayload

@@ -48,6 +48,7 @@ retrospective justification is a press release. The useful ones name the option 
 | [0022](0022-session-bars-derived-complete-or-absent.md) | **Session bars are derived from stored base bars** — complete, or absent with a reason | Accepted · extends [0005](0005-session-aware-gap-detection.md) (the calendar now also defines session windows) and [0010](0010-per-call-resolutions-fetched-not-derived.md) (the completeness-guard exception it named), reopening neither · the ceiling is now the session, so the day and the week are refused (gh#496, gh#498) |
 | [0023](0023-aws-deployment-topology.md) | **The AWS deployment topology** (historical) — Fargate, CDK, Cognito, OIDC deploys | **Superseded** (2026-10-17) — deployment is Docker via the repo [`Dockerfile`](../../Dockerfile) and GHCR; see [`deployment.md`](../deployment.md). Record kept for history (gh#509, gh#682). |
 | [0024](0024-gated-trading-actions-practice-v1.md) | **Gated trading actions — practice accounts only in v1** | Accepted · supersedes [0002](0002-read-only-venue-boundary.md) under the constraints here · gh#706 (v1 epic), gh#722 (v2 epic) · PR #723 |
+| [0025](0025-railway-as-the-deploy-target.md) | **Railway as the deploy target** — image-sourced, `.railway/railway.ts` in the repo, Railway swappable | **Proposed** (draft) · fills the gap [0023](0023-aws-deployment-topology.md) left · gh#758 |
 
 *Adding a record? Add its row here in the same PR, and a routing entry in [`../README.md`](../README.md) if
 the corpus shape changes.*

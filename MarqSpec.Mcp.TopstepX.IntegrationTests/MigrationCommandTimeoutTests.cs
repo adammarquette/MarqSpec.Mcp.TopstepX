@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Diagnostics;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
@@ -5,6 +6,9 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.DependencyInjection;
@@ -95,18 +99,49 @@ public sealed class MigrationCommandTimeoutTests
     }
 
     [Fact]
-    public async Task ApplyAsync_WhenMigrateAsyncThrows_RestoresTheTimeoutItReplaced()
+    public async Task ApplyAsync_WhenMigrateAsyncIsCancelled_RestoresTheTimeoutItReplaced()
     {
         await using TopstepXDbContext database = _fixture.CreateContext();
         database.Database.SetCommandTimeout(7);
         using CancellationTokenSource cancelled = new();
         cancelled.Cancel();
 
-        // MigrateAsync observes the token in its existence check, before it changes the schema. Restoring
-        // the previous timeout only after a successful return would leave 123 in place.
+        // This is the early cancel. MigrateAsync observes the token in its existence check, before any
+        // migration command runs. The mid-build failure is the other test. Restoring the previous timeout
+        // only after a successful return would leave 123 in place on both.
         Func<Task> act = () => MigrationCommandTimeout.ApplyAsync(database.Database, 123, cancelled.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
+        database.Database.GetCommandTimeout().Should().Be(7);
+    }
+
+    [Fact]
+    public async Task ApplyAsync_WhenAMigrationCommandFails_RestoresTheTimeoutItReplaced()
+    {
+        string name = "cmdfail" + Guid.NewGuid().ToString("N");
+        string connectionString = new NpgsqlConnectionStringBuilder(_fixture.ConnectionString)
+        {
+            Database = name,
+        }.ConnectionString;
+        await using (TopstepXDbContext prepared = await _fixture.CreateEmptyDatabaseAsync(name))
+        {
+            await prepared.GetService<IMigrator>()
+                .MigrateAsync("20261024022446_AddTradingAuditIdempotencyClaim");
+        }
+
+        FailTheIndexBuild fail = new();
+        await using TopstepXDbContext database = new(new DbContextOptionsBuilder<TopstepXDbContext>()
+            .UseNpgsql(connectionString, npgsql => npgsql.UseVector())
+            .AddInterceptors(fail)
+            .Options);
+        database.Database.SetCommandTimeout(7);
+
+        // The index migration has started: the procedure exists, and the CALL that builds the index is
+        // rewritten to a statement the server rejects. That is a command failure, not the existence check.
+        Func<Task> act = () => MigrationCommandTimeout.ApplyAsync(database.Database, 123);
+
+        await act.Should().ThrowAsync<PostgresException>().Where(exception => exception.SqlState == "22012");
+        fail.RewroteTheBuild.Should().BeTrue();
         database.Database.GetCommandTimeout().Should().Be(7);
     }
 
@@ -119,6 +154,47 @@ public sealed class MigrationCommandTimeoutTests
             .ToList())
         {
             sources.Sources.Remove(ambient);
+        }
+    }
+
+    /// <summary>
+    /// Turns the index-build <c>CALL</c> into a statement the server rejects, after the migration has
+    /// already created the procedure.
+    /// </summary>
+    private sealed class FailTheIndexBuild : DbCommandInterceptor
+    {
+        public bool RewroteTheBuild { get; private set; }
+
+        public override InterceptionResult<int> NonQueryExecuting(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result)
+        {
+            Rewrite(command);
+            return result;
+        }
+
+        public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            Rewrite(command);
+            return ValueTask.FromResult(result);
+        }
+
+        private void Rewrite(DbCommand command)
+        {
+            if (!command.CommandText.Contains(
+                "CALL public.marqspec_build_ix_trades_instrument_time",
+                StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            RewroteTheBuild = true;
+            command.CommandText = "SELECT 1/0";
         }
     }
 }

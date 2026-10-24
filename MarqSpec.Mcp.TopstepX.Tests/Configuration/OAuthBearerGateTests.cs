@@ -89,13 +89,21 @@ public sealed class OAuthBearerGateTests
             ["Mcp:OAuth:ResourceUrl"] = ResourceUrl,
         };
 
+        if (extra is not null)
+        {
+            foreach (KeyValuePair<string, string?> pair in extra)
+            {
+                settings[pair.Key] = pair.Value;
+            }
+        }
+
         CapturingLoggerProvider logs = new();
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.Logging.AddProvider(logs);
         builder.Logging.SetMinimumLevel(LogLevel.Trace);
         builder.WebHost.UseUrls("http://127.0.0.1:0");
-        builder.Configuration.AddInMemoryCollection(extra is null ? settings : settings.Concat(extra));
+        builder.Configuration.AddInMemoryCollection(settings);
 
         McpOptions mcp = builder.Configuration.GetSection(McpOptions.SectionName).Get<McpOptions>()!;
         Program.ConfigureServices(builder, mcp);
@@ -280,6 +288,82 @@ public sealed class OAuthBearerGateTests
         refusal.Any(char.IsControl).Should().BeFalse();
         // Hosting diagnostics still echo the request line (ADR-0007 leaves that with gh#515). The pin is
         // the gate's own record: one line, no control character, the forged text still inside it.
+    }
+
+    [Fact]
+    public async Task APercentEncodedLineBreakInThePath_CannotOpenASecondLogEntry()
+    {
+        // A real request line, not a value placed on the request after parsing. %0D%0A is what a caller can
+        // actually send. The pipeline may hand the gate the decoded break or leave the encoding in place;
+        // either way the refusal record is one line and the forged trailer stays on it.
+        await using StubIssuer issuer = await StubIssuer.StartAsync();
+        await using Host host = await StartAsync(issuer.Issuer);
+        using HttpRequestMessage request = new(HttpMethod.Get, "/mcp%0D%0AINFO-forged");
+
+        using HttpResponseMessage response = await host.Client.SendAsync(request);
+
+        ShouldBeRefused(response);
+        string refusal = host.Logs.Lines()
+            .Should().ContainSingle(line => line.StartsWith("Refused ", StringComparison.Ordinal))
+            .Which;
+        refusal.Any(char.IsControl).Should().BeFalse();
+        refusal.Should().NotContain("\u2028").And.NotContain("\u2029");
+        refusal.Should().Contain("INFO-forged");
+        // Pinned to what this host actually logs. A decoded break is the escape; a path left encoded
+        // would still contain the characters %0D%0A and would fail this equality.
+        refusal.Should().Be("Refused GET /mcp\\u000D\\u000AINFO-forged: no bearer token.");
+    }
+
+    [Fact]
+    public async Task AnEightKilobyteControlPath_IsCappedOnTheRefusalLine()
+    {
+        // 8192 controls expand sixfold. The refusal record must stay near the output cap, not near 48 KB.
+        string path = "/" + new string('\r', 8192);
+        await using StubIssuer issuer = await StubIssuer.StartAsync();
+        await using Host host = await StartAsync(issuer.Issuer, beforeGate: context =>
+        {
+            context.Request.Path = path;
+        });
+
+        using HttpResponseMessage response = await host.Client.GetAsync("/mcp");
+
+        ShouldBeRefused(response);
+        string refusal = host.Logs.Lines()
+            .Should().ContainSingle(line => line.StartsWith("Refused ", StringComparison.Ordinal))
+            .Which;
+        refusal.Should().Contain(LogText.TruncationMarker);
+        refusal.Length.Should().BeLessThan(2048);
+        refusal.Any(char.IsControl).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ASubjectOrClientIdWithALineBreak_CannotForgeTheScope()
+    {
+        // sub and client_id are logged on every line of a request that passed the gate. A break in either
+        // is the same forging the refusal line already refuses. The client id has to be on the allow-list
+        // or the request never reaches the scope.
+        const string forgedSubject = "user\r\nINFO";
+        const string forgedClient = "cli\r\nINFO";
+        await using StubIssuer issuer = await StubIssuer.StartAsync();
+        await using Host host = await StartAsync(issuer.Issuer, extra: new Dictionary<string, string?>
+        {
+            ["Mcp:OAuth:ClientIds"] = forgedClient,
+        });
+        string token = issuer.Mint(new TokenShape
+        {
+            Issuer = issuer.Issuer,
+            Subject = forgedSubject,
+            ClientId = forgedClient,
+        });
+
+        using HttpResponseMessage response = await host.Client.SendAsync(InitializeWith(token));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        host.Logs.ScopeValues("auth.sub").Should().Contain("user\\u000D\\u000AINFO");
+        host.Logs.ScopeValues("auth.client_id").Should().Contain("cli\\u000D\\u000AINFO");
+        host.Logs.ScopeValues("auth.sub").Should().NotContain(value => value.Any(char.IsControl));
+        host.Logs.ScopeValues("auth.client_id").Should().NotContain(value => value.Any(char.IsControl));
+        host.Logs.Everything().Should().NotContain(token);
     }
 
     // ── the negatives ────────────────────────────────────────────────────────────────────────────────────

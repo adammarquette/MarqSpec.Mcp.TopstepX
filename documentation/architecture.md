@@ -1087,10 +1087,13 @@ dating today's pick. It does not fetch bars and does not write a roll row.
 
 ## What is deliberately absent
 
-- **No order path.** Not a guarded one ([ADR-0002](adr/0002-read-only-venue-boundary.md)). **`Trading__*`
-  configuration for a future practice-only write surface is wired and validated** (gh#708, ADR-0024 v1) —
-  master enable off by default, kill switch, secondary account allowlist, contract caps and a symbol denylist —
-  but no MCP tool registers and no gateway order method is called until later gh#706 slices land.
+- **Venue writes go through `TradingRiskGate` only** ([ADR-0024](adr/0024-gated-trading-actions-practice-v1.md),
+  which supersedes [ADR-0002](adr/0002-read-only-venue-boundary.md)). **`Trading__*` configuration is wired and
+  validated** (gh#708) — master enable off by default, kill switch, secondary account allowlist, contract caps
+  and a symbol denylist. The five MCP tools `place_order`, `modify_order`, `cancel_order`, `close_position`
+  and `partial_close_position` call that gate and no other write path (gh#750). The kill switch blocks cancel
+  and close. `check-no-order-path.sh` still confines order-method names to the execution seam. Bracket fields,
+  `confirm_trading_action` and the OAuth trade scope are later slices (gh#713, gh#717, gh#719).
 - **Market-hub recording is opted in, not implied by HTTP.** The standing choice not to subscribe is reversed
   ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)). The first first-party `BackgroundService` records
   prints to `Trades` (gh#216) only when the transport is HTTP **and** `MarketData__RecordTape` is on —

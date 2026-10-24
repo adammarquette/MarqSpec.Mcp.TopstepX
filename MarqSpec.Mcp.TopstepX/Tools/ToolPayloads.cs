@@ -1,3 +1,4 @@
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
@@ -773,6 +774,78 @@ public static class ToolPayloads
         DateTimeOffset RecordedAt,
         string? EmbeddingNote = null,
         double? Similarity = null);
+
+    /// <summary>
+    /// Whether repeating the same command without reconciliation can duplicate a live order.
+    /// </summary>
+    /// <remarks>
+    /// Matches the gate: <see cref="TradingAttemptOutcome.Refused"/>, <see cref="TradingAttemptOutcome.Preview"/>,
+    /// <see cref="ExecutionWriteOutcome.NotTransmitted"/> and <see cref="ExecutionWriteOutcome.VenueRejected"/>
+    /// are <see cref="TradingRetrySafety.SafeToRetry"/>. <see cref="TradingAttemptOutcome.Unknown"/>,
+    /// <see cref="ExecutionWriteOutcome.TransmittedOutcomeUnknown"/> and
+    /// <see cref="ExecutionWriteOutcome.BrokerSuccessWithoutOrderId"/> are
+    /// <see cref="TradingRetrySafety.OutcomeUnknown"/>.
+    /// A broker acknowledgment is <see cref="TradingRetrySafety.NotSafeToRetry"/>.
+    /// </remarks>
+    public enum TradingRetrySafety
+    {
+        /// <summary>Nothing durable was left at the venue. The same command may be sent again.</summary>
+        SafeToRetry,
+
+        /// <summary>The broker acknowledged the write. Sending it again can duplicate a live order.</summary>
+        NotSafeToRetry,
+
+        /// <summary>The transmit may have reached the venue. Reconcile open orders before another send.</summary>
+        OutcomeUnknown,
+    }
+
+    /// <summary>One gated order-tool result. Numeric fields and closed names only (ADR-0008, ADR-0024).</summary>
+    /// <param name="Status">Preview, Refused, Live, Failed, or Unknown. Live is only a broker acknowledgment.</param>
+    /// <param name="RetrySafety">Whether another send of this command is safe.</param>
+    /// <param name="ParsedStage">The stage the gate parsed. Unknown when the call never fetched an account.</param>
+    /// <param name="RefusalCode">
+    /// The gate refusal code when <paramref name="Status"/> is Refused. Omitted from the wire otherwise.
+    /// </param>
+    /// <param name="ResultCode">
+    /// The venue business error code when a write returned one. Omitted when the venue returned none.
+    /// </param>
+    /// <param name="OrderId">
+    /// The broker-assigned order id after an acknowledged place. Omitted when the venue assigned none.
+    /// </param>
+    public sealed record TradingWriteResult(
+        string Status,
+        TradingRetrySafety RetrySafety,
+        AccountStage ParsedStage,
+        string? RefusalCode,
+        int? ResultCode,
+        long? OrderId);
+
+    /// <summary>Projects a gate result onto the tool wire.</summary>
+    /// <param name="result">The gate result.</param>
+    /// <returns>The tool payload.</returns>
+    public static TradingWriteResult FromGate(TradingRiskGateResult result) =>
+        new(
+            result.Outcome.ToString(),
+            RetrySafetyFor(result),
+            result.ParsedStage,
+            result.Refusal?.Code,
+            result.WriteResult?.VendorErrorCode,
+            result.WriteResult?.OrderId);
+
+    /// <summary>The retry-safety signal for one gate result.</summary>
+    /// <param name="result">The gate result.</param>
+    /// <returns>The closed signal.</returns>
+    public static TradingRetrySafety RetrySafetyFor(TradingRiskGateResult result)
+    {
+        if (result.Outcome == TradingAttemptOutcome.Unknown
+            || result.WriteResult?.Outcome is ExecutionWriteOutcome.TransmittedOutcomeUnknown
+                or ExecutionWriteOutcome.BrokerSuccessWithoutOrderId)
+        {
+            return TradingRetrySafety.OutcomeUnknown;
+        }
+
+        return result.IsRetrySafe ? TradingRetrySafety.SafeToRetry : TradingRetrySafety.NotSafeToRetry;
+    }
 
     /// <summary>Maps a domain bar to its wire shape.</summary>
     /// <param name="bar">The bar.</param>

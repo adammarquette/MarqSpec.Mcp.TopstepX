@@ -5,12 +5,12 @@ using MarqSpec.Mcp.TopstepX.Domain;
 namespace MarqSpec.Mcp.TopstepX.Configuration;
 
 /// <summary>
-/// Operator controls for optional venue write tools (ADR-0024 v1, practice-only when they ship).
+/// Operator controls for the gated venue write tools (ADR-0024 v1, practice accounts only).
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Master enable defaults off.</b> The risk gate and execution gateway adapter read these values; MCP order
-/// tools that call the gate ship separately (gh#713/#715). Practice-only stage cannot be overridden by the
+/// <b>Master enable defaults off.</b> The risk gate, the execution gateway and the MCP order tools read these
+/// values. Practice-only stage cannot be overridden by the
 /// allowlist (gh#711).
 /// </para>
 /// <para>

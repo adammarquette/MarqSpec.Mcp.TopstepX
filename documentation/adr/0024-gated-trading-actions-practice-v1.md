@@ -159,8 +159,11 @@ tight loops and honour client backoff.
 
 ### 4. Proposed MCP tool surface (v1)
 
-New `[McpServerToolType]` — e.g. `TradingTools` — separate from `AccountTools` reads (ADR-0017). All write
-tools: `ReadOnly = false`, **not** idempotent at the MCP layer (idempotency is explicit via key below).
+New `[McpServerToolType]` — `TradingOrderTools` — separate from `AccountTools` reads (ADR-0017). The five
+write tools are registered (gh#750). Bracket tick/type pairs and `confirm_trading_action` are not on that
+slice (gh#713, gh#717). The C# methods are named `Submit*` so `check-no-order-path.sh` needs no new allowlist
+entry; the published names are the attribute `Name` values below. All write tools: `ReadOnly = false`,
+**not** idempotent at the MCP layer (idempotency is explicit via key below).
 
 Shared parameters on every write:
 
@@ -192,8 +195,9 @@ for bracket visibility — **read-only**, no stage gate beyond existing auth.
 
 Layers are ordered; an earlier refusal **must not** call the gateway for a write.
 
-1. **Master enable** — `Trading__Enabled=false` by default. When false, tools are not registered **or** every
-   call refuses with "trading disabled" (implementation choice; refusal must be deterministic).
+1. **Master enable** — `Trading__Enabled=false` by default. gh#750 registers the tools and refuses every call
+   when the flag is false, before the vendor client, with no audit row and no gateway call. The kill switch
+   blocks cancel and close on that same path.
 2. **Kill switch** — env or file flag the operator can flip without redeploy; checked on every call.
 3. **Practice-only stage gate (hard, v1)** — fresh account fetch + `ResolveStage` as §2; **cannot be overridden
    by config** in v1.
@@ -225,10 +229,12 @@ Read tools continue to require only `topstepx-mcp/read`. Each write tool require
 An order is **not treated as live** until the **broker acknowledgment** arrives. Concretely:
 
 - **`dryRun: true`** and preview paths return `status: Preview` and **never** call the venue for a write.
-- **Live transmit** calls the gateway; the MCP outcome is **`Live` only after** the venue response acks the
-  order (`success: true` with the assigned `orderId` / result payload per endpoint). A request sent but not
-  acked, a timeout, or `success: false` is **not** live — return the venue `resultCode`, do not cache as
-  success under the idempotency key, and audit the attempt.
+- **Live transmit** calls the gateway; the MCP outcome is **`Live` only after** the broker acknowledgment.
+  A request sent but not acked, a timeout, or `success: false` is **not** live. The idempotency store keeps
+  the original result — `Refused`, `Failed`, `Unknown`, `Preview` or `Live` — and a replay of that key returns
+  it without a second send. It is never rewritten as `Live`. `retrySafety` is `SafeToRetry`,
+  `NotSafeToRetry` (broker acknowledged), or `OutcomeUnknown` (reconcile before a new key). The store is
+  process-local and expires after 24 hours; a restart forgets every key (gh#712, gh#750).
 - **`confirm_trading_action`** follows the same rule: confirming a preview performs the transmit and applies
   the ack rule above.
 

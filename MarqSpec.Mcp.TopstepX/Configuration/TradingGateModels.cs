@@ -23,8 +23,18 @@ public enum TradingAttemptOutcome
 
 /// <summary>Caller metadata for one gate attempt. Tool and request hash are stamped by the gate.</summary>
 /// <param name="DryRun">When true, risk checks run but no gateway write occurs.</param>
-/// <param name="IdempotencyKey">Reserved for gh#712; empty until tools supply one.</param>
-public sealed record TradingRiskAttemptContext(bool DryRun, string IdempotencyKey = "");
+/// <param name="IdempotencyKey">
+/// Caller-supplied key. A replay of the same account, tool and request returns the stored result and does
+/// not transmit again. Empty is accepted for direct gate callers; MCP tools set
+/// <paramref name="RequireIdempotencyKey"/>.
+/// </param>
+/// <param name="RequireIdempotencyKey">
+/// When true, a blank key is refused after the master switch and before any venue write (gh#712).
+/// </param>
+public sealed record TradingRiskAttemptContext(
+    bool DryRun,
+    string IdempotencyKey = "",
+    bool RequireIdempotencyKey = false);
 
 /// <summary>Structured dry-run preview returned when <see cref="TradingRiskAttemptContext.DryRun"/> is true.</summary>
 public sealed record TradingExecutionPreview(

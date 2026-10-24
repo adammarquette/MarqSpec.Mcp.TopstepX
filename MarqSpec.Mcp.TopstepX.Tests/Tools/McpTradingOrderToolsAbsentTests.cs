@@ -3,94 +3,92 @@ using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using ModelContextProtocol.Server;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 
 /// <summary>
-/// Order tools ship in gh#713/#715. The composition root must not register them (gh#740, gh#751).
+/// The five order tools are the whole write surface, and each one is routed through
+/// <see cref="TradingRiskGate"/> (ADR-0024, gh#750). gh#740 asserted the opposite while the tools were withheld.
 /// </summary>
-public sealed class McpTradingOrderToolsAbsentTests
+[Trait("Gate", "ADR-0024")]
+public sealed class McpTradingOrderToolsRegistrationTests
 {
-    [Theory]
-    [InlineData(TradingMcpTools.PlaceOrderOperation)]
-    [InlineData(TradingMcpTools.ModifyOrderOperation)]
-    [InlineData(TradingMcpTools.CancelOrderOperation)]
-    [InlineData(TradingMcpTools.ClosePositionOperation)]
-    [InlineData(TradingMcpTools.PartialClosePositionOperation)]
-    public void OrderToolNames_AreRejected(string toolName) =>
-        IsOrderToolName(toolName).Should().BeTrue();
+    private static readonly string[] _orderTools =
+    [
+        TradingMcpTools.PlaceOrderOperation,
+        TradingMcpTools.ModifyOrderOperation,
+        TradingMcpTools.CancelOrderOperation,
+        TradingMcpTools.ClosePositionOperation,
+        TradingMcpTools.PartialClosePositionOperation,
+    ];
 
     [Fact]
-    public void RecordObservation_IsNotAnOrderToolName() =>
-        IsOrderToolName("record_observation").Should().BeFalse();
-
-    [Fact]
-    public void RegisteredMcpTools_DoNotIncludeOrderTools()
+    public void TradingRiskGate_OrderTools_AreExactlyTheFiveRegisteredWrites_AndEachIsGateRouted()
     {
-        using ServiceProvider provider = Build();
+        Assembly assembly = typeof(ToolPayloads).Assembly;
+        List<Type> toolTypes =
+        [
+            .. assembly.GetTypes().Where(type => type.GetCustomAttribute<McpServerToolTypeAttribute>() is not null),
+        ];
 
-        List<McpServerTool> tools = [.. provider.GetServices<McpServerTool>()];
-        tools.Should().NotBeEmpty();
-
-        McpServerTool observation = tools.Should()
-            .ContainSingle(tool => tool.ProtocolTool.Name == "record_observation")
-            .Subject;
-        MethodInfo record = RegisteredMethod(observation);
-        record.DeclaringType.Should().Be(typeof(ObservationTools));
-        record.Name.Should().Be(nameof(ObservationTools.RecordObservation));
-
-        foreach (McpServerTool tool in tools)
+        List<MethodInfo> orderMethods = [];
+        foreach (Type toolType in toolTypes)
         {
-            IsOrderToolName(tool.ProtocolTool.Name).Should().BeFalse(
-                because: $"{tool.ProtocolTool.Name} must not be registered on the MCP server");
-
-            MethodInfo method = RegisteredMethod(tool);
-            foreach (ConstructorInfo ctor in method.DeclaringType!.GetConstructors())
+            foreach (ConstructorInfo ctor in toolType.GetConstructors())
             {
-                foreach (ParameterInfo parameter in ctor.GetParameters())
+                ParameterInfo[] parameters = ctor.GetParameters();
+                if (toolType == typeof(TradingOrderTools))
                 {
-                    parameter.ParameterType.Should().NotBe(
-                        typeof(TradingRiskGate),
-                        because: $"{method.DeclaringType.Name}.{method.Name} must not expose venue writes");
-                    parameter.ParameterType.Should().NotBe(
-                        typeof(IExecutionGateway),
-                        because: $"{method.DeclaringType.Name}.{method.Name} must not expose venue writes");
+                    parameters.Select(parameter => parameter.ParameterType).Should().Equal(typeof(TradingRiskGate));
                 }
+                else
+                {
+                    parameters.Should().NotContain(
+                        parameter => parameter.ParameterType == typeof(TradingRiskGate),
+                        because: toolType.Name + " must not take the trading gate");
+                }
+
+                parameters.Should().NotContain(
+                    parameter => parameter.ParameterType == typeof(IExecutionGateway),
+                    because: toolType.Name + " must call TradingRiskGate rather than the execution gateway");
+            }
+
+            foreach (MethodInfo method in toolType.GetMethods(
+                         BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+            {
+                McpServerToolAttribute? attribute = method.GetCustomAttribute<McpServerToolAttribute>();
+                if (attribute is null)
+                {
+                    continue;
+                }
+
+                if (toolType == typeof(TradingOrderTools))
+                {
+                    orderMethods.Add(method);
+                    continue;
+                }
+
+                // record_observation writes this server's database. Every other non-order tool stays read-only.
+                if (toolType == typeof(ObservationTools))
+                {
+                    continue;
+                }
+
+                attribute.ReadOnly.Should().BeTrue(
+                    because: toolType.Name + "." + method.Name + " is not one of the five gated order tools");
+                _orderTools.Should().NotContain(attribute.Name ?? string.Empty);
             }
         }
-    }
 
-    private static MethodInfo RegisteredMethod(McpServerTool tool) =>
-        tool.Metadata.OfType<MethodInfo>().Should().ContainSingle(
-            because: $"{tool.ProtocolTool.Name} must expose the method the server registered").Subject;
-
-    private static bool IsOrderToolName(string toolName) =>
-        toolName is TradingMcpTools.PlaceOrderOperation
-            or TradingMcpTools.ModifyOrderOperation
-            or TradingMcpTools.CancelOrderOperation
-            or TradingMcpTools.ClosePositionOperation
-            or TradingMcpTools.PartialClosePositionOperation;
-
-    private static ServiceProvider Build()
-    {
-        WebApplicationBuilder builder = WebApplication.CreateBuilder();
-        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
-        {
-            ["ConnectionStrings:Default"] = "Host=localhost;Database=x;Username=u;Password=p",
-            ["MarketData:Instruments"] = "ES,NQ",
-            ["MarketData:SessionCloseCentral"] = "16:00",
-            ["MarketData:MaxRows"] = "5000",
-        });
-        Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
-        return builder.Services.BuildServiceProvider(new ServiceProviderOptions
-        {
-            ValidateOnBuild = true,
-            ValidateScopes = true,
-        });
+        orderMethods.Should().HaveCount(_orderTools.Length);
+        orderMethods.Select(method => method.GetCustomAttribute<McpServerToolAttribute>()!.Name)
+            .Should()
+            .BeEquivalentTo(_orderTools);
+        orderMethods.Should().OnlyContain(method =>
+            method.GetCustomAttribute<McpServerToolAttribute>()!.ReadOnly == false
+            && method.GetCustomAttribute<McpServerToolAttribute>()!.Idempotent == false
+            && method.GetCustomAttribute<McpServerToolAttribute>()!.Destructive == true
+            && method.Name.StartsWith("Submit", StringComparison.Ordinal));
     }
 }

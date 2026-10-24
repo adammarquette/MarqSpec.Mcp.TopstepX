@@ -149,7 +149,8 @@ public sealed class TradingRiskGateDisabledTelemetryTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            telemetry);
+            telemetry,
+            new InMemoryTradingIdempotencyStore(TimeProvider.System));
     }
 
     private static ExecutionPlaceOrderCommand SamplePlace() =>

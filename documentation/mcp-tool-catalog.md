@@ -1,7 +1,8 @@
 # MCP tool catalogue
 
 **Status:** Living · **Date:** 2026-08-23 · **Relates to:** PRD `R-5` ·
-[ADR-0002](adr/0002-read-only-venue-boundary.md) (read-only) ·
+[ADR-0024](adr/0024-gated-trading-actions-practice-v1.md) (gated writes) ·
+[ADR-0002](adr/0002-read-only-venue-boundary.md) (superseded for the five order tools) ·
 [ADR-0008](adr/0008-numeric-only-tool-payloads.md) (numeric-only) ·
 [ADR-0007](adr/0007-dual-transport.md) (transports) ·
 [ADR-0011](adr/0011-contract-roll-boundary.md) (contract rolls)
@@ -18,7 +19,10 @@ page against either**, so check it against the code, never against another docum
 
 ## Rules that apply to every tool
 
-- **Read-only against the venue.** Nothing here transmits an order. Not behind a flag.
+- **Reads do not transmit.** The five tools under [Orders](#orders) are the only venue writes, and each one
+  calls `TradingRiskGate` and nothing else. `Trading__Enabled` defaults to false and turns every one of them
+  off, including cancel and close. The kill switch blocks those same calls. Nothing else on this surface
+  places, modifies, cancels or closes.
 - **Over HTTP, every call is authenticated, in one of two modes** — and the tool surface is identical under
   both. `Mcp__Auth__Mode=StaticToken`, the compose stack and the plain `dotnet run` recipe, is one shared
   secret in `Authorization: Bearer …`. `OAuth`, the deployed instance
@@ -1048,6 +1052,67 @@ usefully carried is already parsed into `stage`.
 
 > `Order/search` and `Trade/search` take `startTimestamp`/`endTimestamp` while bar retrieval takes
 > `startTime`/`endTime`. Sending the wrong pair does not error: the gateway drops the field and returns nothing.
+
+## Orders
+
+Five write tools, one type (`TradingOrderTools`), separate from the account reads (ADR-0017, ADR-0024,
+gh#750). Each call goes through `TradingRiskGate`. The tool does not take the vendor client or
+`IExecutionGateway`. `scripts/check-no-order-path.sh` was not given a new allowlist entry for them: the C#
+methods are named `Submit*` and the published names below are the MCP `Name`.
+
+**`Trading__Enabled` defaults to false.** A call while it is false refuses with `trading_disabled` before the
+vendor client is touched. That refusal writes no audit row, charges no daily cap and calls no gateway method.
+The kill switch refuses with `kill_switch` on the same five tools. Cancel and close have no carve-out.
+
+**Every call emits the gate's telemetry.** The span is `execution.<tool>` and the counter is
+`mcp.execution.writes`, tagged `operation` and `refusal`. The gate owns both. The tools do not open a second
+span or counter.
+
+**`idempotencyKey` is required.** A replay of the same account, tool and request inside 24 hours returns the
+original result and does not send again. The store is process-local: a restart forgets every key, and the
+next call with that key is a new attempt (gh#712). The stored result is the original one, including
+`Refused`, `Failed` and `Unknown` — a replay is never rewritten as `Live`. A disabled refusal is stored too,
+so turning `Trading__Enabled` on does not turn that key into a send; a new attempt needs a new key. The same
+key with a different request is `idempotency_conflict` and does not transmit. A blank key, or one longer than
+256 characters, is `idempotency_key_required`. The master switch is checked first, so a blank key while
+trading is disabled is `trading_disabled`.
+
+**`retrySafety` is the retry signal.** `SafeToRetry` is a refusal, a preview, or a venue rejection.
+`NotSafeToRetry` is a broker acknowledgment (`status: Live`). `OutcomeUnknown` is a transmit whose outcome
+could not be classified, including a broker success that carried no order id. `Live` is only that
+acknowledgment. `refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
+for them — they are fields, so the test is key presence.
+
+**`dryRun: true` runs the same gates and returns `Preview`.** It does not transmit.
+
+**Not on this slice.** `place_order` does not take bracket ticks or bracket types (gh#713 still open for
+that). `confirm_trading_action` is not registered (gh#717). HTTP OAuth still authorises the whole server
+with `topstepx-mcp/read`; the distinct `topstepx-mcp/trade` scope is gh#719.
+
+### `place_order` · `modify_order` · `cancel_order` · `close_position` · `partial_close_position`
+
+Shared on every call: `accountId`, `idempotencyKey`, and `dryRun` (omit for false).
+
+| Tool | What else it takes |
+|---|---|
+| `place_order` | `contractId`, `orderType`, `side`, `size`, and `limitPrice` / `stopPrice` / `trailPrice` when the type uses them |
+| `modify_order` | `orderId`, and `size` / `limitPrice` / `stopPrice` when changing them |
+| `cancel_order` | `orderId` |
+| `close_position` | `contractId` |
+| `partial_close_position` | `contractId`, `size` |
+
+`orderType` is `Limit · Market · Stop · StopLimit · TrailingStop · JoinBid · JoinAsk`. `side` is `Buy` or
+`Sell`; `Unknown` is refused. Prices are decimals. `customTag` is not accepted (ADR-0008).
+
+Returns `{ status, retrySafety, parsedStage, refusalCode?, resultCode?, orderId? }`.
+
+`status` is `Preview · Refused · Live · Failed · Unknown`. `retrySafety` is `SafeToRetry · NotSafeToRetry ·
+OutcomeUnknown`. `parsedStage` is the stage vocabulary `list_accounts` already uses; a refusal that never
+fetched an account reports `Unknown`.
+
+Practice accounts only. Evaluation, funded and unknown stages are refused from a fresh account fetch, and
+the allowlist does not bypass that check. A modify whose order is not on the fresh order list is
+`order_not_found` and does not transmit.
 
 ## Composed
 

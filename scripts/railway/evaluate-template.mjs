@@ -54,6 +54,20 @@ const RESERVED = /^Retention(__|:)/i;
 const EXPORT_KEYS = ["TapeExport__Enabled", "TapeExport__Schedule", "TapeExport__Path", "TapeExport__Format",
   "TapeExport__Drive__FolderId", "TapeExport__Drive__ServiceAccountJson", "TapeExport__Drive__ServiceAccountJsonPath"];
 const EXPORT_MOUNT = "/data/tape-exports";
+// THE flip for gh#767. Until the image chowns the export mount and drops to uid 64198 at startup, any export-on
+// shape (TapeExport__Enabled=true, an export volume, RAILWAY_RUN_UID on the recorder) fails, in every environment.
+// #767's PR sets this to true, which re-enables the whole-shape rules below for production.
+const EXPORT_UNBLOCKED = false;
+const ints = (lo, hi) => (v) => /^\d+$/.test(v) && Number(v) >= lo && Number(v) <= hi;
+const TRADING = Object.fromEntries([
+  ["Trading__Enabled", (v) => v === "false", 'the literal "false"'],
+  ["Trading__KillSwitch", (v) => v === "true" || v === "false", '"true" or "false"'],
+  ["Trading__KillSwitchFile", (v) => v === "" || v.startsWith("/"), "empty or an absolute path"],
+  ["Trading__AllowedAccountIds", (v) => /^(\d+(,\d+)*)?$/.test(v), "empty or comma-separated account ids"],
+  ["Trading__DeniedSymbols", (v) => /^([A-Za-z0-9.]+(,[A-Za-z0-9.]+)*)?$/.test(v), "empty or comma-separated symbols"],
+  ["Trading__MaxContractsPerOrder", ints(1, 5), "an integer 1..5 (the code default is 5)"],
+  ["Trading__MaxContractsPerDay", ints(1, 50), "an integer 1..50 (the code default is 50)"],
+].map(([name, ok, desc]) => [name.toLowerCase(), { name, ok, desc }]));
 
 const services = graph.resources.filter((r) => r.type === "service");
 const byName = Object.fromEntries(services.map((s) => [s.name, s]));
@@ -74,7 +88,11 @@ const isShared = (v, name) => v && v.type === "sharedReference" && (!name || v.n
 const norm = (k) => k.toLowerCase().replace(/:/g, "__");
 const unprefixed = (k) => norm(k).replace(/^(dotnet_|aspnetcore_)(?=[a-z]+__)/, "");
 const KNOWN = new Map();
-for (const m of (await import("node:fs")).readFileSync(new URL(import.meta.url), "utf8").matchAll(/\b([A-Za-z][A-Za-z0-9]*(?:__[A-Za-z0-9]+)+|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|PGDATA|PORT)\b/g))
+// Scraped from this file's CODE: whole-line comments and " // " trailing comments are stripped first, so a comment
+// quoting a miscased form can never become the canonical spelling. (URLs survive: "https://" has no space before //.)
+const CODE = (await import("node:fs")).readFileSync(new URL(import.meta.url), "utf8")
+  .split("\n").filter((l) => !/^\s*\/\//.test(l)).map((l) => l.replace(/\s\/\/\s.*$/, "")).join("\n");
+for (const m of CODE.matchAll(/\b([A-Za-z][A-Za-z0-9]*(?:__[A-Za-z0-9]+)+|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|PGDATA|PORT)\b/g))
   if (!KNOWN.has(norm(m[1]))) KNOWN.set(norm(m[1]), m[1]);
 for (const s of services) {
   const seen = new Map();
@@ -121,6 +139,15 @@ for (const s of services) {
     }
     const value = literal(v);
     if (typeof value !== "string") { fail(`${s.name}: ${key} has an unrecognised value shape`); continue; }
+    if (value !== value.trim()) fail(`${s.name}: ${key} has leading or trailing whitespace (${JSON.stringify(value)})`);
+    if (/^trading(__|:)/i.test(key)) {
+      // Allowlist of TradingExecutionOptions' seven keys. Bounds are the code DEFAULTS (5 per order, 50 per day),
+      // deliberately tighter than its [Range] attributes (1..10000, 1..100000): a deploy template has no business
+      // raising them. Raising one is a reviewed change to this table.
+      const rule = TRADING[norm(key)];
+      if (!rule) fail(`${s.name}: ${key} is not a Trading__* key (${Object.values(TRADING).map((r) => r.name).join(", ")})`);
+      else if (!rule.ok(value)) fail(`${s.name}: ${rule.name} must be ${rule.desc}, got ${JSON.stringify(value)}`);
+    }
     if (key === "ConnectionStrings__Default") {
       if (value !== CONNECTION_STRING) fail(`${s.name}: ConnectionStrings__Default must be exactly the templated form (password from shared.POSTGRES_PASSWORD)`);
       continue;
@@ -136,7 +163,7 @@ for (const s of services) {
     if (value.includes("${{")) fail(`${s.name}: ${key} carries a hand-written template; use a typed or shared reference`);
     if (SECRET_KEY.test(key) && value !== "") fail(`${s.name}: ${key} carries a secret; it must be a ctx.shared reference, not a literal`);
     if (key === "ASPNETCORE_URLS" || key === "ASPNETCORE_HTTPS_PORTS") fail(`${s.name}: ${key} must not be set; ASPNETCORE_HTTP_PORTS=8080 is the only listener (TLS is Railway's edge)`);
-    if (key === "POSTGRES_HOST_AUTH_METHOD" && value.toLowerCase() === "trust") fail(`${s.name}: POSTGRES_HOST_AUTH_METHOD=trust disables the password`);
+    if (key === "POSTGRES_HOST_AUTH_METHOD" && value.trim().toLowerCase() === "trust") fail(`${s.name}: POSTGRES_HOST_AUTH_METHOD=trust disables the password`);
     if (key === "Deployment__ImageDigest" && /^(sha256:[0-9a-f]{64})?$/.test(value)) continue;
     if (CREDENTIAL_SHAPE.test(value)) fail(`${s.name}: ${key} holds a credential-shaped literal`);
   }
@@ -178,7 +205,9 @@ for (const name of ["server", "recorder"]) {
   const digest = img.includes("@") ? img.split("@")[1] : "";
   if (literal(env.Deployment__Version) !== tag) fail(`${name}: Deployment__Version must be the image tag "${tag}" (derived from SERVER_IMAGE), got ${JSON.stringify(env.Deployment__Version)}`);
   if (literal(env.Deployment__ImageDigest) !== digest) fail(`${name}: Deployment__ImageDigest must be the image digest "${digest}" (derived from SERVER_IMAGE), got ${JSON.stringify(env.Deployment__ImageDigest)}`);
-  const wait = Number(literal(env.Store__StartupWaitSeconds));
+  const rawWait = literal(env.Store__StartupWaitSeconds);
+  // Plain decimal digits only: JS Number() accepts 0x1E and 3e1, .NET's int binder does not.
+  const wait = /^\d+$/.test(rawWait ?? "") ? Number(rawWait) : NaN;
   if (!(Number.isInteger(wait) && wait >= 30)) fail(`${name}: Store__StartupWaitSeconds must be an integer >= 30 (Railway has no depends_on), got ${JSON.stringify(env.Store__StartupWaitSeconds)}`);
   if (s.source?.autoUpdates?.type !== "disabled") fail(`${name}: image autoUpdates must be explicitly disabled (ADR-0001 pinning)`);
   if (s.deploy?.healthcheckPath !== "/health") fail(`${name}: deploy.healthcheckPath must be /health, got ${s.deploy?.healthcheckPath}`);
@@ -213,7 +242,13 @@ if (server) {
   if (literal(env.Mcp__OAuth__RequiredScope) !== REQUIRED_SCOPE) fail(`server: Mcp__OAuth__RequiredScope is locked to ${REQUIRED_SCOPE}`);
   if (literal(env.ASPNETCORE_FORWARDEDHEADERS_ENABLED) !== "true") fail("server: behind Railway's edge, ASPNETCORE_FORWARDEDHEADERS_ENABLED must be true");
   if (literal(env.MarketData__RecordTape) !== "false") fail("server: MarketData__RecordTape must be false; the recorder owns the tape");
-  if ((server.deploy?.numReplicas ?? 1) !== 1 || server.deploy?.multiRegionConfig) fail("server: one replica until running more is decided");
+  // gh#772: two sessions or replicas trading one account is undecided, so exactly one server replica, stated
+  // explicitly (an omitted count would leave it to Railway's dashboard), in one region. SDK 3.16.0 expresses scale
+  // only as deploy.numReplicas / deploy.region / deploy.multiRegionConfig (from replicas/regions); it has no
+  // autoscaling field, so there is nothing more to pin here (deployment.md).
+  const sd = server.deploy ?? {};
+  if (sd.numReplicas !== 1) fail(`[single-server] server: exactly one replica (numReplicas: 1) until gh#772 is decided, got ${JSON.stringify(sd.numReplicas)}`);
+  if (sd.multiRegionConfig && Object.keys(sd.multiRegionConfig).length) fail(`[single-server] server: no multi-region config until gh#772 is decided, got ${JSON.stringify(sd.multiRegionConfig)}`);
 }
 
 const recorder = byName.recorder;
@@ -238,6 +273,8 @@ if (exporters.length > 1) fail(`tape export: at most one service may export or m
 for (const s of exporters) if (s.name !== "recorder") fail(`${s.name}: only the recorder exports the tape (TapeExport__Enabled / ${EXPORT_MOUNT})`);
 for (const s of services) for (const [k, m] of Object.entries(s.volumeAttachments ?? {}))
   if (!(s.name === "postgres" && m.mountPath === PG_MOUNT) && !(s.name === "recorder" && m.mountPath === EXPORT_MOUNT)) fail(`${s.name}: unexpected volume ${k} at ${m.mountPath}`);
+if (recorder && !EXPORT_UNBLOCKED && (exportOn(recorder) || exportMounted(recorder) || recorder.variables?.RAILWAY_RUN_UID))
+  fail(`[export-blocked] recorder: the tape export is blocked on gh#767 (the image must chown ${EXPORT_MOUNT} and drop to uid 64198 first); no TapeExport__Enabled=true, export volume or RAILWAY_RUN_UID until EXPORT_UNBLOCKED is flipped`);
 if (recorder) {
   const env = recorder.variables ?? {};
   if (environment === "production" && (exportOn(recorder) || exportMounted(recorder))) {

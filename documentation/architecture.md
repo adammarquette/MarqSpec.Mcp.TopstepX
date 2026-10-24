@@ -1138,15 +1138,18 @@ Trades and closed coverage are one pair per contract per day,
 `manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`), written last by a temp file, fsync, and rename, and
 it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
 An older generation is left on disk.
-The image user is uid 64198. Railway mounts volumes as root, so the recorder's start command has to
-chown `/data/tape-exports` to that user and then drop privileges (`RAILWAY_RUN_UID=0`, see
-[deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755)). A volume that user cannot write
-is a skipped pass, not a crash and not a silent success.
+The image user is uid 64198. Railway allows one volume per service and mounts it as root at `/data`,
+so the recorder's start command prepares that whole mount — exports at `/data/tape-exports` and the
+key directory `/data/keys` — then drops privileges (`RAILWAY_RUN_UID=0`, see
+[deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755)). The key file is
+`/data/keys/drive-sa.json` (mode `0400`, directory mode `0700`, owned by 64198). gh#767 will move
+that preparation into the image's startup step. A volume that user cannot write is a skipped pass,
+not a crash and not a silent success.
 The committed compose file forwards the environment variables and does not mount the volume.
 
 **Drive is optional and additive** (`R-10.6`, [ADR-0026](adr/0026-drive-file-scope-for-tape-export.md)).
 `TapeExport__Drive__FolderId` plus a credential turn it on. Prefer
-`TapeExport__Drive__ServiceAccountJsonPath` (a mounted file). Inline
+`TapeExport__Drive__ServiceAccountJsonPath` (on Railway, `/data/keys/drive-sa.json`). Inline
 `TapeExport__Drive__ServiceAccountJson` is visible to anyone who can inspect the container. Empty
 leaves Drive off and the disabled uploader records nothing; the pass counts one `drive_disabled`.
 The OAuth scope is `drive.file`. The identity is `appProperties` plus the stored file id, not the

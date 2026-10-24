@@ -235,24 +235,34 @@ repository applies:
 
 1. Run Postgres that survives the server container (Railway Postgres, or a Timescale image when you
    want parity with the tests) and point `ConnectionStrings__Default` at it.
-2. Mount a volume at `TapeExport__Path` and turn the export on for **the one** HTTP process that also
-   has `MarketData__RecordTape=true`.
+2. Attach **one** volume at `/data` and turn the export on for **the one** HTTP process that also
+   has `MarketData__RecordTape=true`. Railway allows one volume per service, so that mount holds both
+   the export tree and the Drive key. `TapeExport__Path` stays `/data/tape-exports`.
 
-The process creates the `trades/`, `tape-coverage/`, `footprint-cells/` and `manifests/` directories.
-It does not create the volume. The image runs as uid **64198** (`Dockerfile` `USER 64198`). Railway
-mounts a volume as root ([volume permissions](https://docs.railway.com/volumes#permissions)), so that
-uid cannot create those directories. The pass logs that the path is not writable and skips. Rows stay
-in Postgres. That skip is the fail-safe: an unwritable mount does not crash the host.
+The process creates the `trades/`, `tape-coverage/`, `footprint-cells/` and `manifests/` directories
+under `TapeExport__Path`. It does not create the volume. The image runs as uid **64198**
+(`Dockerfile` `USER 64198`). Railway mounts a volume as root
+([volume permissions](https://docs.railway.com/volumes#permissions)), so that uid cannot create those
+directories until the start command has prepared `/data`. The pass logs that the path is not writable
+and skips. Rows stay in Postgres. That skip is the fail-safe: an unwritable mount does not crash the
+host.
 
 On the recorder service, set Railway's `RAILWAY_RUN_UID=0` so the start command runs as root, and set
 the service start command. A start command replaces the image entrypoint
 ([start command](https://docs.railway.com/deployments/start-command#configure-the-start-command)).
-The image installs `runuser` for this. The command fixes ownership of the mount, then drops to uid
-64198:
+The image installs `runuser` for this. The command prepares the whole `/data` mount, then drops to
+uid 64198. gh#767 will move this preparation into the image's startup step. Until that lands, the
+start command is:
 
 ```text
-/bin/sh -c "mkdir -p /data/tape-exports && chown -R 64198:64198 /data/tape-exports && exec runuser -u mcp -- dotnet MarqSpec.Mcp.TopstepX.dll"
+/bin/sh -c "mkdir -p /data/tape-exports /data/keys && chown -R 64198:64198 /data && chmod 700 /data/keys && (if [ -f /data/keys/drive-sa.json ]; then chmod 400 /data/keys/drive-sa.json; fi) && exec runuser -u mcp -- dotnet MarqSpec.Mcp.TopstepX.dll"
 ```
+
+The key file is `/data/keys/drive-sa.json`, mode `0400`. Its directory is mode `0700`. Both are owned
+by uid 64198. The `chmod` of the file runs only when the file is already on the volume, so a recorder
+that has not placed the key yet still starts. Set
+`TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json` on that service. That is the
+Railway option. Inline `TapeExport__Drive__ServiceAccountJson` stays the one to avoid.
 
 `RAILWAY_RUN_UID` is Railway's variable, not a `TapeExport__*` key, and it is not in the committed
 compose file. Leave it unset where the process should stay the image user. Files written only on the
@@ -270,11 +280,11 @@ the opposite: empty means the upload is off.
 |---|---|---|
 | `TapeExport__Enabled` | `false` | The daily worker. Runs only on the HTTP transport, and only when this is true. `export-tape` and `import-tape` ignore it. |
 | `TapeExport__Schedule` | `06:00` | UTC time of day, exact `HH:mm`. The worker waits for this time. A process that starts later waits until the next day. It also skips the pass unless this process holds a recorder lease. |
-| `TapeExport__Path` | `/data/tape-exports` | Absolute directory. **Exports write to a mounted volume at this path.** Not object storage. |
+| `TapeExport__Path` | `/data/tape-exports` | Absolute directory on the recorder volume. Railway mounts that one volume at `/data`. Not object storage. |
 | `TapeExport__Format` | `csv.gz+parquet` | The only accepted value. Both gzip CSV and Parquet are written. `csv.gz` alone, `parquet` alone, and an empty string are refused. |
 | `TapeExport__Drive__FolderId` | empty | Drive folder id. **Empty disables Drive.** No client is constructed and no network call is made. |
 | `TapeExport__Drive__ServiceAccountJson` | empty | Inline service-account JSON. **Empty is off** unless the path below is set. Never commit a value. A path wins when both are set. **Anyone who can inspect the container can read this value.** Prefer the path. |
-| `TapeExport__Drive__ServiceAccountJsonPath` | empty | Absolute path of a mounted service-account JSON file. **This is the credential to use.** Empty is off unless the inline JSON above is set. A relative path is refused. |
+| `TapeExport__Drive__ServiceAccountJsonPath` | empty | Absolute path of a mounted service-account JSON file. **This is the credential to use.** On Railway set `/data/keys/drive-sa.json` (mode `0400`, directory mode `0700`, owned by uid 64198). Empty is off unless the inline JSON above is set. A relative path is refused. |
 
 Files on the volume, one pair per contract per day for trades and coverage:
 
@@ -301,12 +311,15 @@ only in Postgres until then. A mismatch between the manifest and the files refus
 leaves the rows.
 
 Suggested values once the volume and the database are real, on the recorder only:
-`MarketData__RecordTape=true`, `TapeExport__Enabled=true`.
+`MarketData__RecordTape=true`, `TapeExport__Enabled=true`,
+`TapeExport__Path=/data/tape-exports`,
+`TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json`.
 
 ```yaml
-# Attach on the recorder service only. Not part of the committed compose file.
+# Attach on the recorder service only. Railway allows one volume per service.
+# Not part of the committed compose file.
 volumes:
-  - tape-exports:/data/tape-exports
+  - recorder-data:/data
 ```
 
 ### `export-tape` and `import-tape`

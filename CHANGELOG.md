@@ -65,9 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tape export uploads hold a session lock, not a transaction lock** (gh#755). `pending` commits before
   the Drive call and the file id commits after, on a connection that is not pooled. Transient retries
   honour `Retry-After` up to 30 seconds and stop at a two-minute deadline. The Google client's own 503
-  backoff is off. A Railway volume is root-owned: the recorder start command chowns
-  `/data/tape-exports` to uid 64198 and then drops privileges (`RAILWAY_RUN_UID=0`). An unwritable path
-  is still logged and skipped.
+  backoff is off. Railway allows one volume per service, mounted at `/data` and owned by root. The
+  recorder start command prepares that mount (exports at `/data/tape-exports`, the Drive key at
+  `/data/keys/drive-sa.json`) and then drops privileges (`RAILWAY_RUN_UID=0`). gh#767 will move that
+  preparation into the image startup. An unwritable path is still logged and skipped.
 
 - **`no-order-path` now gates the order path instead of forbidding it** (gh#718, ADR-0024). The required
   check of the same name changes meaning: from "no order path exists" (ADR-0002) to a tripwire for "orders

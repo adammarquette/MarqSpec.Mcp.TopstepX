@@ -24,9 +24,10 @@ public sealed class RecorderHealthTools(RecorderHealthService health)
     [Description(
         "Reports this process's recorder. feedConnected is true only when the market-data hub is up: "
         + "listening, or connected and not yet subscribed. feed is the process-wide reason. database is "
-        + "Available or Unavailable from a live probe. contracts lists each configured symbol, and each "
-        + "stored contract when the database answered. lastTickUtc is ABSENT when no print is stored for "
-        + "that contract. contractId is ABSENT when no contract has been stored for that symbol. session is "
+        + "Available or Unavailable from a live probe. contracts lists each configured symbol. A contract id "
+        + "is present only when that contract printed or was covered inside the elapsed session. A rolled-off "
+        + "contract is ABSENT. lastTickUtc is ABSENT when that contract has no print inside the session. "
+        + "contractId is ABSENT when the symbol has no contract active in the session. session is "
         + "the elapsed futures session — the one in progress, or the one that most recently closed — and is "
         + "ABSENT when the calendar cannot name one. gaps lists TapeCoverage holes in that elapsed window; "
         + "the array is ABSENT when the ledger could not be read, and an empty array means the window is "

@@ -66,9 +66,20 @@ public static class HealthEndpoint
         app.MapWhen(IsTheProbe, branch => branch.Run(WriteAsync));
     }
 
+    /// <summary>
+    /// Whether <paramref name="path"/> is the liveness probe, matched ordinally.
+    /// </summary>
+    /// <param name="path">The request path.</param>
+    /// <returns><see langword="true"/> only for <c>/health</c>.</returns>
+    /// <remarks>
+    /// Ordinal on purpose. The tracing filter calls this rather than comparing the path a second time, so
+    /// the probe and the span exclusion cannot drift. A case-insensitive match would either unauthenticate
+    /// <c>/Health</c> or stop tracing a path the gate still answers.
+    /// </remarks>
+    public static bool IsProbePath(PathString path) => path.Equals(Path, StringComparison.Ordinal);
+
     private static bool IsTheProbe(HttpContext context)
-        => HttpMethods.IsGet(context.Request.Method)
-            && context.Request.Path.Equals(Path, StringComparison.Ordinal);
+        => HttpMethods.IsGet(context.Request.Method) && IsProbePath(context.Request.Path);
 
     private static async Task WriteAsync(HttpContext context)
     {

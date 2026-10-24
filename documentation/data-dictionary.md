@@ -410,7 +410,9 @@ chunks older than seven days compress in place. Compression is a different Times
 The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md): probe
 `pg_available_extensions`, create it when Timescale is present, warn and leave a plain table when it is not.
 
-Index: `(Instrument, ContractId, TradeTimeUtc)` — the shape of every read.
+Indexes: `(Instrument, ContractId, TradeTimeUtc)` — one instrument, one contract, a window; and
+`(Instrument, TradeTimeUtc)` — the recorder-health read, which names the instrument and the session and not
+the contract (gh#756).
 
 **Volume-front is a read over this table, not a filter and not a twelfth table** (gh#219). Per
 `(instrument, contract)` per session, total `Size`. The highest-volume contract is the tape's

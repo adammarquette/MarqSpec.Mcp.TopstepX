@@ -321,20 +321,6 @@ public sealed class RecorderHealthToolTests
     }
 
     [Fact]
-    public async Task GetRecorderHealth_WhenTheStoreHoldsAPrintForAnUnconfiguredSymbol_ReportsThatContract()
-    {
-        await using Fixture fixture = Fixture.Open();
-        DateTimeOffset printed = At(2026, 8, 18, 8, 0);
-        fixture.Store.Ticks.Add(new ContractLastTick("RTY", "CON.F.US.RTY.U26", printed));
-
-        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
-
-        report.Contracts.Should().Contain(row =>
-            row.Symbol == "RTY" && row.ContractId == "CON.F.US.RTY.U26" && row.LastTickUtc == printed);
-        report.Contracts.Select(row => row.Symbol).Should().ContainInOrder("ES", "NQ", "RTY");
-    }
-
-    [Fact]
     public async Task GetRecorderHealth_WhenTheReportIsDegraded_CountsOneDegradedRead()
     {
         await using Fixture fixture = Fixture.Open();
@@ -366,17 +352,187 @@ public sealed class RecorderHealthToolTests
             .Which.Tags[HostTelemetry.OutcomeTag].Should().Be(RecorderHealthOutcome.Ok);
     }
 
-    [Fact]
+    [Fact(Timeout = 5_000)]
     public async Task GetRecorderHealth_WhenTheCallerCancels_DoesNotCountARead()
     {
         await using Fixture fixture = Fixture.Open();
         using MetricCollector<long> reads = Collect(fixture.Telemetry);
-        fixture.Store.ProbeFailure = new OperationCanceledException();
+        fixture.Service.ProbeTimeout = TimeSpan.FromSeconds(2);
+        fixture.Store.HoldProbe = true;
+        using CancellationTokenSource cancelled = new(TimeSpan.FromMilliseconds(50));
 
-        Func<Task> call = () => fixture.Tools.GetRecorderHealth(CancellationToken.None);
+        Func<Task> call = () => fixture.Tools.GetRecorderHealth(cancelled.Token);
 
         await call.Should().ThrowAsync<OperationCanceledException>();
         reads.GetMeasurementSnapshot().Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ProbeTimeout_WhenUnset_IsTwoSeconds()
+    {
+        await using Fixture fixture = Fixture.Open();
+
+        fixture.Service.ProbeTimeout.Should().Be(RecorderHealthService.DefaultProbeTimeout);
+        RecorderHealthService.DefaultProbeTimeout.Should().Be(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task GetRecorderHealth_WhenTheDatabaseCheckExceedsTheDeadline_CountsATimeout()
+    {
+        await using Fixture fixture = Fixture.Open();
+        using MetricCollector<long> reads = Collect(fixture.Telemetry);
+        fixture.Service.ProbeTimeout = TimeSpan.FromMilliseconds(200);
+        fixture.Store.HoldProbe = true;
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.Database.Should().Be(RecorderHealthReport.StoreConnectivity.Unavailable);
+        report.Gaps.Should().BeNull();
+        report.Contracts.Should().OnlyContain(row => row.ContractId == null);
+        reads.GetMeasurementSnapshot().Should().ContainSingle()
+            .Which.Tags[HostTelemetry.OutcomeTag].Should().Be(RecorderHealthOutcome.Timeout);
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenARolledOffContractHasOnlyOldPrints_OmitsItAndStaysOk()
+    {
+        await using Fixture fixture = Fixture.Listening();
+        using MetricCollector<long> reads = Collect(fixture.Telemetry);
+        const string june = "CON.F.US.EP.M26";
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", june, At(2026, 6, 15, 10, 0)));
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday));
+        fixture.Store.Ticks.Add(new ContractLastTick("NQ", Nq, _tuesday));
+        fixture.Store.Coverage.Add(new CoverageSlice("ES", june, At(2026, 6, 15, 9, 0), At(2026, 6, 15, 11, 0)));
+        fixture.Store.Coverage.Add(Open(_open, "ES", Es));
+        fixture.Store.Coverage.Add(Open(_open, "NQ", Nq));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.Contracts.Should().NotContain(row => row.ContractId == june);
+        report.Gaps.Should().BeEmpty();
+        reads.LastMeasurement!.Tags[HostTelemetry.OutcomeTag].Should().Be(RecorderHealthOutcome.Ok);
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenAnUnconfiguredSymbolHasOldPrints_OmitsItAndStaysOk()
+    {
+        await using Fixture fixture = Fixture.Listening();
+        using MetricCollector<long> reads = Collect(fixture.Telemetry);
+        fixture.Store.Ticks.Add(new ContractLastTick("RTY", "CON.F.US.RTY.M26", At(2026, 6, 15, 10, 0)));
+        fixture.Store.Ticks.Add(new ContractLastTick("RTY", "CON.F.US.RTY.U26", _tuesday));
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday));
+        fixture.Store.Ticks.Add(new ContractLastTick("NQ", Nq, _tuesday));
+        fixture.Store.Coverage.Add(Open(_open, "ES", Es));
+        fixture.Store.Coverage.Add(Open(_open, "NQ", Nq));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.Contracts.Should().NotContain(row => row.Symbol == "RTY");
+        report.Gaps.Should().BeEmpty();
+        reads.LastMeasurement!.Tags[HostTelemetry.OutcomeTag].Should().Be(RecorderHealthOutcome.Ok);
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenTwoContractsTradedInsideTheSession_ReportsBoth()
+    {
+        await using Fixture fixture = Fixture.Listening();
+        const string june = "CON.F.US.EP.M26";
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", june, At(2026, 8, 18, 9, 0)));
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday));
+        fixture.Store.Coverage.Add(Open(_open, "ES", june));
+        fixture.Store.Coverage.Add(Open(_open, "ES", Es));
+        fixture.Store.Coverage.Add(Open(_open, "NQ", Nq));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.Contracts.Should().Contain(row => row.Symbol == "ES" && row.ContractId == june);
+        report.Contracts.Should().Contain(row => row.Symbol == "ES" && row.ContractId == Es);
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenTheSessionIsOpen_AsksOnlyForThatWindow()
+    {
+        await using Fixture fixture = Fixture.Open();
+
+        await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        fixture.Store.RequestedStart.Should().Be(_open);
+        fixture.Store.RequestedEnd.Should().Be(_tuesday);
+        fixture.Store.RequestedInstruments.Should().BeEquivalentTo("ES", "NQ");
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenCalledTwiceInsideTheMemo_DoesNotScanAgain()
+    {
+        FakeTimeProvider clock = new(_tuesday);
+        ScriptedHealthStore store = new();
+        RecorderHealthMemo memo = new();
+        await using Fixture first = Fixture.Sharing(store, memo, clock, listening: true);
+        await using Fixture second = Fixture.Sharing(store, memo, clock, listening: true);
+        using MetricCollector<long> reads = Collect(first.Telemetry);
+        store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday));
+        store.Ticks.Add(new ContractLastTick("NQ", Nq, _tuesday));
+        store.Coverage.Add(Open(_open, "ES", Es));
+        store.Coverage.Add(Open(_open, "NQ", Nq));
+
+        await first.Tools.GetRecorderHealth(CancellationToken.None);
+        await second.Tools.GetRecorderHealth(CancellationToken.None);
+
+        store.Probes.Should().Be(1);
+        store.TickReads.Should().Be(1);
+        reads.GetMeasurementSnapshot().Should().ContainSingle();
+
+        clock.Advance(RecorderHealthMemo.Ttl);
+        await first.Tools.GetRecorderHealth(CancellationToken.None);
+
+        store.Probes.Should().Be(2);
+    }
+
+    [Fact(Timeout = 5_000)]
+    public async Task GetRecorderHealth_WhenTwoCallsOverlap_ScansOnce()
+    {
+        FakeTimeProvider clock = new(_tuesday);
+        ScriptedHealthStore store = new();
+        RecorderHealthMemo memo = new();
+        await using Fixture first = Fixture.Sharing(store, memo, clock);
+        await using Fixture second = Fixture.Sharing(store, memo, clock);
+        store.HoldProbe = true;
+
+        Task<RecorderHealthReport.Report> left = first.Tools.GetRecorderHealth(CancellationToken.None);
+        Task<RecorderHealthReport.Report> right = second.Tools.GetRecorderHealth(CancellationToken.None);
+        DateTimeOffset giveUp = DateTimeOffset.UtcNow.AddSeconds(2);
+        while (store.Probes < 1 && DateTimeOffset.UtcNow < giveUp)
+        {
+            await Task.Delay(10);
+        }
+
+        await Task.Delay(50);
+        store.Probes.Should().Be(1);
+        store.ReleaseProbe();
+        await Task.WhenAll(left, right);
+        store.Probes.Should().Be(1);
+        store.TickReads.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenTheSessionClosedEarly_DoesNotTreatTheAfternoonAsAGap()
+    {
+        await using Fixture fixture = Fixture.Listening(
+            At(2026, 11, 27, 13, 0),
+            earlyCloses: ["2026-11-27 12:00"]);
+        DateTimeOffset earlyOpen = At(2026, 11, 26, 17, 0);
+        DateTimeOffset earlyClose = At(2026, 11, 27, 12, 0);
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, At(2026, 11, 27, 11, 0)));
+        fixture.Store.Ticks.Add(new ContractLastTick("NQ", Nq, At(2026, 11, 27, 11, 0)));
+        fixture.Store.Coverage.Add(new CoverageSlice("ES", Es, earlyOpen, earlyClose));
+        fixture.Store.Coverage.Add(new CoverageSlice("NQ", Nq, earlyOpen, earlyClose));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.Session!.InSession.Should().BeFalse();
+        report.Session.CloseUtc.Should().Be(earlyClose);
+        report.Gaps.Should().BeEmpty();
+        report.Gaps.Should().NotContain(gap => gap.ToUtc == At(2026, 11, 27, 16, 0));
     }
 
     [Fact]
@@ -406,11 +562,13 @@ public sealed class RecorderHealthToolTests
     {
         private Fixture(
             RecorderHealthTools tools,
+            RecorderHealthService service,
             HostTelemetry telemetry,
             TapeAvailabilityHolder tape,
             ScriptedHealthStore store)
         {
             Tools = tools;
+            Service = service;
             Telemetry = telemetry;
             Tape = tape;
             Store = store;
@@ -418,16 +576,31 @@ public sealed class RecorderHealthToolTests
 
         public RecorderHealthTools Tools { get; }
 
+        public RecorderHealthService Service { get; }
+
         public HostTelemetry Telemetry { get; }
 
         public TapeAvailabilityHolder Tape { get; }
 
         public ScriptedHealthStore Store { get; }
 
-        public static Fixture Open(DateTimeOffset? now = null, IReadOnlyList<string>? holidays = null) =>
-            Build(now ?? _tuesday, holidays, listening: false);
+        public static Fixture Open(
+            DateTimeOffset? now = null,
+            IReadOnlyList<string>? holidays = null,
+            IReadOnlyList<string>? earlyCloses = null) =>
+            Build(now ?? _tuesday, holidays, earlyCloses, listening: false, store: null, memo: null, clock: null);
 
-        public static Fixture Listening() => Build(_tuesday, holidays: null, listening: true);
+        public static Fixture Listening(
+            DateTimeOffset? now = null,
+            IReadOnlyList<string>? earlyCloses = null) =>
+            Build(now ?? _tuesday, holidays: null, earlyCloses, listening: true, store: null, memo: null, clock: null);
+
+        public static Fixture Sharing(
+            ScriptedHealthStore store,
+            RecorderHealthMemo memo,
+            FakeTimeProvider clock,
+            bool listening = false) =>
+            Build(clock.GetUtcNow(), holidays: null, earlyCloses: null, listening, store, memo, clock);
 
         public ValueTask DisposeAsync()
         {
@@ -435,11 +608,20 @@ public sealed class RecorderHealthToolTests
             return ValueTask.CompletedTask;
         }
 
-        private static Fixture Build(DateTimeOffset now, IReadOnlyList<string>? holidays, bool listening)
+        private static Fixture Build(
+            DateTimeOffset now,
+            IReadOnlyList<string>? holidays,
+            IReadOnlyList<string>? earlyCloses,
+            bool listening,
+            ScriptedHealthStore? store,
+            RecorderHealthMemo? memo,
+            FakeTimeProvider? clock)
         {
             HostTelemetry telemetry = new();
             TapeAvailabilityHolder tape = new();
-            ScriptedHealthStore store = new();
+            store ??= new ScriptedHealthStore();
+            clock ??= new FakeTimeProvider(now);
+            memo ??= new RecorderHealthMemo();
             if (listening)
             {
                 tape.Set(TapeAvailability.ConnectedButNotSubscribed());
@@ -457,38 +639,71 @@ public sealed class RecorderHealthToolTests
                 store,
                 tape,
                 new InstrumentRegistry(options),
-                BarSessionCalendar.Parse("16:00", holidays ?? []),
-                new FakeTimeProvider(now),
-                telemetry);
-            return new Fixture(new RecorderHealthTools(service), telemetry, tape, store);
+                BarSessionCalendar.Parse("16:00", holidays ?? [], earlyCloses: earlyCloses ?? []),
+                clock,
+                telemetry,
+                memo);
+            return new Fixture(new RecorderHealthTools(service), service, telemetry, tape, store);
         }
     }
 
     private sealed class ScriptedHealthStore : IRecorderHealthStore
     {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _probes;
+        private int _tickReads;
+
         public bool Connected { get; set; } = true;
+
+        public bool HoldProbe { get; set; }
 
         public Exception? ProbeFailure { get; set; }
 
         public Exception? ReadFailure { get; set; }
 
+        public int Probes => Volatile.Read(ref _probes);
+
+        public int TickReads => Volatile.Read(ref _tickReads);
+
+        public IReadOnlyCollection<string>? RequestedInstruments { get; private set; }
+
+        public DateTimeOffset RequestedStart { get; private set; }
+
+        public DateTimeOffset RequestedEnd { get; private set; }
+
         public List<ContractLastTick> Ticks { get; } = [];
 
         public List<CoverageSlice> Coverage { get; } = [];
 
-        public Task<bool> DatabaseConnectedAsync(CancellationToken cancellationToken)
+        public void ReleaseProbe() => _release.TrySetResult();
+
+        public async Task<bool> DatabaseConnectedAsync(CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref _probes);
             cancellationToken.ThrowIfCancellationRequested();
+            if (HoldProbe)
+            {
+                await _release.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             if (ProbeFailure is not null)
             {
                 throw ProbeFailure;
             }
 
-            return Task.FromResult(Connected);
+            return Connected;
         }
 
-        public Task<IReadOnlyList<ContractLastTick>> LastTicksAsync(CancellationToken cancellationToken)
+        public Task<IReadOnlyList<ContractLastTick>> LastTicksAsync(
+            IReadOnlyCollection<string> instruments,
+            DateTimeOffset windowStart,
+            DateTimeOffset windowEnd,
+            CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref _tickReads);
+            RequestedInstruments = instruments;
+            RequestedStart = windowStart;
+            RequestedEnd = windowEnd;
             cancellationToken.ThrowIfCancellationRequested();
             if (ReadFailure is not null)
             {
@@ -499,6 +714,7 @@ public sealed class RecorderHealthToolTests
         }
 
         public Task<IReadOnlyList<CoverageSlice>> CoverageAsync(
+            IReadOnlyCollection<string> instruments,
             DateTimeOffset windowStart,
             DateTimeOffset windowEnd,
             CancellationToken cancellationToken)

@@ -135,7 +135,7 @@ public sealed class RecorderHealthEndpointTests
     }
 
     [Fact]
-    public async Task Get_LeavesTheLivenessProbeUnauthenticated()
+    public async Task Get_WhenNoTokenIsSent_LeavesTheLivenessProbeOk()
     {
         await using Probe probe = await StartAsync();
 
@@ -143,6 +143,64 @@ public sealed class RecorderHealthEndpointTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         (await ReadJsonAsync(response)).GetProperty("status").GetString().Should().Be("ok");
+    }
+
+    [Theory]
+    [InlineData("GET", "/health/recorder/")]
+    [InlineData("GET", "/health/Recorder")]
+    [InlineData("GET", "/Health/recorder")]
+    [InlineData("HEAD", "/health/recorder")]
+    [InlineData("POST", "/health/recorder")]
+    [InlineData("GET", "/health/recorder?x=1")]
+    public async Task Get_WhenTheRouteIsNotAnExactAuthenticatedGet_IsUnauthorized(string method, string path)
+    {
+        await using Probe probe = await StartAsync();
+        using HttpRequestMessage request = new(new HttpMethod(method), path);
+
+        using HttpResponseMessage response = await probe.Client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Get_WhenForwardedHeadersAreSpoofed_IsUnauthorized()
+    {
+        await using Probe probe = await StartAsync();
+        using HttpRequestMessage request = new(HttpMethod.Get, RecorderHealthEndpoint.Path);
+        request.Headers.TryAddWithoutValidation("X-Forwarded-For", "127.0.0.1");
+        request.Headers.TryAddWithoutValidation("X-Forwarded-Proto", "https");
+        request.Headers.TryAddWithoutValidation("X-Forwarded-Host", "localhost");
+
+        using HttpResponseMessage response = await probe.Client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        response.Headers.WwwAuthenticate.Should().ContainSingle()
+            .Which.Scheme.Should().Be("Bearer");
+    }
+
+    [Fact]
+    public async Task Get_InOAuthMode_RequiresATokenAndThenReturnsTheReport()
+    {
+        await using StubIssuer issuer = await StubIssuer.StartAsync();
+        Dictionary<string, string?> settings = new(_baseSettings)
+        {
+            ["Mcp:Auth:Mode"] = "OAuth",
+            ["Mcp:OAuth:Issuer"] = issuer.Issuer,
+            ["Mcp:OAuth:ClientIds"] = "connector-client",
+            ["Mcp:OAuth:ResourceUrl"] = "https://topstepx-mcp.example.test/mcp",
+        };
+        settings.Remove("Mcp:HttpBearerToken");
+        await using Probe probe = await StartAsync(settings: settings);
+
+        using HttpResponseMessage refused = await probe.Client.GetAsync(RecorderHealthEndpoint.Path);
+        refused.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        using HttpRequestMessage request = new(HttpMethod.Get, RecorderHealthEndpoint.Path);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", issuer.Mint(issuer.Valid()));
+        using HttpResponseMessage allowed = await probe.Client.SendAsync(request);
+
+        allowed.StatusCode.Should().Be(HttpStatusCode.OK);
+        (await ReadJsonAsync(allowed)).GetProperty("feedConnected").GetBoolean().Should().BeTrue();
     }
 
     private static HttpRequestMessage Authed()
@@ -155,12 +213,15 @@ public sealed class RecorderHealthEndpointTests
     private static async Task<JsonElement> ReadJsonAsync(HttpResponseMessage response) =>
         JsonDocument.Parse(await response.Content.ReadAsStringAsync()).RootElement;
 
-    private static async Task<Probe> StartAsync(bool feedDown = false, bool probeFails = false)
+    private static async Task<Probe> StartAsync(
+        bool feedDown = false,
+        bool probeFails = false,
+        Dictionary<string, string?>? settings = null)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
-        builder.Configuration.AddInMemoryCollection(_baseSettings);
+        builder.Configuration.AddInMemoryCollection(settings ?? _baseSettings);
 
         McpOptions mcp = builder.Configuration.GetSection(McpOptions.SectionName).Get<McpOptions>()!;
         Program.ConfigureServices(builder, mcp);
@@ -228,10 +289,15 @@ public sealed class RecorderHealthEndpointTests
             return Task.FromResult(true);
         }
 
-        public Task<IReadOnlyList<ContractLastTick>> LastTicksAsync(CancellationToken cancellationToken) =>
+        public Task<IReadOnlyList<ContractLastTick>> LastTicksAsync(
+            IReadOnlyCollection<string> instruments,
+            DateTimeOffset windowStart,
+            DateTimeOffset windowEnd,
+            CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ContractLastTick>>([new ContractLastTick("ES", Es, _tuesday)]);
 
         public Task<IReadOnlyList<CoverageSlice>> CoverageAsync(
+            IReadOnlyCollection<string> instruments,
             DateTimeOffset windowStart,
             DateTimeOffset windowEnd,
             CancellationToken cancellationToken) =>

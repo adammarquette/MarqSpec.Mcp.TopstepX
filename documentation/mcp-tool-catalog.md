@@ -993,16 +993,23 @@ subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a
 `database` is `Available` or `Unavailable` from a live probe. That probe does not replace the startup
 `StoreAvailability` the other tools use, and a failure carries no connection target.
 
-`contracts` lists every configured symbol, plus any stored contract the probe could read. `listening` and
-`tape` are that symbol's tape health. `contractId` is omitted when no contract is stored for the symbol.
-`lastTickUtc` is omitted when no print is stored — a missing print time is not filled in.
+`contracts` lists every configured symbol. A `contractId` is present only when that contract printed or was
+covered inside the elapsed session. A rolled-off contract, and a symbol that is not configured, are absent:
+neither becomes a row, so neither shows up as a session-long gap or keeps the report degraded. `listening`
+and `tape` are that symbol's tape health. `contractId` is omitted when the symbol has no contract active in
+the session. `lastTickUtc` is omitted when that contract has no print inside the session — a missing print
+time is not filled in.
 
 `session` is the product session in progress, or the one that most recently closed when the market is shut.
-It is omitted when the calendar cannot name one. `gaps` are the `TapeCoverage` holes in the elapsed part of
-that session. An open listen counts through `asOfUtc` only while that symbol is still listening; a
-still-open row while it is not listening is not coverage. An empty array means the elapsed window is
-covered. The array is omitted when the ledger could not be read, which is a different statement from "no
-holes". Time still in the future of an open session is not a hole.
+It is omitted when the calendar cannot name one. A declared early close (`MarketData__EarlyCloses`) ends
+that session at the declared Central time, and the afternoon after it is not a hole here. `gaps` are the
+`TapeCoverage` holes in the elapsed part of that session. An open listen counts through `asOfUtc` only while
+that symbol is still listening; a still-open row while it is not listening is not coverage. An empty array
+means the elapsed window is covered. The array is omitted when the ledger could not be read, which is a
+different statement from "no holes". Time still in the future of an open session is not a hole. The database
+check has a short deadline; exceeding it leaves `database` Unavailable and counts `timeout`, which is not
+the same as the caller cancelling. A repeated call within a few seconds reuses the report rather than
+scanning the tape again.
 
 A down feed is still HTTP 200 on `GET /health/recorder`. The tool only reads.
 

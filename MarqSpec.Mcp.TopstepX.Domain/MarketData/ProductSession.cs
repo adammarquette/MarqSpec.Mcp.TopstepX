@@ -15,8 +15,8 @@ public readonly record struct ProductSession(DateOnly TradeDate, DateTimeOffset 
 /// <remarks>
 /// <para>
 /// Both answers ask <see cref="BarSessionCalendar"/> rather than restating its rules. A second
-/// implementation of the weekend, the maintenance window and the holiday-suppresses-the-previous-evening
-/// rule is a second place for them to be wrong. The scan is the same shape
+/// implementation of the weekend, the maintenance window, the holiday-suppresses-the-previous-evening
+/// rule and a declared early close is a second place for them to be wrong. The scan is the same shape
 /// <c>ReferenceTools</c> uses to find the next open: step, ask the calendar, then report the
 /// session's own bounds rather than the probe that happened to land inside it.
 /// </para>
@@ -40,7 +40,7 @@ public static class ProductSessions
         ArgumentNullException.ThrowIfNull(calendar);
 
         DateTimeOffset open = MarketClock.FromMarket(tradeDate.AddDays(-1), calendar.SessionOpen).ToUniversalTime();
-        DateTimeOffset close = MarketClock.FromMarket(tradeDate, calendar.SessionClose).ToUniversalTime();
+        DateTimeOffset close = MarketClock.FromMarket(tradeDate, calendar.SessionCloseOn(tradeDate)).ToUniversalTime();
         return new ProductSession(tradeDate, open, close);
     }
 
@@ -56,9 +56,13 @@ public static class ProductSessions
     {
         ArgumentNullException.ThrowIfNull(calendar);
 
-        return calendar.TradeDateFor(instant) is { } tradeDate
-            ? For(calendar, tradeDate)
-            : null;
+        if (calendar.TradeDateFor(instant) is not { } tradeDate)
+        {
+            return null;
+        }
+
+        ProductSession session = For(calendar, tradeDate);
+        return instant < session.CloseUtc ? session : null;
     }
 
     /// <summary>
@@ -77,20 +81,21 @@ public static class ProductSessions
     {
         ArgumentNullException.ThrowIfNull(calendar);
 
-        if (calendar.TradeDateFor(instant) is not null)
+        if (calendar.TradeDateFor(instant) is { } tradeDate)
         {
-            return null;
+            ProductSession running = For(calendar, tradeDate);
+            return running.CloseUtc <= instant ? running : null;
         }
 
         DateTimeOffset limit = instant - _lookback;
         for (DateTimeOffset probe = instant; probe >= limit; probe -= _step)
         {
-            if (calendar.TradeDateFor(probe) is not { } tradeDate)
+            if (calendar.TradeDateFor(probe) is not { } closedOn)
             {
                 continue;
             }
 
-            ProductSession session = For(calendar, tradeDate);
+            ProductSession session = For(calendar, closedOn);
             if (session.CloseUtc <= instant)
             {
                 return session;

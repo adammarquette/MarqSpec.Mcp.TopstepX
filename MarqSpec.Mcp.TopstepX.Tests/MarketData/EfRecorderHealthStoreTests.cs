@@ -1,14 +1,9 @@
 using FluentAssertions;
-using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
-using MarqSpec.Mcp.TopstepX.Telemetry;
-using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
-using Microsoft.Extensions.Time.Testing;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -20,6 +15,8 @@ public sealed class EfRecorderHealthStoreTests : IDisposable
 {
     private const string Venue = "projectx";
     private const string Es = "CON.F.US.EP.U26";
+    private const string EsJune = "CON.F.US.EP.M26";
+    private static readonly string[] _es = ["ES"];
 
     private static readonly DateTimeOffset _tuesday = At(2026, 8, 18, 9, 30);
     private static readonly DateTimeOffset _open = At(2026, 8, 17, 17, 0);
@@ -41,7 +38,7 @@ public sealed class EfRecorderHealthStoreTests : IDisposable
         await PrintAsync(later, 2);
 
         IReadOnlyList<ContractLastTick> ticks = await new EfRecorderHealthStore(_database)
-            .LastTicksAsync(CancellationToken.None);
+            .LastTicksAsync(_es, _open, _tuesday, CancellationToken.None);
 
         ticks.Should().ContainSingle()
             .Which.Should().Be(new ContractLastTick("ES", Es, later));
@@ -53,7 +50,7 @@ public sealed class EfRecorderHealthStoreTests : IDisposable
         await CoverAsync(_open, At(2026, 8, 18, 9, 0));
 
         IReadOnlyList<CoverageSlice> slices = await new EfRecorderHealthStore(_database)
-            .CoverageAsync(_open, _tuesday, CancellationToken.None);
+            .CoverageAsync(_es, _open, _tuesday, CancellationToken.None);
 
         slices.Should().ContainSingle()
             .Which.Should().Be(new CoverageSlice("ES", Es, _open, At(2026, 8, 18, 9, 0)));
@@ -65,9 +62,44 @@ public sealed class EfRecorderHealthStoreTests : IDisposable
         await CoverAsync(At(2026, 8, 17, 10, 0), _open);
 
         IReadOnlyList<CoverageSlice> slices = await new EfRecorderHealthStore(_database)
-            .CoverageAsync(_open, _tuesday, CancellationToken.None);
+            .CoverageAsync(_es, _open, _tuesday, CancellationToken.None);
 
         slices.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task LastTicksAsync_WhenAPrintFallsOutsideTheWindow_OmitsThatContract()
+    {
+        await PrintAsync(At(2026, 6, 15, 10, 0), 1, EsJune);
+        await PrintAsync(_tuesday, 2, Es);
+
+        IReadOnlyList<ContractLastTick> ticks = await new EfRecorderHealthStore(_database)
+            .LastTicksAsync(_es, _open, _tuesday, CancellationToken.None);
+
+        ticks.Should().ContainSingle()
+            .Which.ContractId.Should().Be(Es);
+    }
+
+    [Fact]
+    public async Task CoverageAsync_WhenTheInstrumentIsNotRequested_OmitsThatRange()
+    {
+        await CoverAsync(_open, _tuesday, "RTY", "CON.F.US.RTY.U26");
+
+        IReadOnlyList<CoverageSlice> slices = await new EfRecorderHealthStore(_database)
+            .CoverageAsync(_es, _open, _tuesday, CancellationToken.None);
+
+        slices.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Trades_IndexesInstrumentThenTradeTime()
+    {
+        string? columns = _database.Model.FindEntityType(typeof(TradeRecord))!
+            .GetIndexes()
+            .Select(index => string.Join(",", index.Properties.Select(property => property.Name)))
+            .SingleOrDefault(shape => shape == "Instrument,TradeTimeUtc");
+
+        columns.Should().Be("Instrument,TradeTimeUtc");
     }
 
     [Fact]
@@ -79,64 +111,13 @@ public sealed class EfRecorderHealthStoreTests : IDisposable
         connected.Should().BeTrue();
     }
 
-    [Fact]
-    public async Task ReadAsync_WhenTheListenIsStillOpen_ReportsNoGap()
-    {
-        await PrintAsync(_tuesday, 1);
-        await CoverAsync(_open, TapeCoverageRecord.StillListeningEnd);
-        RecorderHealthService service = Service(listening: true);
-
-        RecorderHealthReport.Report report = await service.ReadAsync(CancellationToken.None);
-
-        report.Gaps.Should().NotContain(gap => gap.Symbol == "ES");
-        report.Contracts.Should().Contain(row => row.Symbol == "ES" && row.LastTickUtc == _tuesday);
-    }
-
-    [Fact]
-    public async Task ReadAsync_WhenListeningStoppedMidSession_ReportsTheGapAfterTheClose()
-    {
-        DateTimeOffset stopped = At(2026, 8, 18, 9, 0);
-        await PrintAsync(stopped, 1);
-        await CoverAsync(_open, stopped);
-        RecorderHealthService service = Service(listening: false);
-
-        RecorderHealthReport.Report report = await service.ReadAsync(CancellationToken.None);
-
-        report.Gaps.Should().Contain(new RecorderHealthReport.Gap("ES", Es, stopped, _tuesday));
-    }
-
-    private RecorderHealthService Service(bool listening)
-    {
-        TapeAvailabilityHolder tape = new();
-        tape.Set(TapeAvailability.ConnectedButNotSubscribed());
-        if (listening)
-        {
-            tape.Set("ES", TapeAvailability.Listening());
-            tape.Set("NQ", TapeAvailability.Listening());
-        }
-
-        IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions
-        {
-            Instruments = "ES,NQ",
-            MaxRows = 5_000,
-            SessionCloseCentral = "16:00",
-        });
-        return new RecorderHealthService(
-            new EfRecorderHealthStore(_database),
-            tape,
-            new InstrumentRegistry(options),
-            BarSessionCalendar.Parse("16:00", []),
-            new FakeTimeProvider(_tuesday),
-            new HostTelemetry());
-    }
-
-    private async Task PrintAsync(DateTimeOffset when, long sequence)
+    private async Task PrintAsync(DateTimeOffset when, long sequence, string contractId = Es)
     {
         _database.Trades.Add(new TradeRecord
         {
             Venue = Venue,
             Instrument = "ES",
-            ContractId = Es,
+            ContractId = contractId,
             TradeTimeUtc = when,
             Sequence = sequence,
             Price = 5000m,
@@ -147,13 +128,17 @@ public sealed class EfRecorderHealthStoreTests : IDisposable
         await _database.SaveChangesAsync();
     }
 
-    private async Task CoverAsync(DateTimeOffset start, DateTimeOffset end)
+    private async Task CoverAsync(
+        DateTimeOffset start,
+        DateTimeOffset end,
+        string instrument = "ES",
+        string contractId = Es)
     {
         _database.TapeCoverage.Add(new TapeCoverageRecord
         {
             Venue = Venue,
-            Instrument = "ES",
-            ContractId = Es,
+            Instrument = instrument,
+            ContractId = contractId,
             RangeStart = start,
             RangeEnd = end,
             RecordedAt = _recorded,

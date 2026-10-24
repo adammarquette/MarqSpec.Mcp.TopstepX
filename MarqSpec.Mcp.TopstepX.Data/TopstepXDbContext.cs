@@ -244,8 +244,12 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.Property(t => t.Price).HasColumnType(PriceColumnType);
             entity.Property(t => t.Direction).HasConversion<int>();
 
-            // The shape of every read: one instrument, one contract, a window.
+            // One instrument, one contract, a window — the tape reads.
             entity.HasIndex(t => new { t.Instrument, t.ContractId, t.TradeTimeUtc });
+
+            // Recorder health names the instrument and the session, not the contract. The index above cannot
+            // seek that predicate: ContractId sits between Instrument and TradeTimeUtc (gh#756).
+            entity.HasIndex(t => new { t.Instrument, t.TradeTimeUtc });
         });
 
         modelBuilder.Entity<TapeCoverageRecord>(entity =>

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
@@ -17,9 +18,19 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// ledger omitted, never a message — the driver's text can name the host (gh#551).
 /// </para>
 /// <para>
+/// Rows are the configured symbols, plus a contract only when that contract printed or was covered inside
+/// the elapsed session. A rolled-off contract whose tape ended earlier is not a row, so it cannot look like
+/// a session-long gap. An unconfigured symbol is not a row either.
+/// </para>
+/// <para>
 /// An open <see cref="TapeCoverageRecord.StillListeningEnd"/> counts through the report instant only while
 /// that symbol is listening. A still-open row while it is not is a crash leftover, and treating it as
 /// coverage is how a dead recorder looks fully covered.
+/// </para>
+/// <para>
+/// The database work has its own deadline, <see cref="DefaultProbeTimeout"/>. The caller's cancellation is
+/// a different fact and is not counted. A fresh report is remembered for <see cref="RecorderHealthMemo.Ttl"/>
+/// so a tight poll does not scan the tape again.
 /// </para>
 /// </remarks>
 public sealed class RecorderHealthService(
@@ -28,41 +39,94 @@ public sealed class RecorderHealthService(
     InstrumentRegistry instruments,
     BarSessionCalendar calendar,
     TimeProvider clock,
-    HostTelemetry telemetry)
+    HostTelemetry telemetry,
+    RecorderHealthMemo memo)
 {
+    /// <summary>How long the database work of one report may take before it counts as a timeout.</summary>
+    public static readonly TimeSpan DefaultProbeTimeout = TimeSpan.FromSeconds(2);
+
     private readonly IRecorderHealthStore _store = store;
     private readonly TapeAvailabilityHolder _tape = tape;
     private readonly InstrumentRegistry _instruments = instruments;
     private readonly BarSessionCalendar _calendar = calendar;
     private readonly TimeProvider _clock = clock;
     private readonly HostTelemetry _telemetry = telemetry;
+    private readonly RecorderHealthMemo _memo = memo;
+
+    /// <summary>The deadline for this instance. Tests shorten it; production leaves the default.</summary>
+    public TimeSpan ProbeTimeout { get; set; } = DefaultProbeTimeout;
 
     /// <summary>The report as of the clock's current instant.</summary>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>The report. A missing print time and an unreadable ledger are omitted.</returns>
     public async Task<RecorderHealthReport.Report> ReadAsync(CancellationToken cancellationToken)
     {
+        using Activity? span = _telemetry.Activities.StartActivity("recorder.health", ActivityKind.Internal);
+
+        if (_memo.Read(_clock) is { } cached)
+        {
+            Tag(span, cached.Outcome);
+            return cached.Report;
+        }
+
+        await _memo.EnterAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_memo.Read(_clock) is { } fresh)
+            {
+                Tag(span, fresh.Outcome);
+                return fresh.Report;
+            }
+
+            (RecorderHealthReport.Report report, string outcome) =
+                await BuildAsync(cancellationToken).ConfigureAwait(false);
+            _memo.Remember(_clock, report, outcome);
+            Tag(span, outcome);
+            return report;
+        }
+        finally
+        {
+            _memo.Exit();
+        }
+    }
+
+    private async Task<(RecorderHealthReport.Report Report, string Outcome)> BuildAsync(
+        CancellationToken cancellationToken)
+    {
         DateTimeOffset asOf = _clock.GetUtcNow();
         TapeAvailability process = _tape.Value;
         bool feedConnected = process.Reason is TapeUnavailableReason.None
             or TapeUnavailableReason.ConnectedButNotSubscribed;
 
-        bool databaseUp = await ProbeAsync(cancellationToken).ConfigureAwait(false);
         ProductSession? open = ProductSessions.Containing(_calendar, asOf);
         ProductSession? named = open ?? ProductSessions.LatestClosed(_calendar, asOf);
+        Window? window = named is { } session && Horizon(asOf, session) > session.OpenUtc
+            ? new Window(session.OpenUtc, Horizon(asOf, session))
+            : null;
 
+        string[] symbols = _instruments.Instruments.Select(instrument => instrument.Symbol).ToArray();
+        Probe probe;
         IReadOnlyList<ContractLastTick> ticks = [];
         IReadOnlyList<CoverageSlice> slices = [];
-        if (databaseUp)
+        using (CancellationTokenSource deadline = new(ProbeTimeout))
+        using (CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            deadline.Token))
         {
             try
             {
-                ticks = await _store.LastTicksAsync(cancellationToken).ConfigureAwait(false);
-                if (named is { } window && Horizon(asOf, window) > window.OpenUtc)
+                probe = await ProbeAsync(linked.Token, cancellationToken).ConfigureAwait(false);
+                if (probe == Probe.Up && window is { } elapsed)
                 {
-                    slices = await _store.CoverageAsync(window.OpenUtc, Horizon(asOf, window), cancellationToken)
+                    ticks = await _store.LastTicksAsync(symbols, elapsed.Start, elapsed.End, linked.Token)
+                        .ConfigureAwait(false);
+                    slices = await _store.CoverageAsync(symbols, elapsed.Start, elapsed.End, linked.Token)
                         .ConfigureAwait(false);
                 }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                probe = Probe.TimedOut;
             }
             catch (OperationCanceledException)
             {
@@ -70,20 +134,27 @@ public sealed class RecorderHealthService(
             }
             catch (Exception)
             {
-                databaseUp = false;
-                ticks = [];
-                slices = [];
+                probe = Probe.Down;
             }
         }
 
-        IReadOnlyList<RecorderHealthReport.ContractStatus> contracts = BuildContracts(ticks, slices, databaseUp);
-        IReadOnlyList<RecorderHealthReport.Gap>? gaps = databaseUp && named is { } session
-            ? BuildGaps(session, asOf, slices, contracts)
+        if (probe != Probe.Up)
+        {
+            ticks = [];
+            slices = [];
+        }
+
+        bool databaseUp = probe == Probe.Up;
+        IReadOnlyList<RecorderHealthReport.ContractStatus> contracts =
+            BuildContracts(ticks, slices, databaseUp, window);
+        IReadOnlyList<RecorderHealthReport.Gap>? gaps = databaseUp && named is { } reportedSession
+            ? BuildGaps(reportedSession, asOf, slices, contracts)
             : null;
 
-        _telemetry.RecorderHealthRead(Outcome(databaseUp, feedConnected, contracts, gaps));
+        string outcome = Outcome(probe, feedConnected, contracts, gaps);
+        _telemetry.RecorderHealthRead(outcome);
 
-        return new RecorderHealthReport.Report(
+        RecorderHealthReport.Report report = new(
             asOf,
             feedConnected,
             process.Reason,
@@ -99,13 +170,19 @@ public sealed class RecorderHealthService(
                 : null,
             contracts,
             gaps);
+        return (report, outcome);
     }
 
-    private async Task<bool> ProbeAsync(CancellationToken cancellationToken)
+    private async Task<Probe> ProbeAsync(CancellationToken databaseToken, CancellationToken callerToken)
     {
         try
         {
-            return await _store.DatabaseConnectedAsync(cancellationToken).ConfigureAwait(false);
+            bool up = await _store.DatabaseConnectedAsync(databaseToken).ConfigureAwait(false);
+            return up ? Probe.Up : Probe.Down;
+        }
+        catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
+        {
+            return Probe.TimedOut;
         }
         catch (OperationCanceledException)
         {
@@ -113,14 +190,15 @@ public sealed class RecorderHealthService(
         }
         catch (Exception)
         {
-            return false;
+            return Probe.Down;
         }
     }
 
     private IReadOnlyList<RecorderHealthReport.ContractStatus> BuildContracts(
         IReadOnlyList<ContractLastTick> ticks,
         IReadOnlyList<CoverageSlice> slices,
-        bool databaseUp)
+        bool databaseUp,
+        Window? window)
     {
         Dictionary<string, Dictionary<string, DateTimeOffset?>> bySymbol = new(StringComparer.Ordinal);
         foreach (InstrumentId instrument in _instruments.Instruments)
@@ -128,11 +206,17 @@ public sealed class RecorderHealthService(
             bySymbol.TryAdd(instrument.Symbol, new Dictionary<string, DateTimeOffset?>(StringComparer.Ordinal));
         }
 
-        if (databaseUp)
+        if (databaseUp && window is { } elapsed)
         {
             foreach (ContractLastTick tick in ticks)
             {
-                Dictionary<string, DateTimeOffset?> contracts = ContractsFor(bySymbol, tick.Instrument);
+                if (!TryContractsFor(bySymbol, tick.Instrument, out Dictionary<string, DateTimeOffset?>? contracts)
+                    || tick.TradeTimeUtc < elapsed.Start
+                    || tick.TradeTimeUtc > elapsed.End)
+                {
+                    continue;
+                }
+
                 if (!contracts.TryGetValue(tick.ContractId, out DateTimeOffset? existing)
                     || existing is null
                     || tick.TradeTimeUtc > existing)
@@ -143,7 +227,14 @@ public sealed class RecorderHealthService(
 
             foreach (CoverageSlice slice in slices)
             {
-                ContractsFor(bySymbol, slice.Instrument).TryAdd(slice.ContractId, null);
+                if (!TryContractsFor(bySymbol, slice.Instrument, out Dictionary<string, DateTimeOffset?>? contracts)
+                    || slice.RangeStart >= elapsed.End
+                    || slice.RangeEnd <= elapsed.Start)
+                {
+                    continue;
+                }
+
+                contracts.TryAdd(slice.ContractId, null);
             }
         }
 
@@ -181,18 +272,13 @@ public sealed class RecorderHealthService(
         return rows;
     }
 
-    private static Dictionary<string, DateTimeOffset?> ContractsFor(
+    private static bool TryContractsFor(
         Dictionary<string, Dictionary<string, DateTimeOffset?>> bySymbol,
-        string instrument)
+        string instrument,
+        out Dictionary<string, DateTimeOffset?> contracts)
     {
         string symbol = new InstrumentId(instrument).Symbol;
-        if (!bySymbol.TryGetValue(symbol, out Dictionary<string, DateTimeOffset?>? contracts))
-        {
-            contracts = new Dictionary<string, DateTimeOffset?>(StringComparer.Ordinal);
-            bySymbol.Add(symbol, contracts);
-        }
-
-        return contracts;
+        return bySymbol.TryGetValue(symbol, out contracts!);
     }
 
     private List<RecorderHealthReport.Gap> BuildGaps(
@@ -257,12 +343,17 @@ public sealed class RecorderHealthService(
         asOf < session.CloseUtc ? asOf : session.CloseUtc;
 
     private static string Outcome(
-        bool databaseUp,
+        Probe probe,
         bool feedConnected,
         IReadOnlyList<RecorderHealthReport.ContractStatus> contracts,
         IReadOnlyList<RecorderHealthReport.Gap>? gaps)
     {
-        if (!databaseUp)
+        if (probe == Probe.TimedOut)
+        {
+            return RecorderHealthOutcome.Timeout;
+        }
+
+        if (probe != Probe.Up)
         {
             return RecorderHealthOutcome.Unavailable;
         }
@@ -273,6 +364,21 @@ public sealed class RecorderHealthService(
         }
 
         return RecorderHealthOutcome.Degraded;
+    }
+
+    private static void Tag(Activity? span, string outcome)
+    {
+        span?.SetTag(HostTelemetry.OutcomeTag, outcome);
+        for (Activity? activity = span is null ? Activity.Current : span.Parent;
+            activity is not null;
+            activity = activity.Parent)
+        {
+            if (activity.Kind == ActivityKind.Server)
+            {
+                activity.SetTag(HostTelemetry.OutcomeTag, outcome);
+                return;
+            }
+        }
     }
 
     private static int CompareContractId(string? left, string? right)
@@ -294,4 +400,13 @@ public sealed class RecorderHealthService(
 
         return string.CompareOrdinal(left, right);
     }
+
+    private enum Probe
+    {
+        Up,
+        Down,
+        TimedOut,
+    }
+
+    private readonly record struct Window(DateTimeOffset Start, DateTimeOffset End);
 }

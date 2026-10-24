@@ -446,6 +446,8 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
 
                     b.HasKey("Venue", "Instrument", "ContractId", "TradeTimeUtc", "Sequence");
 
+                    b.HasIndex("Instrument", "TradeTimeUtc");
+
                     b.HasIndex("Instrument", "ContractId", "TradeTimeUtc");
 
                     b.ToTable("Trades", (string)null);

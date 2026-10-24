@@ -598,13 +598,20 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   path stays behind the bearer gate (gh#756). `feedConnected` is true only when the market-data hub is up —
   listening, or connected and not yet subscribed. `feed` is the process-wide `TapeUnavailableReason` name.
   `database` is `Available` or `Unavailable` from a live probe that does not replace the startup
-  `StoreAvailability` the other tools use. `lastTickUtc` is omitted when no print is stored for that
-  contract. `gaps` are the `TapeCoverage` holes in the elapsed portion of the current product session, or of
-  the session that most recently closed when the market is shut. An open listen counts through the report
-  instant only while that instrument is listening; a still-open row while it is not listening is not
-  coverage. `gaps` is omitted when the ledger could not be read — an empty array means the window is
-  covered. A missing print time is omitted, never substituted. The endpoint is not the liveness probe: a
-  down feed is still HTTP 200, and `/health` stays the one unauthenticated path. The tool only reads.
+  `StoreAvailability` the other tools use. A probe that exceeds its short deadline is the same wire answer
+  and a distinct `timeout` count; a caller who cancelled is neither. `contracts` lists each configured
+  symbol, and a `contractId` only when that contract printed or was covered inside the elapsed session. A
+  rolled-off contract, and an unconfigured symbol, are absent — neither is a row, so neither is a
+  session-long gap and neither keeps the report degraded. `lastTickUtc` is omitted when that contract has
+  no print inside the session. `gaps` are the `TapeCoverage` holes in the elapsed portion of the current
+  product session, or of the session that most recently closed when the market is shut. A declared early
+  close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) ends that session at the declared time;
+  the hours after it are not a hole in this report. An open listen counts through the report instant only
+  while that instrument is listening; a still-open row while it is not listening is not coverage. `gaps`
+  is omitted when the ledger could not be read — an empty array means the window is covered. A missing
+  print time is omitted, never substituted. The endpoint is not the liveness probe: a down feed is still
+  HTTP 200, and `/health` stays the one unauthenticated path. The tool only reads. The read is bounded to
+  the configured symbols and that session, and a repeated call inside a few seconds reuses the report.
 
 ## R-6 — Observations
 

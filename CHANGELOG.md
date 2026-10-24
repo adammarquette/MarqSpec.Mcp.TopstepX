@@ -48,8 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.railway/` that is not the literal `"false"`. Nothing is deployed by this change. ADR-0025 (Railway as the
   target) is a draft; retention keys are proposed names only, pending their own ADR. See
   [`documentation/deployment.md`](documentation/deployment.md#railway-gh758).
-  The production recorder runs the gh#755 tape export (`TapeExport__*`, PR #765 contract) to its own
-  `/data/tape-exports` volume; staging has it off, and the check enforces the contract.
+  The gh#755 tape export stays off everywhere until the image contains #765 and drops root itself (#767); the
+  check already enforces the #765 contract for when it is enabled. Both checks read env keys the way .NET does
+  (case-insensitive, `:` equals `__`) and refuse colon keys, colliding keys and miscased known keys.
 
 ### Removed
 

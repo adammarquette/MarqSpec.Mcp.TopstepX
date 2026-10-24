@@ -49,7 +49,7 @@ const RESOURCE_URL = "https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp";
 const REQUIRED_SCOPE = "topstepx-mcp/read";
 const CREDENTIAL_SHAPE = /(ghp_|gho_|ghs_|github_pat_|glpat-|sk-[A-Za-z0-9]|xox[abp]-|AKIA[0-9A-Z]{12}|-----BEGIN|[A-Za-z0-9+/=_-]{40,})/;
 // Retention__* is not read by this build (gh#763); keep it out of the template.
-const RESERVED = /^Retention__/;
+const RESERVED = /^Retention(__|:)/i;
 // gh#755's contract (PR #765), exactly these names.
 const EXPORT_KEYS = ["TapeExport__Enabled", "TapeExport__Schedule", "TapeExport__Path", "TapeExport__Format",
   "TapeExport__Drive__FolderId", "TapeExport__Drive__ServiceAccountJson", "TapeExport__Drive__ServiceAccountJsonPath"];
@@ -62,6 +62,31 @@ if (names !== "postgres,recorder,server") fail(`services must be exactly postgre
 
 const literal = (v) => (v && v.type === "literal" ? v.value : undefined);
 const isShared = (v, name) => v && v.type === "sharedReference" && (!name || v.name === name);
+
+// ---- named check: [key-normalization] (r3) -------------------------------------------------------------
+// .NET configuration keys are case-insensitive and treat ':' and '__' alike, while Linux env names are not:
+// Trading__Enabled=false beside an upper-cased or colon-separated duplicate set to true is two variables to Railway and
+// one key to the app, and which wins depends on enumeration order. So, before any rule runs:
+//   - a key containing ':' is refused (always spell the separator '__');
+//   - two keys that collide after normalising (lower case, ':'->'__', DOTNET_/ASPNETCORE_ prefix dropped) are refused;
+//   - a key that normalises to a name this checker knows must be spelled exactly that way.
+// Every exact-name rule below is therefore a rule on the normalised key, and prefix rules match case-insensitively.
+const norm = (k) => k.toLowerCase().replace(/:/g, "__");
+const unprefixed = (k) => norm(k).replace(/^(dotnet_|aspnetcore_)(?=[a-z]+__)/, "");
+const KNOWN = new Map();
+for (const m of (await import("node:fs")).readFileSync(new URL(import.meta.url), "utf8").matchAll(/\b([A-Za-z][A-Za-z0-9]*(?:__[A-Za-z0-9]+)+|[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+|PGDATA|PORT)\b/g))
+  if (!KNOWN.has(norm(m[1]))) KNOWN.set(norm(m[1]), m[1]);
+for (const s of services) {
+  const seen = new Map();
+  for (const key of Object.keys(s.variables ?? {})) {
+    if (key.includes(":")) fail(`[key-normalization] ${s.name}: ${key} uses ':'; spell the separator '__' (.NET reads both as one key)`);
+    const canon = KNOWN.get(norm(key));
+    if (canon && canon !== key) fail(`[key-normalization] ${s.name}: ${key} must be spelled exactly ${canon} (.NET keys are case-insensitive)`);
+    const n = unprefixed(key);
+    if (seen.has(n)) fail(`[key-normalization] ${s.name}: ${seen.get(n)} and ${key} are the same .NET config key`);
+    else seen.set(n, key);
+  }
+}
 
 for (const s of services) {
   const env = s.variables ?? {};
@@ -77,7 +102,7 @@ for (const s of services) {
 
   for (const [key, v] of Object.entries(env)) {
     if (RESERVED.test(key)) fail(`${s.name}: ${key} is not read by this build (gh#763); keep it out of the deploy template`);
-    if (key.startsWith("TapeExport__") && !EXPORT_KEYS.includes(key)) fail(`${s.name}: ${key} is not a gh#755 key (${EXPORT_KEYS.join(", ")})`);
+    if (/^tapeexport(__|:)/i.test(key) && !EXPORT_KEYS.includes(key)) fail(`${s.name}: ${key} is not a gh#755 key (${EXPORT_KEYS.join(", ")})`);
     if (key === "TapeExport__Drive__ServiceAccountJson" && v.type !== "sharedReference") fail(`${s.name}: TapeExport__Drive__ServiceAccountJson is a secret; only ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON, never a literal`);
     if (v.type === "preserve" || v.type === "raw") fail(`${s.name}: ${key} uses ${v.type}; state the value or a shared reference`);
     if (v.type === "sharedReference") {
@@ -195,7 +220,7 @@ if (recorder) {
   if (literal(env.MarketData__RecordTape) !== "true") fail("recorder: MarketData__RecordTape must be true");
   if (literal(env.Mcp__Auth__Mode) !== "StaticToken") fail("recorder: Mcp__Auth__Mode must be StaticToken (private network only)");
   if (!isShared(env.Mcp__HttpBearerToken, "MCP_RECORDER_BEARER_TOKEN")) fail("recorder: Mcp__HttpBearerToken must be ctx.shared.MCP_RECORDER_BEARER_TOKEN");
-  for (const k of Object.keys(env)) if (/^Mcp__OAuth__/.test(k)) fail(`recorder: ${k} must not be set; the recorder runs StaticToken only`);
+  for (const k of Object.keys(env)) if (/^mcp(__|:)oauth(__|:)/i.test(k)) fail(`recorder: ${k} must not be set; the recorder runs StaticToken only`);
   if (literal(env.ASPNETCORE_FORWARDEDHEADERS_ENABLED) !== "false") fail("recorder: no edge in front, so ASPNETCORE_FORWARDEDHEADERS_ENABLED must be false");
   if (d.numReplicas !== 1 || d.multiRegionConfig) fail(`recorder: exactly one replica (ADR-0016 one recorder), got ${JSON.stringify(d.numReplicas ?? d.multiRegionConfig)}`);
   if (d.overlapSeconds !== 0) fail("recorder: overlapSeconds must be 0 to shorten the two-recorder window");
@@ -212,20 +237,24 @@ for (const s of services) for (const [k, m] of Object.entries(s.volumeAttachment
   if (!(s.name === "postgres" && m.mountPath === PG_MOUNT) && !(s.name === "recorder" && m.mountPath === EXPORT_MOUNT)) fail(`${s.name}: unexpected volume ${k} at ${m.mountPath}`);
 if (recorder) {
   const env = recorder.variables ?? {};
-  if (environment === "production") {
+  if (environment === "production" && (exportOn(recorder) || exportMounted(recorder))) {
+    // Deferred today (gh#767): when the export is (re)enabled, it must be the whole shape at once.
     const m = Object.values(recorder.volumeAttachments ?? {});
     if (m.length !== 1 || m[0].mountPath !== EXPORT_MOUNT) fail(`recorder: production needs exactly one export volume at ${EXPORT_MOUNT}`);
     if (!exportOn(recorder)) fail("recorder: production runs TapeExport__Enabled=true");
     if (literal(env.TapeExport__Path) !== EXPORT_MOUNT) fail(`recorder: TapeExport__Path must be the mounted volume ${EXPORT_MOUNT}`);
     if (literal(env.TapeExport__Format) !== "csv.gz+parquet") fail("recorder: production states TapeExport__Format=csv.gz+parquet");
     if (literal(env.RAILWAY_RUN_UID) !== "0") fail("recorder: the export volume is root-owned and the image runs as uid 64198; RAILWAY_RUN_UID must be \"0\" (deployment.md)");
+  } else if (environment === "production") {
+    if (literal(env.TapeExport__Enabled) !== "false") fail('recorder: the tape export is deferred (gh#767); TapeExport__Enabled must be the literal "false"');
+    if (env.RAILWAY_RUN_UID) fail("recorder: no export volume, so no RAILWAY_RUN_UID (gh#767)");
   } else {
     if (literal(env.TapeExport__Enabled) !== "false") fail(`recorder: ${environment} is disposable; TapeExport__Enabled must be the literal "false"`);
-    for (const k of Object.keys(env)) if (k.startsWith("TapeExport__Drive__")) fail(`recorder: ${environment} has no export target; ${k} must not be set`);
+    for (const k of Object.keys(env)) if (/^tapeexport(__|:)drive(__|:)/i.test(k)) fail(`recorder: ${environment} has no export target; ${k} must not be set`);
     if (env.RAILWAY_RUN_UID) fail(`recorder: ${environment} has no export volume, so it must not run as root (RAILWAY_RUN_UID)`);
   }
 }
-if (server && Object.keys(server.variables ?? {}).some((k) => k.startsWith("TapeExport__") || k === "RAILWAY_RUN_UID")) fail("server: no TapeExport__* keys and no RAILWAY_RUN_UID on the server");
+if (server && Object.keys(server.variables ?? {}).some((k) => /^tapeexport(__|:)/i.test(k) || k.toUpperCase() === "RAILWAY_RUN_UID")) fail("server: no TapeExport__* keys and no RAILWAY_RUN_UID on the server");
 
 // ---- named check: recorder-private ---------------------------------------------------------------------
 // The recorder holds the tape lease and a static bearer token; nothing on the internet may reach it.

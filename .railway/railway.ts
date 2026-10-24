@@ -24,8 +24,10 @@ import { defineRailway, image, project, service, volume } from "railway/iac";
 // TEMPLATE SENTINEL: allowed only in `--mode template` (what CI runs); `--mode deployable` rejects it and
 // requires "...topstepx:X.Y.Z@sha256:<64 hex>" (a tag for /health's version, a digest for what actually runs).
 const SERVER_IMAGE = "ghcr.io/adammarquette/marqspec.mcp.topstepx:REPLACE_WITH_RELEASE_TAG";
-const IMAGE_REF = SERVER_IMAGE.split("@")[0];
-const IMAGE_TAG = IMAGE_REF.slice(IMAGE_REF.lastIndexOf("/") + 1).includes(":") ? IMAGE_REF.slice(IMAGE_REF.lastIndexOf(":") + 1) : "";
+// The tag is the ":..." after the last "/" and before any "@digest"; empty for a digest-only pin.
+// In the committed template this evaluates to the sentinel REPLACE_WITH_RELEASE_TAG, so Deployment__Version
+// reads that too; deployable mode (and the staging workflow) refuse the sentinel, so it never ships.
+const IMAGE_TAG = SERVER_IMAGE.split("@")[0].match(/:([^:/]+)$/)?.[1] ?? "";
 const IMAGE_DIGEST = SERVER_IMAGE.includes("@") ? SERVER_IMAGE.split("@")[1] : "";
 const server_image = () => image(SERVER_IMAGE, { autoUpdates: { type: "disabled" } });
 
@@ -38,10 +40,11 @@ const POSTGRES_IMAGE =
 // The mount ROOT is root-owned and holds lost+found, so PGDATA is a subdirectory of it.
 const PG_MOUNT = "/home/postgres/pgdata";
 
-// gh#755's export directory (TapeExport__Path default). Production's recorder only.
-const EXPORT_MOUNT = "/data/tape-exports";
 
-// One retry budget for every service: enough to ride out a Postgres restart, few enough to surface a crash loop.
+
+// One retry budget for every service. 10, not 5: on a cold deploy Postgres initdb plus the app's 90 s
+// StartupWait can exhaust 5 quick ON_FAILURE retries before the database answers; 10 still surfaces a
+// genuine crash loop within minutes.
 const RESTART = { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 } as const;
 
 export default defineRailway((ctx) => {
@@ -51,8 +54,6 @@ export default defineRailway((ctx) => {
   // and with it backups and any tape export. Every other environment is DISPOSABLE: Postgres runs on the
   // container's ephemeral storage, so each redeploy starts from an empty database. The check enforces both.
   const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
-  // The tape export target (gh#755), production only, mounted on exactly one service: the recorder.
-  const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;
 
   const postgres = service("postgres", {
     source: image(POSTGRES_IMAGE),
@@ -143,7 +144,6 @@ export default defineRailway((ctx) => {
     source: server_image(),
     healthcheck: "/health",
     healthcheckTimeout: HEALTHCHECK_TIMEOUT,
-    ...(exports ? { volumeMounts: { [EXPORT_MOUNT]: exports } } : {}),
     replicas: 1,
     deploy: {
       ...RESTART,
@@ -161,23 +161,13 @@ export default defineRailway((ctx) => {
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "false",
       MarketData__RecordTape: "true",
       Otel__ServiceName: "marqspec-mcp-topstepx-recorder",
-      // gh#755 export (contract from PR #765). Production: on, daily 06:00 UTC, to the recorder's own volume.
-      // Staging: off, no Drive keys, no volume. Drive upload is optional and not configured here; if added,
-      // TapeExport__Drive__ServiceAccountJson may only be ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON.
-      TapeExport__Enabled: production ? "true" : "false",
-      ...(production
-        ? {
-            TapeExport__Schedule: "06:00",
-            TapeExport__Path: EXPORT_MOUNT,
-            TapeExport__Format: "csv.gz+parquet",
-            // The image runs as uid 64198 and Railway mounts volumes root-owned; this image has no
-            // root-then-drop entrypoint, so the documented Railway remedy runs the recorder as root in
-            // production. Interim: see deployment.md (a privilege-dropping entrypoint is a Maker item).
-            RAILWAY_RUN_UID: "0",
-          }
-        : {}),
+      // gh#755 tape export (contract from PR #765): OFF in every environment, deferred (r3). Production's
+      // recorder gets the /data/tape-exports volume and TapeExport__Enabled=true only once the deployed image
+      // contains #765 AND drops from root to uid 64198 after chowning the mount (gh#767), so it never needs
+      // RAILWAY_RUN_UID=0. The checks for that shape stay in evaluate-template.mjs.
+      TapeExport__Enabled: "false",
     },
   });
 
-  return project("marqspec-mcp-topstepx", { resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])] });
+  return project("marqspec-mcp-topstepx", { resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])] });
 });

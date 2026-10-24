@@ -421,7 +421,15 @@ build inside the prepare procedure. When Timescale is absent the same migration 
 which is the ADR-0004 fallback. An invalid index left by an interrupted build is dropped before the create,
 because `IF NOT EXISTS` would otherwise keep it. The build holds a session advisory lock for its duration,
 because EF commits the history-table lock before a statement that suppresses the migration transaction.
-The model and the snapshot still declare the index.
+A second replica **waits** on that lock. `pg_advisory_lock` raises `55P03` only when the session has set
+`lock_timeout`, and this migration does not set it. The lock is released once, after the build, on both
+the plain and the per-chunk path. The lock and the session mark are connection state: the five statements
+run on the one connection `MigrateAsync` keeps open. A script runner that reconnects between them loses
+both. `dotnet ef migrations script` still prints the `timescaledb` reloption unconditionally, because the
+decision to send it is the interceptor, which a script does not run. Startup gives that migration
+`Migrations__CommandTimeoutSeconds` (default 3600) instead of Npgsql's 30-second command timeout, and
+restores the previous timeout afterwards, so a long per-chunk build is not cancelled and rebuilt on the
+next start. The model and the snapshot still declare the index.
 
 **Volume-front is a read over this table, not a filter and not a twelfth table** (gh#219). Per
 `(instrument, contract)` per session, total `Size`. The highest-volume contract is the tape's

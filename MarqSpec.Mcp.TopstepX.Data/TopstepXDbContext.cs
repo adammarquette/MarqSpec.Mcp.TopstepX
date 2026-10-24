@@ -82,7 +82,6 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     public DbSet<TradingAuditLogRecord> TradingAuditLog => Set<TradingAuditLogRecord>();
 
     /// <inheritdoc />
-    /// <inheritdoc />
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
         // Every context, including one a test constructs by hand. Without this gate the per-chunk reloption

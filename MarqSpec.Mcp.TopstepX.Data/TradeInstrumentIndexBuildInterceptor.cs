@@ -18,8 +18,9 @@ namespace MarqSpec.Mcp.TopstepX.Data;
 /// it is sent, which is what keeps a database without Timescale able to start.
 /// </para>
 /// <para>
-/// A failed build releases the session advisory lock. The lock is not transaction-scoped, and Npgsql does
-/// not drop it when the connection returns to the pool (ADR-0012).
+/// A failed statement does not release a session advisory lock. This interceptor releases it on that
+/// failure. Npgsql resets a pooled connection with <c>DISCARD ALL</c>, and that reset releases advisory
+/// locks when it is sent. The failure path unlocks here rather than leaving the key for the reset.
 /// </para>
 /// </remarks>
 internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandInterceptor

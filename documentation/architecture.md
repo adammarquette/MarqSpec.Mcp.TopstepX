@@ -960,7 +960,15 @@ the database row are load-bearing once this runs somewhere without an operator w
 
 The one thing that still fails hard is a migration that fails against a database which **did** answer. That is
 a defect here, not an environment fact, and serving reads against an unverified schema is worse than not
-starting.
+starting. `Migrations__CommandTimeoutSeconds` (1..604800, default 3600, `ValidateOnStart`) is the command
+timeout for that migration only. Npgsql's 30-second default is shorter than a per-chunk index build on a
+large `Trades` hypertable, and a cancel there leaves an invalid index that the next start drops and rebuilds
+under the same cap (gh#756). The previous timeout is restored when the migration returns. The five statements
+that build `IX_Trades_Instrument_TradeTimeUtc` share one connection; the session advisory lock and the
+per-chunk mark do not survive a reconnect, and a second replica waits on the lock rather than receiving
+`55P03` — that code is raised only when `lock_timeout` is set, which this migration does not do.
+`dotnet ef migrations script` emits the Timescale reloption unconditionally, because the skip lives in the
+context interceptor rather than in the script.
 
 ## The embedding write
 

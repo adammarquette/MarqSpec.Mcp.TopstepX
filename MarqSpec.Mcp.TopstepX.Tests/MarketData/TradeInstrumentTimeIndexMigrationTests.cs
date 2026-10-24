@@ -24,15 +24,21 @@ public sealed class TradeInstrumentTimeIndexMigrationTests
         SqlOperation procedure = sql[0];
         procedure.Sql.Should().Contain("pg_extension");
         procedure.Sql.Should().Contain("timescaledb_information.hypertables");
-        procedure.Sql.Should().Contain("ON \"Trades\" (\"Instrument\", \"TradeTimeUtc\");");
+        procedure.Sql.Should().Contain("hypertable_name = 'Trades'");
+        procedure.Sql.Should().NotContain("hypertable_name = 'trades'");
+        procedure.Sql.Should().Contain("ON public.\"Trades\" (\"Instrument\", \"TradeTimeUtc\");");
+        procedure.Sql.Should().Contain("CREATE OR REPLACE PROCEDURE public.marqspec_build_ix_trades_instrument_time()");
         procedure.Sql.Should().NotContain(TradeInstrumentIndexBuildInterceptor.PerChunkMarker);
+        procedure.Sql.Should().NotContain("pg_advisory_unlock");
         procedure.Sql.Should().Contain("set_config('" + TradeInstrumentIndexBuildInterceptor.SessionSetting + "', '0'");
-        sql[1].Sql.Should().Be("CALL marqspec_build_ix_trades_instrument_time();");
+        sql[1].Sql.Should().Be("CALL public.marqspec_build_ix_trades_instrument_time();");
         sql[1].Sql.Should().NotContain("CREATE INDEX");
         sql[2].Sql.Should().Contain(TradeInstrumentIndexBuildInterceptor.PerChunkMarker);
+        sql[2].Sql.Should().Contain("ON public.\"Trades\"");
         sql[2].Sql.Should().Contain("CREATE INDEX IF NOT EXISTS");
         sql[3].Sql.Should().Be(TradeInstrumentIndexBuildInterceptor.ReleaseLockSql);
-        sql[4].Sql.Should().Contain("DROP PROCEDURE IF EXISTS marqspec_build_ix_trades_instrument_time()");
+        sql.Should().ContainSingle(operation => operation.Sql.Contains("pg_advisory_unlock", StringComparison.Ordinal));
+        sql[4].Sql.Should().Contain("DROP PROCEDURE IF EXISTS public.marqspec_build_ix_trades_instrument_time()");
     }
 
     [Fact]
@@ -42,7 +48,7 @@ public sealed class TradeInstrumentTimeIndexMigrationTests
 
         sql[0].Sql.Should().NotContain(TradeInstrumentIndexBuildInterceptor.PerChunkMarker);
         sql[0].Sql.Should().Contain("set_config('" + TradeInstrumentIndexBuildInterceptor.SessionSetting + "', '1'");
-        sql[1].Sql.Should().Be("CALL marqspec_build_ix_trades_instrument_time();");
+        sql[1].Sql.Should().Be("CALL public.marqspec_build_ix_trades_instrument_time();");
         sql[2].Sql.Should().Contain("WITH (" + TradeInstrumentIndexBuildInterceptor.PerChunkMarker + ")");
         sql[2].SuppressTransaction.Should().BeTrue();
         sql[3].Sql.IndexOf("pg_advisory_unlock", StringComparison.Ordinal).Should().BeGreaterThanOrEqualTo(0);
@@ -85,17 +91,25 @@ public sealed class TradeInstrumentTimeIndexMigrationTests
     }
 
     [Fact]
-    public void Up_WhenTwoReplicasBuild_TakesASessionAdvisoryLock()
+    public void Up_WhenTwoReplicasBuild_HoldsOneSessionAdvisoryLockUntilTheStatementAfterTheBuild()
     {
         IReadOnlyList<SqlOperation> operations = Up();
         string procedure = operations[0].Sql;
 
+        // 123207681 is 0x07580001. The procedure takes the lock and does not release it. The one unlock
+        // is the statement after the build, so a plain database does not unlock twice. A second replica
+        // waits: the SQL does not set lock_timeout, which is the only way pg_advisory_lock raises 55P03.
         procedure.Should().Contain("pg_advisory_lock(123207681, 190601)");
-        procedure.Should().Contain("pg_advisory_unlock(123207681, 190601)");
+        procedure.Should().NotContain("pg_advisory_unlock");
+        procedure.Should().NotContain("lock_timeout");
+        procedure.Should().Contain("0x07580001");
+        procedure.Should().NotContain("0x07560001");
         procedure.IndexOf("pg_advisory_lock", StringComparison.Ordinal)
             .Should().BeLessThan(procedure.IndexOf("DROP INDEX", StringComparison.Ordinal));
         operations[2].Sql.Should().Contain(TradeInstrumentIndexBuildInterceptor.PerChunkMarker);
-        operations[3].Sql.Should().Contain("pg_advisory_unlock(123207681, 190601)");
+        operations[3].Sql.Should().Be("SELECT pg_advisory_unlock(123207681, 190601);");
+        operations.Count(operation => operation.Sql.Contains("pg_advisory_unlock", StringComparison.Ordinal))
+            .Should().Be(1);
     }
 
     [Fact]
@@ -104,7 +118,7 @@ public sealed class TradeInstrumentTimeIndexMigrationTests
         SqlOperation sql = Down();
 
         sql.SuppressTransaction.Should().BeFalse();
-        sql.Sql.Should().Contain("DROP INDEX IF EXISTS \"IX_Trades_Instrument_TradeTimeUtc\"");
+        sql.Sql.Should().Contain("DROP INDEX IF EXISTS public.\"IX_Trades_Instrument_TradeTimeUtc\"");
     }
 
     private static IReadOnlyList<SqlOperation> Up() => Operations("Up");

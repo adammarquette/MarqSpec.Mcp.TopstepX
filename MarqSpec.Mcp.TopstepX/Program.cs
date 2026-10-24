@@ -644,6 +644,14 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // Longer than Npgsql's 30-second default, and only for the migration. A per-chunk index build that
+        // is cancelled leaves an invalid index, and the next start drops it and builds it again under the
+        // same cap (gh#756). Validated on start like its siblings. The previous timeout is restored.
+        services.AddOptions<MigrationOptions>()
+            .Bind(builder.Configuration.GetSection(MigrationOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         // Trading write controls (ADR-0024 v1, gh#708). Default Trading__Enabled=false. Order tools call
         // TradingRiskGate only. Idempotency is the pre-send Unknown audit row, unique per account, tool
         // and key, so a restart or a second replica replays from the store.
@@ -982,6 +990,8 @@ public static class Program
         using IServiceScope scope = app.Services.CreateScope();
         TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
         ILogger logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("startup");
+        MigrationOptions migrations =
+            scope.ServiceProvider.GetRequiredService<IOptions<MigrationOptions>>().Value;
 
         // The probe, the warning that names what it tried, and the bounded retry all live in StoreStartup so
         // the credential-bearing connection string is handled somewhere a unit test can assert the password
@@ -1016,7 +1026,9 @@ public static class Program
 
         try
         {
-            await database.Database.MigrateAsync().ConfigureAwait(false);
+            await MigrationCommandTimeout
+                .ApplyAsync(database.Database, migrations.CommandTimeoutSeconds)
+                .ConfigureAwait(false);
             return StoreAvailability.Available();
         }
         catch (Npgsql.NpgsqlException ex) when (ex.InnerException is System.Net.Sockets.SocketException)

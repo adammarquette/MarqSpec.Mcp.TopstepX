@@ -25,7 +25,7 @@ images stay private on GHCR, and TopstepX ships only as an image.
    domain over https. `recorder` records the tape, is private, has no OAuth keys, and runs one replica.
 4. **Staging is disposable; production keeps the data.** Outside production there is no volume, no backups
    and no tape export, so every redeploy starts with an empty database. Production requires the Postgres volume.
-   The gh#755 tape export is deferred everywhere: production's recorder gets its `/data/tape-exports` volume
+   The gh#755 tape export is deferred everywhere: production's recorder gets its one volume at `/data` (exports in `/data/tape-exports`)
    only after the deployed image contains #765 and chowns the mount and drops to uid 64198 at startup (#767).
    It is never enabled through `RAILWAY_RUN_UID=0`. The `TapeExport__*` names are provisional until #765 merges.
 5. **Secrets are environment shared variables.** The file references them and never stores them. The GHCR
@@ -63,7 +63,8 @@ front of a plaintext `8080` listener and health-checked `/health`. On Railway:
   `ServiceAccountJson` is visible to anyone who can inspect the container, and is shared-reference-only if used.
   Railway has no secret-file mount and one volume per service, so the key file goes on the recorder's volume
   outside `TapeExport__Path`: the volume is mounted at `/data`, and the key is `/data/keys/drive-sa.json`, mode 0400,
-  owned by 64198 (deployment.md). CI blocks any export-on setup until #767 flips `EXPORT_UNBLOCKED`.
+  owned by 64198 (deployment.md). Root-side prep sets modes with `find -type f` / `find -type d`, never a root
+  `chmod` that could follow a symlink planted by uid 64198; `chown -R` is fine. CI blocks any export-on setup until #767 flips `EXPORT_UNBLOCKED`.
 
 - **Postgres verification:** on the first (manual) production deploy, `initdb` succeeds on the volume, and
   one restart keeps the data.

@@ -206,13 +206,23 @@ NAMED='[export-blocked]' expect reject template r3-root-recorder-restored \
   'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])]' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])]' \
   'replicas: 1,
     deploy: {
-      ...RESTART,' '...(exports ? { volumeMounts: { "/data/tape-exports": exports } } : {}),
+      ...RESTART,' '...(exports ? { volumeMounts: { "/data": exports } } : {}),
     replicas: 1,
     deploy: {
       ...RESTART,' \
   'TapeExport__Enabled: "false",' 'TapeExport__Enabled: production ? "true" : "false",
       ...(production ? { TapeExport__Schedule: "06:00", TapeExport__Path: "/data/tape-exports", TapeExport__Format: "csv.gz+parquet", RAILWAY_RUN_UID: "0" } : {}),'
 NAMED='[export-blocked]' expect reject template export-volume-only-blocked \
+  'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
+  const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
+  'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])]' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])]' \
+  'replicas: 1,
+    deploy: {
+      ...RESTART,' '...(exports ? { volumeMounts: { "/data": exports } } : {}),
+    replicas: 1,
+    deploy: {
+      ...RESTART,'
+NAMED='[export-blocked]' expect reject template export-volume-at-old-path-blocked \
   'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
   const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
   'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])]' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])]' \

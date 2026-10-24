@@ -162,9 +162,10 @@ export default defineRailway((ctx) => {
       MarketData__RecordTape: "true",
       Otel__ServiceName: "marqspec-mcp-topstepx-recorder",
       // gh#755 tape export (contract from PR #765): OFF in every environment, deferred (r3). Production's
-      // recorder gets the /data/tape-exports volume and TapeExport__Enabled=true only once the deployed image
-      // contains #765 AND drops from root to uid 64198 after chowning the mount (gh#767), so it never needs
-      // RAILWAY_RUN_UID=0. The checks for that shape stay in evaluate-template.mjs.
+      // recorder gets ONE volume at /data (exports in /data/tape-exports, Drive key at /data/keys/drive-sa.json)
+      // and TapeExport__Enabled=true only once the deployed image contains #765 AND chowns /data then drops to uid
+      // 64198 at startup (gh#767); RAILWAY_RUN_UID=0 then only lets that entrypoint start as root. Until then
+      // evaluate-template.mjs fails any such shape ([export-blocked], EXPORT_UNBLOCKED).
       TapeExport__Enabled: "false",
     },
   });

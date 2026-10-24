@@ -53,7 +53,11 @@ const RESERVED = /^Retention(__|:)/i;
 // gh#755's contract (PR #765), exactly these names.
 const EXPORT_KEYS = ["TapeExport__Enabled", "TapeExport__Schedule", "TapeExport__Path", "TapeExport__Format",
   "TapeExport__Drive__FolderId", "TapeExport__Drive__ServiceAccountJson", "TapeExport__Drive__ServiceAccountJsonPath"];
-const EXPORT_MOUNT = "/data/tape-exports";
+// One volume per service on Railway, so the recorder's single volume is mounted at /data and holds both the
+// exports (TapeExport__Path) and, outside them, the Drive key (/data/keys/drive-sa.json). See deployment.md.
+const DATA_MOUNT = "/data";
+const EXPORT_PATH = "/data/tape-exports";
+const KEY_PATH = "/data/keys/drive-sa.json";
 // THE flip for gh#767. Until the image chowns the export mount and drops to uid 64198 at startup, any export-on
 // shape (TapeExport__Enabled=true, an export volume, RAILWAY_RUN_UID on the recorder) fails, in every environment.
 // #767's PR sets this to true, which re-enables the whole-shape rules below for production.
@@ -266,23 +270,26 @@ if (recorder) {
 }
 
 // ---- tape export (gh#755) -------------------------------------------------------------------------------
-const exportMounted = (s) => Object.values(s.volumeAttachments ?? {}).some((m) => m.mountPath === EXPORT_MOUNT);
+// Any volume on an app service counts as the export volume (the only one it could legitimately have).
+const exportMounted = (s) => s.name !== "postgres" && Object.keys(s.volumeAttachments ?? {}).length > 0;
 const exportOn = (s) => literal(s.variables?.TapeExport__Enabled) === "true";
 const exporters = services.filter((s) => exportMounted(s) || exportOn(s));
-if (exporters.length > 1) fail(`tape export: at most one service may export or mount ${EXPORT_MOUNT}; got ${exporters.map((s) => s.name).join(", ")}`);
-for (const s of exporters) if (s.name !== "recorder") fail(`${s.name}: only the recorder exports the tape (TapeExport__Enabled / ${EXPORT_MOUNT})`);
+if (exporters.length > 1) fail(`tape export: at most one service may export or mount ${DATA_MOUNT}; got ${exporters.map((s) => s.name).join(", ")}`);
+for (const s of exporters) if (s.name !== "recorder") fail(`${s.name}: only the recorder exports the tape (TapeExport__Enabled / ${DATA_MOUNT})`);
 for (const s of services) for (const [k, m] of Object.entries(s.volumeAttachments ?? {}))
-  if (!(s.name === "postgres" && m.mountPath === PG_MOUNT) && !(s.name === "recorder" && m.mountPath === EXPORT_MOUNT)) fail(`${s.name}: unexpected volume ${k} at ${m.mountPath}`);
+  if (!(s.name === "postgres" && m.mountPath === PG_MOUNT) && !(s.name === "recorder" && m.mountPath === DATA_MOUNT)) fail(`${s.name}: unexpected volume ${k} at ${m.mountPath}`);
 if (recorder && !EXPORT_UNBLOCKED && (exportOn(recorder) || exportMounted(recorder) || recorder.variables?.RAILWAY_RUN_UID))
-  fail(`[export-blocked] recorder: the tape export is blocked on gh#767 (the image must chown ${EXPORT_MOUNT} and drop to uid 64198 first); no TapeExport__Enabled=true, export volume or RAILWAY_RUN_UID until EXPORT_UNBLOCKED is flipped`);
+  fail(`[export-blocked] recorder: the tape export is blocked on gh#767 (the image must chown ${DATA_MOUNT} and drop to uid 64198 first); no TapeExport__Enabled=true, export volume or RAILWAY_RUN_UID until EXPORT_UNBLOCKED is flipped`);
 if (recorder) {
   const env = recorder.variables ?? {};
   if (environment === "production" && (exportOn(recorder) || exportMounted(recorder))) {
     // Deferred today (gh#767): when the export is (re)enabled, it must be the whole shape at once.
     const m = Object.values(recorder.volumeAttachments ?? {});
-    if (m.length !== 1 || m[0].mountPath !== EXPORT_MOUNT) fail(`recorder: production needs exactly one export volume at ${EXPORT_MOUNT}`);
+    if (m.length !== 1 || m[0].mountPath !== DATA_MOUNT) fail(`recorder: production needs exactly one volume, mounted at ${DATA_MOUNT}`);
     if (!exportOn(recorder)) fail("recorder: production runs TapeExport__Enabled=true");
-    if (literal(env.TapeExport__Path) !== EXPORT_MOUNT) fail(`recorder: TapeExport__Path must be the mounted volume ${EXPORT_MOUNT}`);
+    if (literal(env.TapeExport__Path) !== EXPORT_PATH) fail(`recorder: TapeExport__Path must be ${EXPORT_PATH} (on the ${DATA_MOUNT} volume)`);
+    const keyPath = literal(env.TapeExport__Drive__ServiceAccountJsonPath);
+    if (keyPath && keyPath !== KEY_PATH) fail(`recorder: TapeExport__Drive__ServiceAccountJsonPath must be ${KEY_PATH} (on the volume, outside TapeExport__Path)`);
     if (literal(env.TapeExport__Format) !== "csv.gz+parquet") fail("recorder: production states TapeExport__Format=csv.gz+parquet");
     if (literal(env.RAILWAY_RUN_UID) !== "0") fail("recorder: the export volume is root-owned and the image runs as uid 64198; RAILWAY_RUN_UID must be \"0\" (deployment.md)");
   } else if (environment === "production") {

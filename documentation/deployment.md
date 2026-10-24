@@ -95,21 +95,36 @@ true: the deployed image contains #765, and the image chowns the mount and drops
 Today Railway mounts volumes root-owned and the image runs as 64198, so the only config fix would be
 `RAILWAY_RUN_UID=0`, which runs the whole .NET process as root, so it is not used. The key names are provisional
 until #765 merges.
-- When it is enabled: the production recorder only gets the `tape-exports` volume at `/data/tape-exports` and
+- When it is enabled: the production recorder only gets **one** volume (`tape-exports`), mounted at `/data`, and
   `TapeExport__Enabled=true`, Schedule `06:00` (UTC, HH:mm), Path `/data/tape-exports`, Format `csv.gz+parquet`.
   Drive upload is optional. Prefer `TapeExport__Drive__ServiceAccountJsonPath` (absolute) to a key file. The inline
   `TapeExport__Drive__ServiceAccountJson` is visible to anyone who can inspect the container. If it is used anyway,
   it may only be `ctx.shared.TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON`, and the check prints a `drive-json-inline`
   warning. The Drive scope is `drive.file`, so `TapeExport__Drive__FolderId` must be a folder the service account
   itself created; a folder shared with it is not reachable.
-- **Where the Drive key file lives on Railway (when enabled).** Railway has no secret-file mount, and it allows
-  **one volume per service**, so the key has to sit on the recorder's export volume, but outside
-  `TapeExport__Path` so it can never be swept into an export. The plan for #767's PR is to mount the volume at
-  `/data`, keep `TapeExport__Path=/data/tape-exports`, and put the key at
-  `TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json`. The file is mode `0400` and the
-  directory `0700`, both owned by `64198:64198`. It is placed once over `railway ssh` from stdin, never through a
-  variable or the repo, and it persists on the volume. Rotation replaces the file the same way. Until #767, the
-  check fails any export-on setup (`[export-blocked]`, flipped by `EXPORT_UNBLOCKED` in `evaluate-template.mjs`).
+- **Where the Drive key file lives on Railway (when enabled).** Railway has no secret-file mount and allows **one
+  volume per service**, so the recorder's single volume is mounted at `/data`. It holds the exports at
+  `TapeExport__Path=/data/tape-exports`, and, outside them so it can never be swept into an export, the key at
+  `TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json`. The file is mode `0400` and its directory
+  `0700`, both owned by `64198:64198`. It is placed once over `railway ssh` from stdin, never through a variable
+  or the repo, and it persists on the volume; rotation replaces it the same way. The check requires exactly these
+  paths once the export is unblocked; until #767 it fails any export-on setup, including any volume on the
+  recorder (`[export-blocked]`, flipped by `EXPORT_UNBLOCKED` in `evaluate-template.mjs`).
+- **Preparing `/data` as root (for #767's entrypoint, and any manual fix).** uid 64198 owns everything under
+  `/data`, so it can plant a symlink (`/data/keys/drive-sa.json -> /etc/shadow`), and a root `chmod` follows
+  symlinks. Never run `chmod` or `chmod -R` as root on those paths. `chown -R` is fine: it does not follow
+  symlinks below the top level, and `-h` covers the top. Set modes with `find`, which matches only real files and
+  directories and never follows links:
+
+  ```sh
+  find /data -type l -print -delete         # refuse symlinks outright, first
+  chown -R 64198:64198 /data                 # -R defaults to -P: never traverses a link
+  find /data/keys -type d -exec chmod 0700 {} +
+  find /data/keys -type f -exec chmod 0400 {} +
+  ```
+
+  The entrypoint runs this before it drops privileges, while no uid-64198 process is running yet, so nothing can
+  swap a file for a link between `find` and `chmod`.
 - The export worker (PR #765 at a186a62) runs only on `TapeExport__Schedule`, while it holds the recorder lease,
   with no pass at startup. Export therefore stays with the recorder, even across a two-recorder overlap.
 - Trading keys: only `TradingExecutionOptions`' seven names are allowed. `MaxContractsPerOrder` is 1..5 and

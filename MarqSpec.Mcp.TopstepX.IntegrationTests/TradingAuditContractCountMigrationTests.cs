@@ -16,18 +16,25 @@ public sealed class TradingAuditContractCountMigrationTests(SchemaFixture fixtur
         using TopstepXDbContext database = fixture.CreateContext();
         IMigrator migrator = database.Database.GetService<IMigrator>();
 
-        migrator.Migrate("20261018065525_AddTradingAuditLog");
-        migrator.Migrate("20261018142658_AddTradingAuditContractCount");
+        try
+        {
+            migrator.Migrate("20261018065525_AddTradingAuditLog");
+            migrator.Migrate("20261018142658_AddTradingAuditContractCount");
 
-        database.Database.ExecuteSqlRaw(
-            """INSERT INTO "TradingAuditLog" ("AttemptedAt","AccountId","ParsedStage","Tool","IdempotencyKey","RequestHash","DryRun","ContractCount","Outcome") VALUES (NOW(),1,'Practice','place_order','','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',false,3,'Live');""");
+            database.Database.ExecuteSqlRaw(
+                """INSERT INTO "TradingAuditLog" ("AttemptedAt","AccountId","ParsedStage","Tool","IdempotencyKey","RequestHash","DryRun","ContractCount","Outcome") VALUES (NOW(),1,'Practice','place_order','','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',false,3,'Live');""");
 
-        migrator.Migrate("20261018065525_AddTradingAuditLog");
+            migrator.Migrate("20261018065525_AddTradingAuditLog");
 
-        Action readAfterDown = () => database.Database.ExecuteSqlRaw(
-            """SELECT "ContractCount" FROM "TradingAuditLog" LIMIT 1;""");
-        readAfterDown.Should().Throw<Exception>();
-
-        migrator.Migrate("20261018142658_AddTradingAuditContractCount");
+            Action readAfterDown = () => database.Database.ExecuteSqlRaw(
+                """SELECT "ContractCount" FROM "TradingAuditLog" LIMIT 1;""");
+            readAfterDown.Should().Throw<Exception>();
+        }
+        finally
+        {
+            // The collection shares one database that the fixture left at the latest migration.
+            // Stopping at ContractCount leaves every later migration pending.
+            migrator.Migrate();
+        }
     }
 }

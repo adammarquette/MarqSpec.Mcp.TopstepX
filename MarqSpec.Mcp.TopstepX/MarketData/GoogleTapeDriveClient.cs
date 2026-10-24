@@ -16,7 +16,7 @@ using FileList = Google.Apis.Drive.v3.Data.FileList;
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
-/// Uploads into a Drive folder with a service account and the <c>drive.file</c> scope (ADR-0025).
+/// Uploads into a Drive folder with a service account and the <c>drive.file</c> scope (ADR-0026).
 /// </summary>
 /// <remarks>
 /// <para>
@@ -33,7 +33,7 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 public sealed class GoogleTapeDriveClient : ITapeDriveClient, IDisposable
 {
     /// <summary>
-    /// The only scope this client requests. Files the app creates, not the user's whole Drive (ADR-0025).
+    /// The only scope this client requests. Files the app creates, not the user's whole Drive (ADR-0026).
     /// </summary>
     public const string OAuthScope = "https://www.googleapis.com/auth/drive.file";
 

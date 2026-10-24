@@ -110,8 +110,10 @@ export default defineRailway((ctx) => {
     Deployment__ImageDigest: IMAGE_DIGEST,
   };
 
-  // Store wait (90 s) + migrations + warm-up; the check requires >= store wait + 120. Railway's default is 300.
-  const HEALTHCHECK_TIMEOUT = 300;
+  // The EF migration runs BEFORE Kestrel listens, and it may build a per-chunk index on Trades under
+  // Migrations__CommandTimeoutSeconds (default 3600, #761). Railway's default 300 s healthcheck would kill the
+  // container mid-migration. 3900 >= store wait (90) + migration (3600) + 120 s warm-up, which the check requires.
+  const HEALTHCHECK_TIMEOUT = 3900;
 
   const server = service("server", {
     source: server_image(),

@@ -23,9 +23,13 @@ public sealed class TradeInstrumentTimeIndexTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        _database = await _fixture.CreateEmptyDatabaseAsync("ix" + Guid.NewGuid().ToString("N"));
+        // EF's GetConnectionString drops the password. The container string keeps it, and this database is
+        // the empty one created beside the shared schema.
+        string name = "ix" + Guid.NewGuid().ToString("N");
+        _database = await _fixture.CreateEmptyDatabaseAsync(name);
         await _database.Database.MigrateAsync();
-        _connectionString = _database.Database.GetConnectionString()!;
+        _connectionString = new NpgsqlConnectionStringBuilder(_fixture.ConnectionString) { Database = name }
+            .ConnectionString;
     }
 
     public async Task DisposeAsync() => await _database.DisposeAsync();

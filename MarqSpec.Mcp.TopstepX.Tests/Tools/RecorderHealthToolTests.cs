@@ -385,14 +385,12 @@ public sealed class RecorderHealthToolTests
         fixture.Store.HoldProbe = true;
 
         Task<RecorderHealthReport.Report> pending = fixture.Tools.GetRecorderHealth(CancellationToken.None);
-        DateTimeOffset giveUp = DateTimeOffset.UtcNow.AddSeconds(2);
-        while (fixture.Store.Probes < 1 && DateTimeOffset.UtcNow < giveUp)
-        {
-            await Task.Delay(10);
-        }
+        await fixture.Store.ProbeEntered;
 
         fixture.Store.Probes.Should().Be(1);
         fixture.Clock.Advance(fixture.Service.ProbeTimeout);
+        // Wall clock on purpose. The deadline above is the fake clock. A mutant that waits on a real
+        // two-second timer does not finish inside this bound.
         Task finished = await Task.WhenAny(pending, Task.Delay(TimeSpan.FromMilliseconds(500)));
         finished.Should().BeSameAs(pending);
 
@@ -415,11 +413,7 @@ public sealed class RecorderHealthToolTests
         using CancellationTokenSource cancelled = new();
 
         Task<RecorderHealthReport.Report> call = first.Tools.GetRecorderHealth(cancelled.Token);
-        DateTimeOffset giveUp = DateTimeOffset.UtcNow.AddSeconds(2);
-        while (store.Probes < 1 && DateTimeOffset.UtcNow < giveUp)
-        {
-            await Task.Delay(10);
-        }
+        await store.ProbeEntered;
 
         store.Probes.Should().Be(1);
         cancelled.Cancel();
@@ -554,6 +548,13 @@ public sealed class RecorderHealthToolTests
         reused.AgeMs.Should().Be(1500);
         Wire(reused).GetProperty("ageMs").GetInt64().Should().Be(1500);
         Wire(reused).GetProperty("cachedAtUtc").GetDateTimeOffset().Should().Be(_tuesday);
+
+        clock.Advance(TimeSpan.FromMilliseconds(1000));
+        RecorderHealthReport.Report later = await first.Tools.GetRecorderHealth(CancellationToken.None);
+
+        later.CachedAtUtc.Should().Be(_tuesday);
+        later.AgeMs.Should().Be(2500);
+        store.Probes.Should().Be(1);
     }
 
     [Fact(Timeout = 5_000)]
@@ -568,13 +569,12 @@ public sealed class RecorderHealthToolTests
 
         Task<RecorderHealthReport.Report> left = first.Tools.GetRecorderHealth(CancellationToken.None);
         Task<RecorderHealthReport.Report> right = second.Tools.GetRecorderHealth(CancellationToken.None);
-        DateTimeOffset giveUp = DateTimeOffset.UtcNow.AddSeconds(2);
-        while (store.Probes < 1 && DateTimeOffset.UtcNow < giveUp)
+        await store.ProbeEntered;
+        while (memo.CallersWaiting < 1)
         {
-            await Task.Delay(10);
+            await Task.Yield();
         }
 
-        await Task.Delay(50);
         store.Probes.Should().Be(1);
         store.ReleaseProbe();
         await Task.WhenAll(left, right);
@@ -722,8 +722,11 @@ public sealed class RecorderHealthToolTests
     private sealed class ScriptedHealthStore : IRecorderHealthStore
     {
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _probeEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _probes;
         private int _tickReads;
+
+        public Task ProbeEntered => _probeEntered.Task;
 
         public bool Connected { get; set; } = true;
 
@@ -752,6 +755,7 @@ public sealed class RecorderHealthToolTests
         public async Task<bool> DatabaseConnectedAsync(CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _probes);
+            _probeEntered.TrySetResult();
             cancellationToken.ThrowIfCancellationRequested();
             if (HoldProbe)
             {

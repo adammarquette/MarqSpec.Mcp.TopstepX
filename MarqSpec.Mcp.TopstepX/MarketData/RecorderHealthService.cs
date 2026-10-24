@@ -32,6 +32,8 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// clock. The caller's cancellation is a different fact and is not counted, and a build the caller cancelled
 /// is not remembered. A fresh report is remembered for <see cref="RecorderHealthMemo.Ttl"/>, five seconds
 /// in this process, so a tight poll does not scan the tape again. A reused reply says when it was stored.
+/// <c>ageMs</c> is that read's clock minus the stored instant, taken on the same sample that decided the
+/// report was still fresh.
 /// </para>
 /// </remarks>
 public sealed class RecorderHealthService(
@@ -67,7 +69,7 @@ public sealed class RecorderHealthService(
         if (_memo.Read(_clock) is { } cached)
         {
             Tag(span, cached.Outcome);
-            return Stamp(cached.Report, cached.CachedAt);
+            return Stamp(cached.Report, cached.CachedAt, cached.AgeMs);
         }
 
         await _memo.EnterAsync(cancellationToken).ConfigureAwait(false);
@@ -76,7 +78,7 @@ public sealed class RecorderHealthService(
             if (_memo.Read(_clock) is { } fresh)
             {
                 Tag(span, fresh.Outcome);
-                return Stamp(fresh.Report, fresh.CachedAt);
+                return Stamp(fresh.Report, fresh.CachedAt, fresh.AgeMs);
             }
 
             (RecorderHealthReport.Report report, string outcome) =
@@ -91,11 +93,11 @@ public sealed class RecorderHealthService(
         }
     }
 
-    private RecorderHealthReport.Report Stamp(RecorderHealthReport.Report report, DateTimeOffset cachedAt)
-    {
-        long ageMs = (long)(_clock.GetUtcNow() - cachedAt).TotalMilliseconds;
-        return report with { CachedAtUtc = cachedAt, AgeMs = ageMs };
-    }
+    private static RecorderHealthReport.Report Stamp(
+        RecorderHealthReport.Report report,
+        DateTimeOffset cachedAt,
+        long ageMs) =>
+        report with { CachedAtUtc = cachedAt, AgeMs = ageMs };
 
     private async Task<(RecorderHealthReport.Report Report, string Outcome)> BuildAsync(
         CancellationToken cancellationToken)

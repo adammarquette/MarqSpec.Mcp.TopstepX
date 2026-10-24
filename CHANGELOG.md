@@ -62,7 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   symbols and the contracts active in the elapsed session. The HTTP path is behind the bearer gate. `/health`
   stays the unauthenticated liveness probe. `lastTickUtc`, `contractId`, `session`, `gaps`, `cachedAtUtc` and
   `ageMs` are omitted when they do not apply. `cachedAtUtc` and `ageMs` apply when this process reused a
-  report from the last five seconds.
+  report from the last five seconds. `ageMs` is that read's clock minus the instant the report was stored.
+  The `(Instrument, TradeTimeUtc)` index uses a per-chunk build on a hypertable and a plain index when
+  Timescale is absent.
 
 - **`TradingRiskGate` (gh#711).** Central practice-only gate with allowlist, symbol denylist, per-order and
   daily caps, dry-run preview, and append-only audit rows before every outcome. Future MCP order tools will call

@@ -18,34 +18,57 @@ public sealed class RecorderHealthMemo
 
     private readonly SemaphoreSlim _singleFlight = new(1, 1);
     private readonly object _gate = new();
+    private int _waiting;
     private Entry? _entry;
+
+    /// <summary>Callers blocked in <see cref="EnterAsync"/>, including the one acquiring the build.</summary>
+    internal int CallersWaiting => Volatile.Read(ref _waiting);
 
     /// <summary>The stored report when it is still inside <see cref="Ttl"/>.</summary>
     /// <param name="clock">The clock the expiry is compared against. Not the wall clock.</param>
     /// <returns>
-    /// The report, the outcome it was counted as, and when it was stored, or <see langword="null"/> when
-    /// nothing is fresh.
+    /// The report, the outcome it was counted as, when it was stored, and how many milliseconds that
+    /// instant is behind <paramref name="clock"/> at this read. <see langword="null"/> when nothing is fresh.
     /// </returns>
-    public (RecorderHealthReport.Report Report, string Outcome, DateTimeOffset CachedAt)? Read(TimeProvider clock)
+    public (RecorderHealthReport.Report Report, string Outcome, DateTimeOffset CachedAt, long AgeMs)? Read(
+        TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(clock);
 
         lock (_gate)
         {
-            if (_entry is { } entry && clock.GetUtcNow() < entry.ExpiresAt)
+            if (_entry is not { } entry)
             {
-                return (entry.Report, entry.Outcome, entry.CachedAt);
+                return null;
             }
-        }
 
-        return null;
+            DateTimeOffset readAt = clock.GetUtcNow();
+            if (readAt >= entry.ExpiresAt)
+            {
+                return null;
+            }
+
+            // The age is this read, not the moment the report was stored and not a later clock sample.
+            long ageMs = (long)(readAt - entry.CachedAt).TotalMilliseconds;
+            return (entry.Report, entry.Outcome, entry.CachedAt, ageMs);
+        }
     }
 
     /// <summary>Waits until this caller is the one allowed to build.</summary>
     /// <param name="cancellationToken">The caller's cancellation token. Cancelling here builds nothing.</param>
     /// <returns>The task that completes when this caller holds the build.</returns>
-    public Task EnterAsync(CancellationToken cancellationToken) =>
-        _singleFlight.WaitAsync(cancellationToken);
+    public async Task EnterAsync(CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _waiting);
+        try
+        {
+            await _singleFlight.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _waiting);
+        }
+    }
 
     /// <summary>Lets the next caller build.</summary>
     public void Exit() => _singleFlight.Release();

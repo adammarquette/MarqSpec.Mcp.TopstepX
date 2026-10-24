@@ -412,9 +412,14 @@ The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-ti
 
 Indexes: `(Instrument, ContractId, TradeTimeUtc)` — one instrument, one contract, a window; and
 `(Instrument, TradeTimeUtc)` — the recorder-health read, which names the instrument and the session and not
-the contract (gh#756). That second index is created with `timescaledb.transaction_per_chunk`, outside the
-migration transaction, so startup does not hold one lock across every chunk while the index builds. The
-model and the snapshot still declare it.
+the contract (gh#756). When the `timescaledb` extension is installed and `Trades` is a hypertable, that
+second index is created with `timescaledb.transaction_per_chunk`, outside the migration transaction, so
+startup does not hold one lock across every chunk. When Timescale is absent the same migration creates a
+plain index, which is the ADR-0004 fallback: plain Postgres rejects the `timescaledb` reloption. An invalid
+index left by an interrupted build is dropped before the create, because `IF NOT EXISTS` would otherwise
+keep it. The build holds a session advisory lock for its duration, because EF commits the history-table
+lock before a statement that suppresses the migration transaction. The model and the snapshot still declare
+the index.
 
 **Volume-front is a read over this table, not a filter and not a twelfth table** (gh#219). Per
 `(instrument, contract)` per session, total `Size`. The highest-volume contract is the tape's

@@ -406,6 +406,45 @@ It does not deduplicate prints a past double-recording already wrote, and it doe
 discard predicate — the claim simply runs *before* it, so a refused start never reaches it and can
 no longer supersede a live listen. It says nothing about quotes, depth or the user hub.
 
+## Update (2026-10-24) — a session conflict stops the recorder (gh#757)
+
+TopstepX allows one device session. The recorder and the trading platform share the login, and the
+client's automatic reconnect logs in again, which disconnects the platform.
+
+`MarketData__StopOnSessionConflict` defaults to **true**. `MarketData__SessionConflictBackoff` defaults
+to five seconds and must be from zero through two minutes inclusive; startup refuses anything outside
+that range and names the key. Zero finishes the stop immediately.
+
+A market-hub close whose error or exception text names another session (the phrases in
+`SessionConflictSignals`, including "another session", "another device", "invalid session" and
+"session not found") arms the stop immediately. The recorder sets the venue client's
+`WebSocketOptions.AutoReconnect` to false — `ReconnectPolicy` reads that flag on every attempt and
+returns no delay when it is false — disconnects the market hub, waits the backoff on the process
+clock, and ends `ExecuteAsync` without faulting the host. It does not subscribe again. Tape health
+becomes `StoppedForSessionConflict`. `get_footprint` and `get_volume_profile` refuse with a sentence
+that names the platform and the switch.
+
+A hub close with no such phrase, when `ISessionConflictProbe` is registered, holds auto-reconnect off
+and posts the token already held to `POST /api/Auth/validate`. Gateway `ValidateErrorCode`
+`InvalidSession` (1) and `SessionNotFound` (2) stop the same way. `ExpiredToken` (3), `UnknownError`
+(4), a missing code, and a call that does not land are inconclusive: auto-reconnect is turned back on
+and the recorder connects the hub itself. A daily expiry is not another session, and a probe outage
+must not end the tape.
+
+The probe does not call `ValidateSessionAsync` or `RefreshTokenAsync`. The client's validate clears
+the cached token on any unsuccessful body, and the next token read then calls `loginKey` — a new
+login, which is the disconnect this stop exists to avoid. The response body is not logged.
+
+`mcp.tape.session_conflicts` counts the stop, tagged `source` = `hub` or `api`. The span is
+`tape.session_conflict` with that tag only. The log line is this server's own sentence. The vendor's
+close text is neither logged nor tagged.
+
+**Residual.** If the local token cache is already inside its refresh window, `GetAccessTokenAsync`
+calls `loginKey` before the probe can read a conflict code. The common case — the platform logs in
+while that cache is still warm — does not refresh. The user hub is not connected; opening it would be
+another session consumer. With the switch off, a hub phrase is a transport drop and the recorder
+keeps reconnecting, which is the operator's choice to keep this process's session.
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.

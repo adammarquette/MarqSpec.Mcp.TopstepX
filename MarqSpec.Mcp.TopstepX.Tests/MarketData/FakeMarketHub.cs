@@ -57,6 +57,9 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     /// <summary>How many times the market hub transitioned into <see cref="ConnectionState.Connected"/>.</summary>
     public int TransitionsIntoConnected { get; private set; }
 
+    /// <summary>How many times <see cref="DisconnectMarketHubAsync"/> ran.</summary>
+    public int MarketDisconnects { get; private set; }
+
     public ConnectionState MarketHubState { get; set; } = ConnectionState.Disconnected;
 
     public ConnectionState UserHubState { get; set; } = ConnectionState.Disconnected;
@@ -106,6 +109,8 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public Task DisconnectMarketHubAsync(CancellationToken cancellationToken = default)
     {
+        MarketDisconnects++;
+        TradeSubscriptions.Clear();
         EnterMarketState(ConnectionState.Disconnected);
         return Task.CompletedTask;
     }
@@ -124,6 +129,19 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     {
         TradeSubscriptions.Clear();
         EnterMarketState(ConnectionState.Disconnected);
+    }
+
+    /// <summary>
+    /// Drops the market hub with a session-conflict message on the status change.
+    /// </summary>
+    /// <param name="message">The hub's error text. Both the message and the exception carry it.</param>
+    public void SimulateSessionConflict(string message)
+    {
+        TradeSubscriptions.Clear();
+        EnterMarketState(
+            ConnectionState.Disconnected,
+            message,
+            new InvalidOperationException(message));
     }
 
     /// <summary>
@@ -225,7 +243,10 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
         TradeUpdateReceived?.Invoke(this, update);
     }
 
-    private void EnterMarketState(ConnectionState current)
+    private void EnterMarketState(
+        ConnectionState current,
+        string? errorMessage = null,
+        Exception? exception = null)
     {
         ConnectionState previous = MarketHubState;
         if (previous == current)
@@ -244,6 +265,8 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
             PreviousState = previous,
             CurrentState = current,
             Timestamp = DateTime.UtcNow,
+            ErrorMessage = errorMessage ?? exception?.Message,
+            Exception = exception,
         });
     }
 }

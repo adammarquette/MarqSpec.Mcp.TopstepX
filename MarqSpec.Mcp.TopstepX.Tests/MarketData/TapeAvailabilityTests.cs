@@ -86,5 +86,6 @@ public sealed class TapeAvailabilityTests
         TapeAvailability.Reconnecting(),
         TapeAvailability.ConnectedButNotSubscribed(),
         TapeAvailability.Stopped(),
+        TapeAvailability.StoppedForSessionConflict(),
     ];
 }

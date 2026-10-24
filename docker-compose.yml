@@ -124,6 +124,10 @@ services:
       MarketData__Sessions__europe__BaseResolutionMinutes: "${MarketData__Sessions__europe__BaseResolutionMinutes:-30}"
       # Off by default: the composed server is HTTP, and HTTP is not consent to record (ADR-0016).
       MarketData__RecordTape: "${MarketData__RecordTape:-false}"
+      # On by default: a session conflict stops the recorder instead of logging in again
+      # and disconnecting the trading platform (gh#757). Zero through two minutes.
+      MarketData__StopOnSessionConflict: "${MarketData__StopOnSessionConflict:-true}"
+      MarketData__SessionConflictBackoff: "${MarketData__SessionConflictBackoff:-00:00:05}"
       # Off by default: HTTP is not consent to warm either (ADR-0014, gh#350).
       MarketData__WarmIndicators: "${MarketData__WarmIndicators:-false}"
 

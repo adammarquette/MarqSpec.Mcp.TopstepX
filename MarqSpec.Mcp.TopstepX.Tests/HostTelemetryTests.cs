@@ -203,6 +203,35 @@ public sealed class HostTelemetryTests
         span.GetTagItem(HostTelemetry.ResolutionTag).Should().Be(15);
     }
 
+    [Theory]
+    [InlineData(SessionConflictSource.Hub)]
+    [InlineData(SessionConflictSource.Api)]
+    public void SessionConflict_KnownSource_RecordsASpanAndACounter(string source)
+    {
+        // gh#757. The source is a closed vocabulary. The vendor's close sentence is not a tag: it
+        // is a new series per distinct sentence, and a place a credential can land.
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> conflicts = Collect(telemetry, HostTelemetry.TapeSessionConflictsInstrument);
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (telemetry.SessionConflict(source))
+        {
+        }
+
+        CollectedMeasurement<long> measurement = conflicts.LastMeasurement!;
+        measurement.Value.Should().Be(1);
+        measurement.Tags[HostTelemetry.SourceTag].Should().Be(source);
+        measurement.Tags.Should().NotContainKey(HostTelemetry.SymbolTag);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("tape.session_conflict");
+        span.Kind.Should().Be(ActivityKind.Internal);
+        span.GetTagItem(HostTelemetry.SourceTag).Should().Be(source);
+        span.GetTagItem(HostTelemetry.SymbolTag).Should().BeNull();
+    }
+
     [Fact]
     public void NoSpanIsAllocatedWhenNothingIsListening()
     {

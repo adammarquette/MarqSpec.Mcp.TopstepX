@@ -345,7 +345,9 @@ record the trade tape** — see [ADR-0016](../../adr/0016-subscribe-to-the-marke
 doc's *What is deliberately absent*. ADR-0007 is the stdio/HTTP transport record and says nothing about this
 hub. There is still no REST quote endpoint, so live bid/ask remains stream-only; quote and depth recording are
 out of Phase 5. The recorder (gh#216) writes prints to `Trades` under HTTP when
-`MarketData__RecordTape` is on; Client#86/#87 landed in 3.0.0.
+`MarketData__RecordTape` is on; Client#86/#87 landed in 3.0.0. It stops itself when the hub, or
+`POST /api/Auth/validate`, reports that another session has this login, so a reconnect does not kick
+the trading platform off (`MarketData__StopOnSessionConflict`, default on; gh#757).
 
 > One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
 > root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream

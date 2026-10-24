@@ -142,6 +142,40 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </remarks>
     public bool RecordTape { get; init; }
 
+    /// <summary>How long the recorder stays disconnected after a session conflict before it finishes stopping.</summary>
+    public static readonly TimeSpan DefaultSessionConflictBackoff = TimeSpan.FromSeconds(5);
+
+    /// <summary>The longest backoff startup will accept. Longer than this is a stuck recorder, not a pause.</summary>
+    public static readonly TimeSpan MaxSessionConflictBackoff = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Whether a session conflict stops the recorder instead of reconnecting.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>On by default.</b> The recorder and the trading platform share one TopstepX login, and the venue
+    /// allows one device session. Reconnecting logs in again and disconnects the platform (gh#757). A hub
+    /// message that names another session, or a validate result of <c>InvalidSession</c> or
+    /// <c>SessionNotFound</c>, disconnects and does not reconnect.
+    /// </para>
+    /// <para>
+    /// Set <c>MarketData__StopOnSessionConflict=false</c> only when this process should keep the session
+    /// and the platform is expected to be the one that drops. A plain transport drop is still reconnected
+    /// either way. <see cref="SessionConflictBackoff"/> is how long the stop waits, disconnected, before
+    /// the recorder releases its claim. Zero finishes the stop immediately.
+    /// </para>
+    /// </remarks>
+    public bool StopOnSessionConflict { get; init; } = true;
+
+    /// <summary>
+    /// How long to stay disconnected after a session conflict before the recorder finishes stopping.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="TimeSpan.Zero"/> through <see cref="MaxSessionConflictBackoff"/>. A value outside
+    /// that range fails startup, naming <c>MarketData__SessionConflictBackoff</c>.
+    /// </remarks>
+    public TimeSpan SessionConflictBackoff { get; init; } = DefaultSessionConflictBackoff;
+
     /// <summary>
     /// Whether the process may replay stored indicator series at startup.
     /// </summary>
@@ -278,6 +312,14 @@ public sealed partial class MarketDataOptions : IValidatableObject
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
         List<ValidationResult> results = [];
+
+        if (SessionConflictBackoff < TimeSpan.Zero || SessionConflictBackoff > MaxSessionConflictBackoff)
+        {
+            results.Add(new ValidationResult(
+                SectionName + "__SessionConflictBackoff must be from 00:00:00 through 00:02:00 inclusive. "
+                + "It was '" + SessionConflictBackoff.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(SessionConflictBackoff)]));
+        }
 
         BarSessionCalendar calendar;
         try

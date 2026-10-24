@@ -25,6 +25,12 @@ public enum TapeUnavailableReason
     /// or stood down when its own claim was taken over (gh#404).
     /// </summary>
     HeldByAnotherRecorder = 5,
+
+    /// <summary>
+    /// The recorder stopped because another TopstepX session took this login, and it will not
+    /// reconnect (gh#757).
+    /// </summary>
+    StoppedForSessionConflict = 6,
 }
 
 /// <summary>
@@ -118,6 +124,18 @@ public sealed class TapeAvailability
         new(
             TapeUnavailableReason.Stopped,
             "The trade-tape recorder stopped. Prints will not be recorded until the process restarts.");
+
+    /// <summary>
+    /// The recorder stopped because this login conflicted with another session, and it will not reconnect.
+    /// </summary>
+    /// <returns>An unavailable marker naming the platform and the switch.</returns>
+    public static TapeAvailability StoppedForSessionConflict() =>
+        new(
+            TapeUnavailableReason.StoppedForSessionConflict,
+            "The trade-tape recorder stopped because this TopstepX login conflicted with another session. "
+            + "It disconnected and will not reconnect, so it does not kick the trading platform offline. "
+            + "Close that platform and restart this server to record again, or set "
+            + "MarketData__StopOnSessionConflict=false to keep reconnecting.");
 
     /// <summary>Another process holds this instrument's tape claim.</summary>
     /// <param name="holder">The owner recorded on the claim row.</param>

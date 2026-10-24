@@ -94,6 +94,22 @@ public sealed class MigrationCommandTimeoutTests
             .And.OnlyContain(command => command.Timeout == 123);
     }
 
+    [Fact]
+    public async Task ApplyAsync_WhenMigrateAsyncThrows_RestoresTheTimeoutItReplaced()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        database.Database.SetCommandTimeout(7);
+        using CancellationTokenSource cancelled = new();
+        cancelled.Cancel();
+
+        // MigrateAsync observes the token in its existence check, before it changes the schema. Restoring
+        // the previous timeout only after a successful return would leave 123 in place.
+        Func<Task> act = () => MigrationCommandTimeout.ApplyAsync(database.Database, 123, cancelled.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        database.Database.GetCommandTimeout().Should().Be(7);
+    }
+
     private static void StripAmbientEnvironment(WebApplicationBuilder builder)
     {
         IConfigurationBuilder sources = builder.Configuration;

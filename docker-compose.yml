@@ -66,6 +66,7 @@ services:
 
       # The code default is 3600. Passed through so an operator can raise it for a large Trades hypertable
       # without rebuilding the image. Npgsql's 30s default is what this replaces for MigrateAsync only.
+      # On Railway the healthcheck window is shorter than this value. See documentation/deployment.md.
       Migrations__CommandTimeoutSeconds: "${Migrations__CommandTimeoutSeconds:-3600}"
 
       ProjectX__ApiKey: "${ProjectX__ApiKey:-}"

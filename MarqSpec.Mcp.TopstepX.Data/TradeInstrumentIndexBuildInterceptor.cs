@@ -3,6 +3,8 @@ using System.Data.Common;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.Data;
 
@@ -20,7 +22,10 @@ namespace MarqSpec.Mcp.TopstepX.Data;
 /// <para>
 /// A failed statement does not release a session advisory lock. This interceptor releases it on that
 /// failure. Npgsql resets a pooled connection with <c>DISCARD ALL</c>, and that reset releases advisory
-/// locks when it is sent. The failure path unlocks here rather than leaving the key for the reset.
+/// locks when it is sent. The failure path unlocks here rather than leaving the key for the reset. The
+/// probe and the unlock copy the migration command's timeout, so they are not left on Npgsql's 30-second
+/// default. An unlock that throws is logged and swallowed: the original command error has to stay the one
+/// <c>CommandFailed</c> reports.
 /// </para>
 /// </remarks>
 internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandInterceptor
@@ -59,7 +64,7 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
     /// <inheritdoc />
     public override void CommandFailed(DbCommand command, CommandErrorEventData eventData)
     {
-        ReleaseIfOurs(command);
+        ReleaseIfOurs(command, eventData);
         base.CommandFailed(command, eventData);
     }
 
@@ -69,7 +74,7 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
         CommandErrorEventData eventData,
         CancellationToken cancellationToken = default)
     {
-        ReleaseIfOurs(command);
+        ReleaseIfOurs(command, eventData);
         return base.CommandFailedAsync(command, eventData, cancellationToken);
     }
 
@@ -88,6 +93,7 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
 
         using DbCommand probe = command.Connection.CreateCommand();
         probe.CommandText = "SELECT current_setting('" + SessionSetting + "', true);";
+        probe.CommandTimeout = command.CommandTimeout;
         probe.Transaction = command.Transaction;
         if (!SessionRequestsPerChunk(probe.ExecuteScalar()))
         {
@@ -104,6 +110,7 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
 
         await using DbCommand probe = command.Connection.CreateCommand();
         probe.CommandText = "SELECT current_setting('" + SessionSetting + "', true);";
+        probe.CommandTimeout = command.CommandTimeout;
         probe.Transaction = command.Transaction;
         if (!SessionRequestsPerChunk(await probe.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
         {
@@ -114,7 +121,7 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
     private static bool IsPerChunkStatement(DbCommand command) =>
         command.CommandText.Contains(PerChunkMarker, StringComparison.Ordinal);
 
-    private static void ReleaseIfOurs(DbCommand command)
+    private static void ReleaseIfOurs(DbCommand command, CommandErrorEventData eventData)
     {
         if (command.Connection is not { State: ConnectionState.Open } connection)
         {
@@ -129,6 +136,31 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
 
         using DbCommand unlock = connection.CreateCommand();
         unlock.CommandText = ReleaseLockSql;
-        unlock.ExecuteScalar();
+        unlock.CommandTimeout = command.CommandTimeout;
+        try
+        {
+            unlock.ExecuteScalar();
+        }
+        catch (Exception exception)
+        {
+            // The build error is the one startup has to log. An unlock that fails because the server is
+            // already gone must not replace it.
+            LogUnlockFailure(eventData, exception);
+        }
+    }
+
+    private static void LogUnlockFailure(CommandErrorEventData eventData, Exception exception)
+    {
+        try
+        {
+            ILoggerFactory? factory = eventData.Context?.GetService<ILoggerFactory>();
+            factory?.CreateLogger<TradeInstrumentIndexBuildInterceptor>().LogWarning(
+                exception,
+                "The trade index build lock was not released. The original command error is unchanged.");
+        }
+        catch (Exception)
+        {
+            // Logging itself must not replace the command error either.
+        }
     }
 }

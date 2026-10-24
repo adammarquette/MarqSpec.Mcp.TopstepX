@@ -22,11 +22,15 @@ public sealed class MigrationOptions
     public const string SectionName = "Migrations";
 
     /// <summary>
-    /// One hour. Long enough for a per-chunk build that 30 seconds cannot finish, and still a bound.
+    /// One hour. Long enough for a per-chunk build that 30 seconds cannot finish. An orchestrator health
+    /// check can still stop the process sooner; see deployment.md.
     /// </summary>
     public const int DefaultCommandTimeoutSeconds = 3600;
 
-    /// <summary>Seven days. Past this, the orchestrator's own start-up limit is the better instrument.</summary>
+    /// <summary>
+    /// Seven days. A typo guard, not the limit that stops a deploy: a health check measured in minutes ends
+    /// a start that has not begun listening. See deployment.md.
+    /// </summary>
     public const int MaxCommandTimeoutSeconds = 604_800;
 
     /// <summary>

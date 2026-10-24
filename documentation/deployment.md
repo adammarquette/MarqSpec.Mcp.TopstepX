@@ -379,6 +379,38 @@ The optional day is exact `yyyy-MM-dd`. Exit `0` when every day verified, `1` wh
 `2` when the argument is not that form, `3` when the store could not be migrated. Import inserts with
 `ON CONFLICT DO NOTHING` and inserts nothing for a day that fails verification.
 
+## Migration command timeout (gh#756)
+
+`Migrations__CommandTimeoutSeconds` is how long one command issued by `MigrateAsync` may run, in seconds.
+The default is `3600`. Accepted values are `1` through `604800`. `604800` (seven days) is a typo guard, not
+a deploy limit: zero is refused because Npgsql treats it as no timeout. Compose forwards the same key as
+`${Migrations__CommandTimeoutSeconds:-3600}`.
+
+`MigrateAsync` runs in `Main` before the process listens, so `/health` does not answer while a migration
+is in progress. This repository has no `railway.json` or `railway.toml`. On Railway the healthcheck path
+and its timeout live in the service dashboard, or in `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`. When a healthcheck
+path is set, Railway's default healthcheck timeout is 300 seconds. That window, not `3600`, is what stops
+the container. A per-chunk index build, or the plain-Postgres build that blocks writes on `Trades` for the
+whole statement, is killed mid-command once the window expires. The next start drops the invalid index and
+builds it again under the same window. A restart policy repeats that loop.
+
+Before the first deploy against a large `Trades` tape, do one of these:
+
+1. Raise the healthcheck timeout to at least the expected build (the dashboard timeout, or
+   `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`).
+2. Run that first migration once outside the health-gated deploy: one instance, or a pre-deploy command,
+   with the healthcheck path unset for that run.
+
+Scale the service to **one replica** for that first deploy. A second instance waits on the session
+advisory lock for up to the command timeout, then fails with `57014` and exits. It does not leave a
+partial index: the create is `IF NOT EXISTS` after the lock. On Railway the healthcheck kills the waiter
+before that timeout.
+
+The composed server has no healthcheck of its own. Postgres uses `pg_isready` with `start_period: 20s`,
+and the server waits on that, not on the server listening. If you add a healthcheck on the server that
+gates other services, give it a `start_period` that covers the same first build. A short `start_period`
+stops the container the same way Railway's healthcheck does.
+
 ## Troubleshooting
 
 ### Vendor DNS on a custom Docker network (gh#697)

@@ -224,8 +224,10 @@ refusal at the point of use ([ADR-0007](documentation/adr/0007-dual-transport.md
 `Migrations__CommandTimeoutSeconds` is how long one migration command may run, in seconds. The default is
 `3600`. Npgsql's own default is 30, which is shorter than a per-chunk index build on a large `Trades`
 hypertable: the command is cancelled, the invalid index is dropped, and the next start builds it again under
-the same cap. The previous timeout is restored after the migration. Values outside `1..604800` are refused.
-`0` is refused on purpose — Npgsql treats it as no timeout.
+the same cap. The previous timeout is restored after the migration, including when it throws. Values outside
+`1..604800` are refused. `604800` is a typo guard. `0` is refused on purpose — Npgsql treats it as no
+timeout. On Railway the healthcheck window is the limit that stops the container, because this migration
+runs before the process listens ([`documentation/deployment.md`](documentation/deployment.md)).
 
 Two things this recipe deliberately does **not** carry over from `docker compose up`:
 

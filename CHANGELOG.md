@@ -79,6 +79,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   symlinks, uses `chown -h`, and does not `chown -R` the volume. An unwritable path inside the application
   is still logged and skipped. Do not set `RAILWAY_RUN_UID=0` or enable the export on Railway until then.
 
+- **Migration timeout follow-ups (gh#756, gh#761).** The previous command timeout is restored when
+  `MigrateAsync` throws. The index-build probe and unlock use that same timeout. An unlock that throws is
+  logged and does not replace the original command error. `documentation/deployment.md` records that a
+  Railway healthcheck (300 seconds by default) stops a migration that has not begun listening, and that the
+  first deploy against a large tape should be one replica. A plain-Postgres build of the trade index blocks
+  writes on `Trades` for the build. The seven-day ceiling stays a typo guard.
+
 - **`no-order-path` now gates the order path instead of forbidding it** (gh#718, ADR-0024). The required
   check of the same name changes meaning: from "no order path exists" (ADR-0002) to a tripwire for "orders
   only through `TradingRiskGate` -> `IExecutionGateway`, `Trading__Enabled` off by default, Practice accounts

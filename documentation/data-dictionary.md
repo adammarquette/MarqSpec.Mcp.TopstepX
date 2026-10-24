@@ -424,8 +424,10 @@ second index is created with `timescaledb.transaction_per_chunk`, as its own top
 the migration transaction, so startup does not hold one lock across every chunk. The prepare step only
 marks the session in that case. The context sends the per-chunk statement when the mark is set, and does
 not send it otherwise: plain Postgres rejects the `timescaledb` reloption, and Timescale does not run that
-build inside the prepare procedure. When Timescale is absent the same migration creates a plain index,
-which is the ADR-0004 fallback. An invalid index left by an interrupted build is dropped before the create,
+build inside the prepare procedure. When Timescale is absent the same migration creates a plain index on `public."Trades"`, which is the
+ADR-0004 fallback. That plain `CREATE INDEX` blocks writes on `Trades` for the whole build. The per-chunk
+form commits once per chunk and does not hold one lock across the hypertable. An invalid index left by an
+interrupted build is dropped before the create,
 because `IF NOT EXISTS` would otherwise keep it. The build holds a session advisory lock for its duration,
 because EF commits the history-table lock before a statement that suppresses the migration transaction.
 A second replica **waits** on that lock. `pg_advisory_lock` raises `55P03` only when the session has set

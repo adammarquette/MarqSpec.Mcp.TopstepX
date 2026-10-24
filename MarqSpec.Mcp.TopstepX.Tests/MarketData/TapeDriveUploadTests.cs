@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -40,10 +41,7 @@ public sealed class TapeDriveUploadTests
         result.Status.Should().Be(TapeDriveUploadStatus.Uploaded);
         result.Attempts.Should().Be(3);
         result.FailureType.Should().BeNull();
-        waits.Should().Equal(
-            TapeDriveRetryTiming.Delay(1, 0d),
-            TapeDriveRetryTiming.Delay(2, 1d));
-        TapeDriveRetryTiming.Delay(2, 1d).Should().BeGreaterThan(TapeDriveRetryTiming.Delay(1, 0d));
+        waits.Should().Equal(TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(400));
         client.Creates.Should().Be(1);
         uploads.GetMeasurementSnapshot().Select(measurement => (
             (string)measurement.Tags[HostTelemetry.OutcomeTag]!,
@@ -81,6 +79,94 @@ public sealed class TapeDriveUploadTests
         client.Creates.Should().Be(0);
         uploads.GetMeasurementSnapshot().Select(measurement => measurement.Tags[HostTelemetry.OutcomeTag])
             .Should().Equal(TapeUploadOutcome.Permanent);
+    }
+
+    [Theory]
+    [InlineData(429)]
+    [InlineData(503)]
+    public async Task Upload_WhenTheStatusIsTransient_RetriesInsteadOfStopping(int status)
+    {
+        List<TimeSpan> waits = [];
+        TapeDriveRetryTiming timing = new()
+        {
+            Wait = (delay, _) =>
+            {
+                waits.Add(delay);
+                return Task.CompletedTask;
+            },
+        };
+        FakeTapeDriveClient client = new() { FailuresBeforeSuccess = 10, Status = status };
+        using HostTelemetry telemetry = new();
+        RetryingTapeDriveUploader uploader = new(client, telemetry, new ListLogger(), timing);
+
+        TapeDriveUploadResult result = await uploader.UploadAsync(Upload("rate"), CancellationToken.None);
+
+        result.Status.Should().Be(TapeDriveUploadStatus.Failed);
+        result.Attempts.Should().Be(RetryingTapeDriveUploader.MaxAttempts);
+        waits.Should().HaveCount(RetryingTapeDriveUploader.MaxAttempts - 1);
+    }
+
+    [Fact]
+    public async Task Upload_WhenRetryAfterIsPresent_WaitsThatLongAndCapsIt()
+    {
+        List<TimeSpan> honored = [];
+        TapeDriveRetryTiming timing = new()
+        {
+            Wait = (delay, _) =>
+            {
+                honored.Add(delay);
+                return Task.CompletedTask;
+            },
+        };
+        FakeTapeDriveClient tenSeconds = new()
+        {
+            FailuresBeforeSuccess = 1,
+            RetryAfter = TimeSpan.FromSeconds(10),
+        };
+        using HostTelemetry telemetry = new();
+        RetryingTapeDriveUploader first = new(tenSeconds, telemetry, new ListLogger(), timing);
+
+        await first.UploadAsync(Upload("after"), CancellationToken.None);
+
+        honored.Should().Equal(TimeSpan.FromSeconds(10));
+
+        honored.Clear();
+        FakeTapeDriveClient tooLong = new()
+        {
+            FailuresBeforeSuccess = 1,
+            RetryAfter = TimeSpan.FromMinutes(2),
+        };
+        RetryingTapeDriveUploader second = new(tooLong, telemetry, new ListLogger(), timing);
+
+        await second.UploadAsync(Upload("capped"), CancellationToken.None);
+
+        honored.Should().Equal(TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task Upload_WhenTheDeadlinePassesDuringBackoff_DoesNotAttemptAgain()
+    {
+        FakeTimeProvider clock = new(new DateTimeOffset(2026, 10, 17, 6, 0, 0, TimeSpan.Zero));
+        List<TimeSpan> waits = [];
+        TapeDriveRetryTiming timing = new()
+        {
+            Wait = (delay, _) =>
+            {
+                waits.Add(delay);
+                clock.Advance(TapeDriveRetryTiming.Deadline);
+                return Task.CompletedTask;
+            },
+        };
+        FakeTapeDriveClient client = new() { FailuresBeforeSuccess = 10, Status = 503 };
+        using HostTelemetry telemetry = new();
+        RetryingTapeDriveUploader uploader = new(client, telemetry, new ListLogger(), timing, clock);
+
+        TapeDriveUploadResult result = await uploader.UploadAsync(Upload("deadline"), CancellationToken.None);
+
+        result.Status.Should().Be(TapeDriveUploadStatus.Failed);
+        result.Attempts.Should().Be(1);
+        result.FailureType.Should().Be("Timeout");
+        waits.Should().ContainSingle();
     }
 
     [Fact]
@@ -210,6 +296,8 @@ public sealed class TapeDriveUploadTests
 
         public int? Status { get; init; }
 
+        public TimeSpan? RetryAfter { get; init; }
+
         public string? Secret { get; init; }
 
         public int Creates { get; private set; }
@@ -233,7 +321,8 @@ public sealed class TapeDriveUploadTests
                         message,
                         Credential ? null : Status ?? 503,
                         Credential || Permanent,
-                        Credential ? "ServiceAccountCredential" : "GoogleApiException");
+                        Credential ? "ServiceAccountCredential" : "GoogleApiException",
+                        RetryAfter);
                 }
 
                 await using Stream content = upload.Open();

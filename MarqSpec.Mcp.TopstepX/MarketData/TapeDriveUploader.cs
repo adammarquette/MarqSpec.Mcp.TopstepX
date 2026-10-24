@@ -90,12 +90,19 @@ public sealed class TapeDriveException : Exception
     /// <param name="statusCode">The HTTP status, when the provider reported one.</param>
     /// <param name="permanent">True for a bad credential or HTTP 400, 401, 403, or 404.</param>
     /// <param name="failureType">The provider exception type name.</param>
-    public TapeDriveException(string safeMessage, int? statusCode, bool permanent, string failureType)
+    /// <param name="retryAfter">How long the provider asked us to wait. Null when the response had no <c>Retry-After</c>.</param>
+    public TapeDriveException(
+        string safeMessage,
+        int? statusCode,
+        bool permanent,
+        string failureType,
+        TimeSpan? retryAfter = null)
         : base(safeMessage)
     {
         StatusCode = statusCode;
         Permanent = permanent;
         FailureType = failureType;
+        RetryAfter = retryAfter;
     }
 
     /// <summary>The HTTP status, when there is one.</summary>
@@ -106,6 +113,9 @@ public sealed class TapeDriveException : Exception
 
     /// <summary>The provider exception type name.</summary>
     public string FailureType { get; }
+
+    /// <summary>The <c>Retry-After</c> delay, when the provider sent one. Not capped.</summary>
+    public TimeSpan? RetryAfter { get; }
 }
 
 /// <summary>How long a retry waits. Tests substitute a clock that does not sleep.</summary>
@@ -114,8 +124,11 @@ public sealed class TapeDriveRetryTiming
     /// <summary>The first wait before jitter. Later waits double until <see cref="Cap"/>.</summary>
     public static readonly TimeSpan Base = TimeSpan.FromMilliseconds(200);
 
-    /// <summary>The longest wait before jitter.</summary>
+    /// <summary>The longest wait before jitter, and the longest <c>Retry-After</c> this client will honour.</summary>
     public static readonly TimeSpan Cap = TimeSpan.FromSeconds(30);
+
+    /// <summary>The budget for every attempt and every wait of one upload. Past this, the upload fails.</summary>
+    public static readonly TimeSpan Deadline = TimeSpan.FromMinutes(2);
 
     /// <summary>Returns a value in <c>[0, 1]</c>. The wait is between half and all of the exponential delay.</summary>
     public Func<double> NextUnit { get; init; } = Random.Shared.NextDouble;
@@ -133,6 +146,28 @@ public sealed class TapeDriveRetryTiming
         double clamped = Math.Clamp(unitInterval, 0d, 1d);
         double factor = 0.5d + (0.5d * clamped);
         return TimeSpan.FromMilliseconds(capped * factor);
+    }
+
+    /// <summary>
+    /// The wait before the next attempt. A <paramref name="retryAfter"/> replaces the exponential delay and is capped.
+    /// </summary>
+    /// <param name="failedAttempt">How many attempts have already failed.</param>
+    /// <param name="unitInterval">A value in <c>[0, 1]</c>. Ignored when <paramref name="retryAfter"/> is set.</param>
+    /// <param name="retryAfter">The provider's <c>Retry-After</c>, or null.</param>
+    /// <returns>The delay.</returns>
+    public static TimeSpan WaitFor(int failedAttempt, double unitInterval, TimeSpan? retryAfter)
+    {
+        if (retryAfter is not TimeSpan requested)
+        {
+            return Delay(failedAttempt, unitInterval);
+        }
+
+        if (requested < TimeSpan.Zero)
+        {
+            requested = TimeSpan.Zero;
+        }
+
+        return requested <= Cap ? requested : Cap;
     }
 }
 
@@ -185,13 +220,14 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
     private readonly HostTelemetry _telemetry;
     private readonly ILogger _logger;
     private readonly TapeDriveRetryTiming _timing;
+    private readonly TimeProvider _clock;
 
     /// <summary>Retries with the production delay.</summary>
     /// <param name="client">The Drive client.</param>
     /// <param name="telemetry">Where upload counters are recorded.</param>
     /// <param name="logger">Receives the exception type and status. Not the provider message.</param>
     public RetryingTapeDriveUploader(ITapeDriveClient client, HostTelemetry telemetry, ILogger logger)
-        : this(client, telemetry, logger, new TapeDriveRetryTiming())
+        : this(client, telemetry, logger, new TapeDriveRetryTiming(), TimeProvider.System)
     {
     }
 
@@ -205,18 +241,35 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
         HostTelemetry telemetry,
         ILogger logger,
         TapeDriveRetryTiming timing)
+        : this(client, telemetry, logger, timing, TimeProvider.System)
+    {
+    }
+
+    /// <summary>Retries with a caller-supplied clock, so the deadline follows a test clock.</summary>
+    /// <param name="client">The Drive client.</param>
+    /// <param name="telemetry">Where upload counters are recorded.</param>
+    /// <param name="logger">Receives the exception type and status.</param>
+    /// <param name="timing">How long to wait between transient failures.</param>
+    /// <param name="clock">Cancels the upload at <see cref="TapeDriveRetryTiming.Deadline"/>.</param>
+    public RetryingTapeDriveUploader(
+        ITapeDriveClient client,
+        HostTelemetry telemetry,
+        ILogger logger,
+        TapeDriveRetryTiming timing,
+        TimeProvider clock)
     {
         _client = client;
         _telemetry = telemetry;
         _logger = logger;
         _timing = timing;
+        _clock = clock;
     }
 
     /// <summary>Retries with a null logger. Tests that do not inspect logs use this.</summary>
     /// <param name="client">The Drive client.</param>
     /// <param name="telemetry">Where upload counters are recorded.</param>
     public RetryingTapeDriveUploader(ITapeDriveClient client, HostTelemetry telemetry)
-        : this(client, telemetry, NullLogger.Instance, new TapeDriveRetryTiming())
+        : this(client, telemetry, NullLogger.Instance, new TapeDriveRetryTiming(), TimeProvider.System)
     {
     }
 
@@ -227,13 +280,30 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
     public async Task<TapeDriveUploadResult> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
     {
         using Activity? span = _telemetry.Activities.StartActivity("tape.upload", ActivityKind.Client);
+        using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        DateTimeOffset started = _clock.GetUtcNow();
+        using ITimer timer = _clock.CreateTimer(
+            static state => ((CancellationTokenSource)state!).Cancel(),
+            deadline,
+            TapeDriveRetryTiming.Deadline,
+            Timeout.InfiniteTimeSpan);
+        CancellationToken token = deadline.Token;
         int retries = 0;
         for (int attempt = 1; attempt <= MaxAttempts; attempt++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
+            if (token.IsCancellationRequested || PastDeadline(started))
+            {
+                return Failed(span, upload, attempt, retries, "Timeout", status: null, permanent: false);
+            }
+
             try
             {
-                string fileId = await _client.UploadAsync(upload, cancellationToken).ConfigureAwait(false);
+                string fileId = await _client.UploadAsync(upload, token).ConfigureAwait(false);
                 if (retries > 0)
                 {
                     _telemetry.TapeUpload(TapeUploadOutcome.Retried, retries);
@@ -246,31 +316,32 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
             {
                 throw;
             }
+            catch (OperationCanceledException)
+            {
+                return Failed(span, upload, attempt, retries, "Timeout", status: null, permanent: false);
+            }
             catch (Exception exception)
             {
-                (string type, int? status, bool permanent) = Describe(exception);
+                (string type, int? status, bool permanent, TimeSpan? retryAfter) = Describe(exception);
                 if (permanent || attempt == MaxAttempts)
                 {
-                    span?.SetStatus(ActivityStatusCode.Error);
-                    string outcome = permanent ? TapeUploadOutcome.Permanent : TapeUploadOutcome.Failed;
-                    if (retries > 0 && !permanent)
-                    {
-                        _telemetry.TapeUpload(TapeUploadOutcome.Retried, retries);
-                    }
+                    return Failed(span, upload, attempt, retries, type, status, permanent);
+                }
 
-                    _telemetry.TapeUpload(outcome, 1);
-                    _logger.LogError(
-                        "Drive upload failed for {Kind} {Day}. Type {FailureType}, status {FailureStatus}.",
-                        upload.Identity.Kind,
-                        upload.Identity.Day,
-                        type,
-                        status);
-                    return new TapeDriveUploadResult(TapeDriveUploadStatus.Failed, null, attempt, type, status);
+                double unit = retryAfter is null ? _timing.NextUnit() : 0d;
+                TimeSpan delay = TapeDriveRetryTiming.WaitFor(attempt, unit, retryAfter);
+                await _timing.Wait(delay, token).ConfigureAwait(false);
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                if (token.IsCancellationRequested || PastDeadline(started))
+                {
+                    return Failed(span, upload, attempt, retries, "Timeout", status: null, permanent: false);
                 }
 
                 retries++;
-                TimeSpan delay = TapeDriveRetryTiming.Delay(attempt, _timing.NextUnit());
-                await _timing.Wait(delay, cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -282,13 +353,42 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
     /// <inheritdoc />
     public void Dispose() => (_client as IDisposable)?.Dispose();
 
-    private static (string Type, int? Status, bool Permanent) Describe(Exception exception)
+    private bool PastDeadline(DateTimeOffset started) =>
+        _clock.GetUtcNow() - started >= TapeDriveRetryTiming.Deadline;
+
+    private TapeDriveUploadResult Failed(
+        Activity? span,
+        TapeDriveUpload upload,
+        int attempt,
+        int retries,
+        string type,
+        int? status,
+        bool permanent)
+    {
+        span?.SetStatus(ActivityStatusCode.Error);
+        string outcome = permanent ? TapeUploadOutcome.Permanent : TapeUploadOutcome.Failed;
+        if (retries > 0 && !permanent)
+        {
+            _telemetry.TapeUpload(TapeUploadOutcome.Retried, retries);
+        }
+
+        _telemetry.TapeUpload(outcome, 1);
+        _logger.LogError(
+            "Drive upload failed for {Kind} {Day}. Type {FailureType}, status {FailureStatus}.",
+            upload.Identity.Kind,
+            upload.Identity.Day,
+            type,
+            status);
+        return new TapeDriveUploadResult(TapeDriveUploadStatus.Failed, null, attempt, type, status);
+    }
+
+    private static (string Type, int? Status, bool Permanent, TimeSpan? RetryAfter) Describe(Exception exception)
     {
         if (exception is TapeDriveException drive)
         {
-            return (drive.FailureType, drive.StatusCode, drive.Permanent);
+            return (drive.FailureType, drive.StatusCode, drive.Permanent, drive.RetryAfter);
         }
 
-        return (exception.GetType().Name, null, false);
+        return (exception.GetType().Name, null, false, null);
     }
 }

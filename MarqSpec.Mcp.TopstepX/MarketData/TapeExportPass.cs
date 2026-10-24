@@ -7,10 +7,9 @@ using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Infrastructure;
-using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Npgsql;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
@@ -45,7 +44,9 @@ public interface ITapeExportPass
 /// </para>
 /// <para>
 /// A UTC day that has not ended is not archived. A day that an open listen still overlaps is not
-/// archived either. The receipt for a failed upload keeps the last Drive file id.
+/// archived either. The receipt for a failed upload keeps the last Drive file id. One identity is
+/// serialised with a session advisory lock on a connection that is not pooled. The pending receipt
+/// is committed before the upload, and the file id is committed after it.
 /// </para>
 /// </remarks>
 public sealed class TapeExportPass(
@@ -262,117 +263,119 @@ public sealed class TapeExportPass(
         int generation = TapeExportArchive.AllocateGeneration(_options.Path, day);
         List<TapeExportStoredFile> files = [];
 
-        await using var transaction = await _database.Database
+        List<SeriesKey> tradeKeys;
+        List<SeriesKey> coverageKeys;
+        List<SeriesKey> footprintKeys;
+        await using (var transaction = await _database.Database
             .BeginTransactionAsync(IsolationLevel.RepeatableRead, cancellationToken)
-            .ConfigureAwait(false);
-        try
+            .ConfigureAwait(false))
         {
-            List<SeriesKey> tradeKeys = await _database.Trades
-                .AsNoTracking()
-                .Where(row => row.TradeTimeUtc >= start && row.TradeTimeUtc < end)
-                .Select(row => new SeriesKey(row.Venue, row.Instrument, row.ContractId, 0))
-                .Distinct()
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            foreach (SeriesKey key in tradeKeys
-                .OrderBy(item => item.Venue, StringComparer.Ordinal)
-                .ThenBy(item => item.Instrument, StringComparer.Ordinal)
-                .ThenBy(item => item.ContractId, StringComparer.Ordinal))
+            try
             {
-                files.Add(await TapeExportArchive.WriteTradeCsvAsync(
-                    _options.Path,
-                    generation,
-                    day,
-                    key.Venue,
-                    key.Instrument,
-                    key.ContractId,
-                    Trades(start, end, key.Venue, key.Instrument, key.ContractId, cancellationToken),
-                    cancellationToken).ConfigureAwait(false));
-                files.Add(await TapeExportArchive.WriteTradeParquetAsync(
-                    _options.Path,
-                    generation,
-                    day,
-                    key.Venue,
-                    key.Instrument,
-                    key.ContractId,
-                    Trades(start, end, key.Venue, key.Instrument, key.ContractId, cancellationToken),
-                    cancellationToken).ConfigureAwait(false));
+                tradeKeys = await _database.Trades
+                    .AsNoTracking()
+                    .Where(row => row.TradeTimeUtc >= start && row.TradeTimeUtc < end)
+                    .Select(row => new SeriesKey(row.Venue, row.Instrument, row.ContractId, 0))
+                    .Distinct()
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                coverageKeys = await _database.TapeCoverage
+                    .AsNoTracking()
+                    .Where(row => row.RangeStart >= start && row.RangeStart < end
+                        && row.RangeEnd != TapeCoverageRecord.StillListeningEnd)
+                    .Select(row => new SeriesKey(row.Venue, row.Instrument, row.ContractId, 0))
+                    .Distinct()
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                footprintKeys = await _database.FootprintCells
+                    .AsNoTracking()
+                    .Where(row => row.BucketStart >= start && row.BucketStart < end)
+                    .Select(row => new SeriesKey(row.Venue, row.Instrument, string.Empty, row.ResolutionMinutes))
+                    .Distinct()
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             }
-
-            List<SeriesKey> coverageKeys = await _database.TapeCoverage
-                .AsNoTracking()
-                .Where(row => row.RangeStart >= start && row.RangeStart < end
-                    && row.RangeEnd != TapeCoverageRecord.StillListeningEnd)
-                .Select(row => new SeriesKey(row.Venue, row.Instrument, row.ContractId, 0))
-                .Distinct()
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            foreach (SeriesKey key in coverageKeys
-                .OrderBy(item => item.Venue, StringComparer.Ordinal)
-                .ThenBy(item => item.Instrument, StringComparer.Ordinal)
-                .ThenBy(item => item.ContractId, StringComparer.Ordinal))
+            catch
             {
-                files.Add(await TapeExportArchive.WriteCoverageCsvAsync(
-                    _options.Path,
-                    generation,
-                    day,
-                    key.Venue,
-                    key.Instrument,
-                    key.ContractId,
-                    Coverage(start, end, key.Venue, key.Instrument, key.ContractId, cancellationToken),
-                    cancellationToken).ConfigureAwait(false));
-                files.Add(await TapeExportArchive.WriteCoverageParquetAsync(
-                    _options.Path,
-                    generation,
-                    day,
-                    key.Venue,
-                    key.Instrument,
-                    key.ContractId,
-                    Coverage(start, end, key.Venue, key.Instrument, key.ContractId, cancellationToken),
-                    cancellationToken).ConfigureAwait(false));
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                throw;
             }
-
-            List<SeriesKey> footprintKeys = await _database.FootprintCells
-                .AsNoTracking()
-                .Where(row => row.BucketStart >= start && row.BucketStart < end)
-                .Select(row => new SeriesKey(row.Venue, row.Instrument, string.Empty, row.ResolutionMinutes))
-                .Distinct()
-                .ToListAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            foreach (SeriesKey key in footprintKeys
-                .OrderBy(item => item.Venue, StringComparer.Ordinal)
-                .ThenBy(item => item.Instrument, StringComparer.Ordinal)
-                .ThenBy(item => item.Resolution))
-            {
-                files.Add(await TapeExportArchive.WriteFootprintCsvAsync(
-                    _options.Path,
-                    generation,
-                    day,
-                    key.Venue,
-                    key.Instrument,
-                    key.Resolution,
-                    Footprint(start, end, key.Venue, key.Instrument, key.Resolution, cancellationToken),
-                    cancellationToken).ConfigureAwait(false));
-                files.Add(await TapeExportArchive.WriteFootprintParquetAsync(
-                    _options.Path,
-                    generation,
-                    day,
-                    key.Venue,
-                    key.Instrument,
-                    key.Resolution,
-                    Footprint(start, end, key.Venue, key.Instrument, key.Resolution, cancellationToken),
-                    cancellationToken).ConfigureAwait(false));
-            }
-
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch
+
+        foreach (SeriesKey key in tradeKeys
+            .OrderBy(item => item.Venue, StringComparer.Ordinal)
+            .ThenBy(item => item.Instrument, StringComparer.Ordinal)
+            .ThenBy(item => item.ContractId, StringComparer.Ordinal))
         {
-            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
-            throw;
+            files.Add(await TapeExportArchive.WriteTradeCsvAsync(
+                _options.Path,
+                generation,
+                day,
+                key.Venue,
+                key.Instrument,
+                key.ContractId,
+                Trades(start, end, key.Venue, key.Instrument, key.ContractId, cancellationToken),
+                cancellationToken).ConfigureAwait(false));
+            files.Add(await TapeExportArchive.WriteTradeParquetAsync(
+                _options.Path,
+                generation,
+                day,
+                key.Venue,
+                key.Instrument,
+                key.ContractId,
+                Trades(start, end, key.Venue, key.Instrument, key.ContractId, cancellationToken),
+                cancellationToken).ConfigureAwait(false));
+        }
+
+        foreach (SeriesKey key in coverageKeys
+            .OrderBy(item => item.Venue, StringComparer.Ordinal)
+            .ThenBy(item => item.Instrument, StringComparer.Ordinal)
+            .ThenBy(item => item.ContractId, StringComparer.Ordinal))
+        {
+            files.Add(await TapeExportArchive.WriteCoverageCsvAsync(
+                _options.Path,
+                generation,
+                day,
+                key.Venue,
+                key.Instrument,
+                key.ContractId,
+                Coverage(start, end, key.Venue, key.Instrument, key.ContractId, cancellationToken),
+                cancellationToken).ConfigureAwait(false));
+            files.Add(await TapeExportArchive.WriteCoverageParquetAsync(
+                _options.Path,
+                generation,
+                day,
+                key.Venue,
+                key.Instrument,
+                key.ContractId,
+                Coverage(start, end, key.Venue, key.Instrument, key.ContractId, cancellationToken),
+                cancellationToken).ConfigureAwait(false));
+        }
+
+        foreach (SeriesKey key in footprintKeys
+            .OrderBy(item => item.Venue, StringComparer.Ordinal)
+            .ThenBy(item => item.Instrument, StringComparer.Ordinal)
+            .ThenBy(item => item.Resolution))
+        {
+            files.Add(await TapeExportArchive.WriteFootprintCsvAsync(
+                _options.Path,
+                generation,
+                day,
+                key.Venue,
+                key.Instrument,
+                key.Resolution,
+                Footprint(start, end, key.Venue, key.Instrument, key.Resolution, cancellationToken),
+                cancellationToken).ConfigureAwait(false));
+            files.Add(await TapeExportArchive.WriteFootprintParquetAsync(
+                _options.Path,
+                generation,
+                day,
+                key.Venue,
+                key.Instrument,
+                key.Resolution,
+                Footprint(start, end, key.Venue, key.Instrument, key.Resolution, cancellationToken),
+                cancellationToken).ConfigureAwait(false));
         }
 
         if (files.Count == 0)
@@ -526,41 +529,32 @@ public sealed class TapeExportPass(
             file.ContractId,
             file.ResolutionMinutes);
 
-        await using var status = await _database.Database
-            .BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
-            .ConfigureAwait(false);
+        if (!_drive.IsEnabled)
+        {
+            await RecordReceiptAsync(
+                day,
+                file,
+                exportedAtUtc,
+                driveFileId: null,
+                TapeExportReceipt.StateDriveDisabled,
+                failureType: null,
+                failureStatus: null,
+                cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        string key = identity.Canonical();
+        await using NpgsqlConnection gate = await OpenLockConnectionAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await LockIdentityAsync(status, identity.Canonical(), cancellationToken).ConfigureAwait(false);
-            string? known = await _database.TapeExportReceipts.AsNoTracking()
-                .Where(row => row.Day == day && row.Kind == file.Kind && row.Format == file.Format
-                    && row.Venue == file.Venue && row.Instrument == file.Instrument
-                    && row.ContractId == file.ContractId && row.ResolutionMinutes == file.ResolutionMinutes)
-                .Select(row => row.DriveFileId)
-                .FirstOrDefaultAsync(cancellationToken)
-                .ConfigureAwait(false);
-
-            if (_drive.IsEnabled)
-            {
-                await RecordReceiptAsync(
-                    day,
-                    file,
-                    exportedAtUtc,
-                    known,
-                    TapeExportReceipt.StatePending,
-                    failureType: null,
-                    failureStatus: null,
-                    cancellationToken).ConfigureAwait(false);
-            }
-
+            await AdvisoryAsync(gate, "pg_advisory_lock", key, cancellationToken).ConfigureAwait(false);
+            string? known = await CommitPendingAsync(day, file, exportedAtUtc, cancellationToken).ConfigureAwait(false);
             string absolute = Path.Combine(
                 _options.Path,
                 file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
-            TapeDriveUploadResult result = _drive.IsEnabled
-                ? await _drive.UploadAsync(
-                    new TapeDriveUpload(identity, known, file.RelativePath, () => File.OpenRead(absolute)),
-                    cancellationToken).ConfigureAwait(false)
-                : TapeDriveUploadResult.NotConfigured;
+            TapeDriveUploadResult result = await _drive.UploadAsync(
+                new TapeDriveUpload(identity, known, file.RelativePath, () => File.OpenRead(absolute)),
+                cancellationToken).ConfigureAwait(false);
 
             if (result.Status == TapeDriveUploadStatus.Failed)
             {
@@ -571,14 +565,10 @@ public sealed class TapeExportPass(
                     result.FailureStatus);
             }
 
-            string state = result.Status switch
-            {
-                TapeDriveUploadStatus.Uploaded => TapeExportReceipt.StateUploaded,
-                TapeDriveUploadStatus.Failed => TapeExportReceipt.StateFailed,
-                _ => TapeExportReceipt.StateDriveDisabled,
-            };
-
-            await RecordReceiptAsync(
+            string state = result.Status == TapeDriveUploadStatus.Uploaded
+                ? TapeExportReceipt.StateUploaded
+                : TapeExportReceipt.StateFailed;
+            await CommitResultAsync(
                 day,
                 file,
                 exportedAtUtc,
@@ -587,30 +577,133 @@ public sealed class TapeExportPass(
                 result.FailureType,
                 result.FailureStatus,
                 cancellationToken).ConfigureAwait(false);
-            await status.CommitAsync(cancellationToken).ConfigureAwait(false);
             return result.Status == TapeDriveUploadStatus.Failed;
+        }
+        finally
+        {
+            try
+            {
+                if (gate.State == ConnectionState.Open)
+                {
+                    await AdvisoryAsync(gate, "pg_advisory_unlock", key, CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(
+                    "Tape export could not release its identity lock ({ExceptionType}).",
+                    exception.GetType().Name);
+            }
+        }
+    }
+
+    private async Task<NpgsqlConnection> OpenLockConnectionAsync(CancellationToken cancellationToken)
+    {
+        if (_database.Database.GetDbConnection() is not NpgsqlConnection source)
+        {
+            throw new InvalidOperationException("Tape export store is not Postgres.");
+        }
+
+        // The password is stripped from ConnectionString after open. CloneWith keeps it and turns pooling off,
+        // so this session lock cannot return to the pool still held.
+        NpgsqlConnectionStringBuilder builder = new(source.ConnectionString)
+        {
+            Pooling = false,
+        };
+        NpgsqlConnection connection = source.CloneWith(builder.ConnectionString);
+        try
+        {
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            return connection;
         }
         catch
         {
-            await status.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            await connection.DisposeAsync().ConfigureAwait(false);
             throw;
         }
     }
 
-    private async Task LockIdentityAsync(
-        Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
+    private static async Task AdvisoryAsync(
+        NpgsqlConnection connection,
+        string function,
         string key,
         CancellationToken cancellationToken)
     {
-        System.Data.Common.DbConnection connection = _database.Database.GetDbConnection();
-        await using System.Data.Common.DbCommand command = connection.CreateCommand();
-        command.Transaction = transaction.GetDbTransaction();
-        command.CommandText = "SELECT pg_advisory_xact_lock(hashtextextended(@key, 0))";
-        System.Data.Common.DbParameter parameter = command.CreateParameter();
-        parameter.ParameterName = "key";
-        parameter.Value = key;
-        command.Parameters.Add(parameter);
+        await using NpgsqlCommand command = new(
+            "SELECT " + function + "(hashtextextended(@key, 0))",
+            connection);
+        command.Parameters.AddWithValue("key", key);
         await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<string?> CommitPendingAsync(
+        DateOnly day,
+        TapeExportStoredFile file,
+        DateTimeOffset exportedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        await using var pending = await _database.Database
+            .BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            string? known = await _database.TapeExportReceipts.AsNoTracking()
+                .Where(row => row.Day == day && row.Kind == file.Kind && row.Format == file.Format
+                    && row.Venue == file.Venue && row.Instrument == file.Instrument
+                    && row.ContractId == file.ContractId && row.ResolutionMinutes == file.ResolutionMinutes)
+                .Select(row => row.DriveFileId)
+                .FirstOrDefaultAsync(cancellationToken)
+                .ConfigureAwait(false);
+            await RecordReceiptAsync(
+                day,
+                file,
+                exportedAtUtc,
+                known,
+                TapeExportReceipt.StatePending,
+                failureType: null,
+                failureStatus: null,
+                cancellationToken).ConfigureAwait(false);
+            await pending.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return known;
+        }
+        catch
+        {
+            await pending.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    private async Task CommitResultAsync(
+        DateOnly day,
+        TapeExportStoredFile file,
+        DateTimeOffset exportedAtUtc,
+        string? driveFileId,
+        string state,
+        string? failureType,
+        int? failureStatus,
+        CancellationToken cancellationToken)
+    {
+        await using var done = await _database.Database
+            .BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken)
+            .ConfigureAwait(false);
+        try
+        {
+            await RecordReceiptAsync(
+                day,
+                file,
+                exportedAtUtc,
+                driveFileId,
+                state,
+                failureType,
+                failureStatus,
+                cancellationToken).ConfigureAwait(false);
+            await done.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await done.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
     }
 
     private Task RecordReceiptAsync(

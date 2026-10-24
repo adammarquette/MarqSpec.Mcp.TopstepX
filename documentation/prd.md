@@ -727,9 +727,11 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
   `TapeExport__Drive__ServiceAccountJsonPath` are set. Otherwise it makes no network call. The OAuth
   scope is `drive.file` ([ADR-0025](adr/0025-drive-file-scope-for-tape-export.md)). Prefer the path: a
   mounted secret file. Inline JSON is visible to anyone who can inspect the container. The same
-  identity updates one Drive file (`appProperties`, or the stored file id). Nothing is trashed. A
-  transient failure is retried with backoff. A permanent failure (credential, HTTP 400, 401, 403, 404)
-  is not. The local file and the local rows stay, and the last good file id stays.
+  identity updates one Drive file (`appProperties`, or the stored file id). Nothing is trashed. One
+  identity is serialised with a session advisory lock on a dedicated connection. `pending` is committed
+  before the upload and the file id after it. A transient failure is retried with backoff, or
+  `Retry-After` when present, inside a two-minute deadline. A permanent failure (credential, HTTP 400,
+  401, 403, 404) is not. The local file and the local rows stay, and the last good file id stays.
 - **R-10.7** Each file writes one `TapeExportReceipts` row. `pending` is the in-flight upload.
   `drive_disabled` means Drive was off. `uploaded` and `failed` are the outcomes. A failure stores the
   exception type and the HTTP status, never the credential, and does not clear `DriveFileId`. This

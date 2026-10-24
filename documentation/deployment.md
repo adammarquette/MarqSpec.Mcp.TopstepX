@@ -239,11 +239,26 @@ repository applies:
    has `MarketData__RecordTape=true`.
 
 The process creates the `trades/`, `tape-coverage/`, `footprint-cells/` and `manifests/` directories.
-It does not create the volume. The image runs as uid **64198** (`Dockerfile` `USER 64198`); the mount
-has to be writable by that user. Files written only on the container filesystem die with the
-container. Compose forwards the variables below and does **not** add this mount, so
-`docker compose up` is unchanged while the switches stay at their defaults. The export does not delete
-local rows.
+It does not create the volume. The image runs as uid **64198** (`Dockerfile` `USER 64198`). Railway
+mounts a volume as root ([volume permissions](https://docs.railway.com/volumes#permissions)), so that
+uid cannot create those directories. The pass logs that the path is not writable and skips. Rows stay
+in Postgres. That skip is the fail-safe: an unwritable mount does not crash the host.
+
+On the recorder service, set Railway's `RAILWAY_RUN_UID=0` so the start command runs as root, and set
+the service start command. A start command replaces the image entrypoint
+([start command](https://docs.railway.com/deployments/start-command#configure-the-start-command)).
+The image installs `runuser` for this. The command fixes ownership of the mount, then drops to uid
+64198:
+
+```text
+/bin/sh -c "mkdir -p /data/tape-exports && chown -R 64198:64198 /data/tape-exports && exec runuser -u mcp -- dotnet MarqSpec.Mcp.TopstepX.dll"
+```
+
+`RAILWAY_RUN_UID` is Railway's variable, not a `TapeExport__*` key, and it is not in the committed
+compose file. Leave it unset where the process should stay the image user. Files written only on the
+container filesystem die with the container. Compose forwards the variables below and does **not** add
+this mount, so `docker compose up` is unchanged while the switches stay at their defaults. The export
+does not delete local rows.
 
 ### Config contract for #758
 

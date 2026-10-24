@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check already enforces the #765 contract for when it is enabled. Both checks read env keys the way .NET does
   (case-insensitive, `:` equals `__`) and refuse colon keys, colliding keys and miscased known keys.
 
+- **Tape export uploads hold a session lock, not a transaction lock** (gh#755). `pending` commits before
+  the Drive call and the file id commits after, on a connection that is not pooled. Transient retries
+  honour `Retry-After` up to 30 seconds and stop at a two-minute deadline. The Google client's own 503
+  backoff is off. A Railway volume is root-owned: the recorder start command chowns
+  `/data/tape-exports` to uid 64198 and then drops privileges (`RAILWAY_RUN_UID=0`). An unwritable path
+  is still logged and skipped.
+
 - **`no-order-path` now gates the order path instead of forbidding it** (gh#718, ADR-0024). The required
   check of the same name changes meaning: from "no order path exists" (ADR-0002) to a tripwire for "orders
   only through `TradingRiskGate` -> `IExecutionGateway`, `Trading__Enabled` off by default, Practice accounts

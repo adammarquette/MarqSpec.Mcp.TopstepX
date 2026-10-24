@@ -1138,7 +1138,10 @@ Trades and closed coverage are one pair per contract per day,
 `manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`), written last by a temp file, fsync, and rename, and
 it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
 An older generation is left on disk.
-The image user is uid 64198; a volume that user cannot write is a failed pass, not a silent success.
+The image user is uid 64198. Railway mounts volumes as root, so the recorder's start command has to
+chown `/data/tape-exports` to that user and then drop privileges (`RAILWAY_RUN_UID=0`, see
+[deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755)). A volume that user cannot write
+is a skipped pass, not a crash and not a silent success.
 The committed compose file forwards the environment variables and does not mount the volume.
 
 **Drive is optional and additive** (`R-10.6`, [ADR-0025](adr/0025-drive-file-scope-for-tape-export.md)).
@@ -1147,10 +1150,14 @@ The committed compose file forwards the environment variables and does not mount
 `TapeExport__Drive__ServiceAccountJson` is visible to anyone who can inspect the container. Empty
 leaves Drive off and the disabled uploader records nothing; the pass counts one `drive_disabled`.
 The OAuth scope is `drive.file`. The identity is `appProperties` plus the stored file id, not the
-display name. Nothing is trashed. A transient failure waits with exponential backoff and jitter, up to
-three attempts. A permanent failure is not retried. The local file, the Postgres rows, and the last
-good file id stay. Spans are `tape.export` (a day the pass touches) and `tape.upload` (one file, across
-its retries). `TapeExportReceipts` records `pending`, `drive_disabled`, `uploaded`, or `failed`
+display name. Nothing is trashed. Two uploads of one identity take a session `pg_advisory_lock` on a
+connection that is not returned to the pool, and release it in a `finally`. `pending` is committed
+before the upload. The file id is committed after. A transient failure waits with exponential backoff
+and jitter, or `Retry-After` when the response sends one, capped at 30 seconds, up to three attempts
+and a two-minute deadline. The Google client's own 503 backoff is off. A permanent failure is not
+retried. The local file, the Postgres rows, and the last good file id stay. Spans are `tape.export`
+(a day the pass touches) and `tape.upload` (one file, across its retries). `TapeExportReceipts` records
+`pending`, `drive_disabled`, `uploaded`, or `failed`
 (`R-10.7`). That is not a retention check.
 
 **The copy is additive.** A day is the UTC calendar day of `TradeTimeUtc`, of a closed coverage
@@ -1161,8 +1168,9 @@ match the manifest. Local rows are not deleted, on a verified day or on a refuse
 `Retention__*` is not read. Dropping raw tape is out of scope and needs its own ADR (gh#758).
 
 A candidate day is one whose rows have no matching receipt, or whose receipt hash no longer matches
-the file. Each contract is streamed inside one repeatable-read transaction. A row committed after the
-snapshot stays in Postgres until the next pass. A day whose receipt hash matches is not read. A day an
+the file. Key discovery for the day is one short repeatable-read transaction. Each contract is then
+streamed in its own read, so the snapshot is not held across the file write. A contract that commits
+after that snapshot waits for the next pass. A day whose receipt hash matches is not read. A day an
 open listen still overlaps is skipped. An empty database does not rediscover a day. A path lock
 (`.export.lock`) skips the pass when another process holds it. `import-tape` inserts with
 `ON CONFLICT DO NOTHING` and writes nothing for a day that fails verification.

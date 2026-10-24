@@ -956,9 +956,13 @@ public static class Program
             }
 
             return new RetryingTapeDriveUploader(
-                new GoogleTapeDriveClient(export.Drive),
+                new GoogleTapeDriveClient(
+                    export.Drive,
+                    sp.GetRequiredService<ILogger<GoogleTapeDriveClient>>()),
                 telemetry,
-                sp.GetRequiredService<ILogger<RetryingTapeDriveUploader>>());
+                sp.GetRequiredService<ILogger<RetryingTapeDriveUploader>>(),
+                new TapeDriveRetryTiming(),
+                sp.GetRequiredService<TimeProvider>());
         });
         services.AddSingleton<ITapeExportSchedulerGate, RecorderLeaseGate>();
         services.AddScoped<TapeExportPass>();

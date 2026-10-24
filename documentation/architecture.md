@@ -1152,8 +1152,13 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   error (`invalid session` or `session not found`), a validate body of `InvalidSession` or
   `SessionNotFound`, or HTTP 401, disconnects, waits `MarketData__SessionConflictBackoff`, and
   does not subscribe again. The recorder does not call `loginKey` while that is suspected or after
-  the stop. An inconclusive probe does not reconnect; a still-fresh token is probed again, and no
-  fresh token stops the recorder rather than logging in. A validate result of valid is connected by
+  the stop. The held token is renewed with `POST /api/Auth/validate` well before the client's
+  54-minute refresh, so a quiet process does not log in on a timer. An inconclusive probe does not
+  reconnect and does not latch login; a still-fresh token is probed again on its own interval
+  (one second, doubling to 30 seconds), and no fresh token stops the recorder rather than logging in
+  without closing login for REST tools. The one-way latch is only a documented hub name, HTTP 401,
+  `InvalidSession`, or `SessionNotFound`. `AutoReconnect` stays off for both hubs while the recorder
+  is alive, because they share one options instance. A validate result of valid is connected by
   this process with automatic reconnect left off. The refusal the tape tools return names the
   platform, the switch, and that limit.
   Live tape health is a

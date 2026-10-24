@@ -87,10 +87,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MarketData__SessionConflictBackoff` (default five seconds, from zero through two minutes), and
   does not reconnect. The probe uses only the token already held. It does not call `loginKey`,
   including when that token is inside the client's refresh window (about 54 minutes). An
-  inconclusive probe does not reconnect: a fresh token is probed again, and no fresh token stops
-  the recorder instead of logging in. After a stop, tools may keep using the held token until it
+  inconclusive probe does not reconnect and does not latch login: a fresh token is probed again
+  on its own interval (one second, doubling to 30 seconds), and no fresh token stops the recorder
+  instead of logging in, without closing login for REST tools. The held token is renewed with
+  `POST /api/Auth/validate` before the client's 54-minute refresh, so a quiet process does not
+  call `loginKey` on a timer. After a conflict stop, tools may keep using the held token until it
   ages out and then fail rather than calling `loginKey`. `mcp.tape.session_conflicts` and the
-  `tape.session_conflict` span record `source` = `hub` or `api`, never the vendor's sentence.
+  `tape.session_conflict` span record `source` = `hub` or `api`. This repository does not log the
+  vendor's sentence. The venue client still logs its own text when its login methods run.
 
 - **`TradingRiskGate` (gh#711).** Central practice-only gate with allowlist, symbol denylist, per-order and
   daily caps, dry-run preview, and append-only audit rows before every outcome. Future MCP order tools will call

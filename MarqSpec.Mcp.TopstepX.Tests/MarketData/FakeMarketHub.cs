@@ -306,6 +306,16 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
             return;
         }
 
+        RaiseUnfiltered(update);
+    }
+
+    /// <summary>
+    /// Raises a print even when the hub has dropped its subscriptions. A suspicion test has to deliver
+    /// the event after a disconnect, which clears <see cref="TradeSubscriptions"/>.
+    /// </summary>
+    /// <param name="update">The print.</param>
+    public void RaiseUnfiltered(TradeUpdate update)
+    {
         RaisedToListeners++;
         TradeUpdateReceived?.Invoke(this, update);
     }

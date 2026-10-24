@@ -442,21 +442,41 @@ and otherwise posts `/api/Auth/loginKey`. The cache lifetime in the client is 55
 refresh starts about 54 minutes after the token was stored. A probe that called it would log in.
 
 `GatedAuthenticationService` is the process's `IAuthenticationService`, which is what SignalR's
-`AccessTokenProvider` and the REST `AuthenticationHandler` both call. A token that is still fresh is
-returned and not logged. When it is not fresh, `loginKey` runs only if no probe is in flight, no
-conflict is suspected, and no stop is latched. Otherwise the call fails. `ValidateSessionAsync` is
-not forwarded: the client's implementation clears its cache on any unsuccessful body, and the next
-read then logs in. A `newToken` on a **valid** validate body is stored in `HeldSession` (another 55
-minutes) and is never written to a log. The validate body is not logged. Vendor text is not passed
-to the logger from this path.
+`AccessTokenProvider` and the REST `AuthenticationHandler` both call. The concrete
+`AuthenticationService` is not registered, so a resolve cannot skip the gate. A token that is still
+fresh is returned and not logged. When it is not fresh, `loginKey` runs only if no probe is in
+flight, no conflict is suspected, no renewal backoff is in effect, and no stop is latched. Otherwise
+the call fails. Logins take one lock and check the gate again after `loginKey` returns. A result
+that lost that race is not remembered and not returned. A `loginKey` request already sent cannot be
+recalled — that window is irreducible, and the call may still have opened a session at the venue.
+`RefreshTokenAsync` remembers a refresh that has already completed, so the next read does not log in
+a second time. `ValidateSessionAsync` throws: the client's implementation clears its cache on any
+unsuccessful body, and the next read then logs in. A `newToken` on a **valid** validate body is
+stored in `HeldSession` (another 55 minutes). A valid body with no `newToken` stores the same bearer
+again so that window slides. The token is never written to a log. The validate body is not logged.
+Vendor text is not passed to the logger from this path.
 
-**Safe default when the probe is inconclusive** (no fresh token, timeout, `ExpiredToken`,
-`UnknownError`, a missing code, or a call that does not land): do not connect and do not call
-`loginKey`. `AutoReconnect` stays off. If a fresh token is still held, wait
-`SessionConflictBackoff` and probe that same token again. If no fresh token is held, stop and
-release the claim — another probe cannot succeed without a login, and this process will not start
-one. That stand-down is `TapeAvailability.Stopped`, not a session-conflict counter. Restart to record
-again.
+The held token is kept fresh by a periodic `POST /api/Auth/validate` with the bearer already held.
+That call creates no new session and does not use `loginKey`. The steady interval is 30 minutes,
+plus or minus 5 minutes of jitter, and it is clamped so a renewal still fires at least 10 minutes
+before the client's 54-minute refresh. A renewal that fails backs off from 30 seconds, doubling up
+to 5 minutes, and closes login until a later validate succeeds. That close is not the one-way stop.
+No token has been stored yet is a short poll that leaves login permitted, so the first connect can
+still log in. This replaces the hourly `loginKey` the client would otherwise post once the cache
+was inside its last minute, which is the login that kicks the platform.
+
+**The one-way stop latches only on positive conflict evidence:** a hub close whose text contains a
+documented validate name, HTTP 401, `InvalidSession`, or `SessionNotFound`. A missing token, a
+timeout, `ExpiredToken`, `UnknownError`, a missing code, or a call that does not land does **not**
+latch it and does not close login for REST tools.
+
+**Safe default when the probe is inconclusive:** do not connect and do not call `loginKey`.
+`AutoReconnect` stays off. If a token is still held and still fresh, wait and probe it again. That
+wait is not `SessionConflictBackoff`. It starts at one second and doubles up to 30 seconds, so a
+stop backoff of zero cannot become a tight validate loop. The stop backoff, including zero, only
+finishes a stop. If no fresh token is held, stop and release the claim. That stand-down is
+`TapeAvailability.Stopped`, not a session-conflict counter, and it does not latch the login gate.
+Restart to record again. REST tools may call `loginKey` after that stand-down.
 
 A **valid** probe may call `ConnectMarketHubAsync` while the stop is not latched and the hub is not
 already connecting or reconnecting. It does not set `AutoReconnect` back to true.
@@ -470,9 +490,14 @@ off inside the disconnect handler misses the first retry (default one second). W
 on, the recorder forces the flag off **before** `Connect`, and again when a probe starts.
 
 The previous value is remembered once. It is restored only when this process exits without a latched
-stop, and it is restored to that previous value, including `false`. A latched stop does not restore
-it. A valid probe must not turn it back on: the stop latch is set synchronously, before any await,
-and a probe that is already running checks the latch before it connects.
+stop and without a no-token stand-down, and it is restored to that previous value, including
+`false`. A latched stop does not restore it. A stand-down does not latch, and it still leaves the
+flag off. Market and user hubs share one `WebSocketOptions` instance, so `AutoReconnect` stays off
+for **both** hubs for the recorder's lifetime. A valid probe must not turn it back on: the stop
+latch is set synchronously, before any await, and a probe that is already running checks the latch
+before it connects. A `Connected` that arrives after the stop is latched disconnects the market hub,
+so a reconnect that finishes after the conflict cannot leave a stopped recorder holding a connected,
+subscribed hub.
 
 One probe is in flight. A second drop does not start another. `DisconnectMarketHubAsync` is not
 called while the hub is `Connecting` or `Reconnecting`, because that would abort a SignalR retry
@@ -488,11 +513,15 @@ not say the process never touches the venue while a fresh token remains.
 `mcp.tape.session_conflicts` counts a conflict stop, tagged `source` = `hub` or `api`. The span is
 `tape.session_conflict` with that tag only. The log line is this server's own sentence.
 
-**Residual.** The user hub is not connected. With the switch off, a documented hub name is a
-transport drop and the recorder keeps reconnecting, which is the operator's choice to keep this
-process's session. An already-scheduled SignalR retry is not aborted; the flag has to have been off
-before that retry was armed. The venue client's own log of a `loginKey` body is avoided by not
-making the call.
+**Residual.** The user hub is not connected by this recorder. The shared options still keep
+automatic reconnect off for it while the recorder is alive. With the switch off, a documented hub
+name is a transport drop and the recorder keeps reconnecting, which is the operator's choice to keep
+this process's session. An already-scheduled SignalR retry is not aborted; the flag has to have been
+off before that retry was armed. This repository does not log vendor close text, validate bodies, or
+tokens. The venue client still logs its own `loginKey` and validate text when those methods run
+inside the package. Not calling `loginKey` is how that client's login body stays out of the log.
+This repository cannot suppress a line the package writes itself. A `loginKey` that was already on
+the wire when a suspicion started cannot be recalled.
 
 ## Follow-ups
 

@@ -838,18 +838,20 @@ public static class Program
             services.SuppressTransportRetriesOnVenueWrites();
 
             // The recorder's session probe and the login gate in front of the venue client (gh#757).
-            // Registered only beside the venue client: AuthenticationService does not exist on the
-            // unconfigured branch. The probe reads HeldSession and does not call GetAccessTokenAsync.
-            // The gated service is what SignalR's AccessTokenProvider and the REST handler both resolve,
-            // so an aged token cannot post loginKey while a conflict is suspected or after a stop.
+            // Registered only beside the venue client. The concrete AuthenticationService is removed so
+            // a resolve cannot skip the gate: the inner instance is constructed here and held only by
+            // GatedAuthenticationService. The probe and the renewer read HeldSession and post validate.
+            // They do not call GetAccessTokenAsync. The gated service is what SignalR's
+            // AccessTokenProvider and the REST handler both resolve.
             services.AddSingleton<HeldSession>();
             services.AddSingleton<SessionLoginGate>();
+            services.RemoveAll<AuthenticationService>();
+            services.RemoveAll<IAuthenticationService>();
             services.AddSingleton(static serviceProvider => new GatedAuthenticationService(
-                serviceProvider.GetRequiredService<AuthenticationService>(),
+                CreateVenueAuthentication(serviceProvider),
                 serviceProvider.GetRequiredService<HeldSession>(),
                 serviceProvider.GetRequiredService<SessionLoginGate>(),
                 serviceProvider.GetRequiredService<TimeProvider>()));
-            services.RemoveAll<IAuthenticationService>();
             services.AddSingleton<IAuthenticationService>(static serviceProvider =>
                 serviceProvider.GetRequiredService<GatedAuthenticationService>());
             services.AddHttpClient(ProjectXSessionConflictProbe.HttpClientName, (serviceProvider, client) =>
@@ -858,11 +860,16 @@ public static class Program
                 client.BaseAddress = new Uri(projectX.BaseUrl);
                 client.Timeout = TimeSpan.FromSeconds(10);
             });
-            services.AddSingleton<ISessionConflictProbe>(serviceProvider => new ProjectXSessionConflictProbe(
+            services.AddSingleton(serviceProvider => new ProjectXSessionConflictProbe(
                 serviceProvider.GetRequiredService<HeldSession>(),
                 serviceProvider.GetRequiredService<IHttpClientFactory>(),
                 serviceProvider.GetRequiredService<ILogger<ProjectXSessionConflictProbe>>(),
                 serviceProvider.GetRequiredService<TimeProvider>()));
+            services.AddSingleton<ISessionConflictProbe>(static serviceProvider =>
+                serviceProvider.GetRequiredService<ProjectXSessionConflictProbe>());
+            services.AddSingleton<HeldSessionRenewer>();
+            services.AddHostedService(static serviceProvider =>
+                serviceProvider.GetRequiredService<HeldSessionRenewer>());
 
             // SINGLETON, while the gateway consuming it is scoped. The vendor's 50-requests-per-30-seconds
             // allowance on History/retrieveBars is counted against the CREDENTIAL, so it has to be shared
@@ -1232,6 +1239,23 @@ public static class Program
         }
 
         return ReselectExit.Ok;
+    }
+
+    /// <summary>
+    /// The venue client's authentication service, held only by <see cref="GatedAuthenticationService"/>.
+    /// The package registers a named client <c>AuthenticationService</c> with no authentication handler,
+    /// so a login does not re-enter the gate. <see cref="AuthenticationService"/> itself is not registered.
+    /// The client is not disposed: it lives as long as the process.
+    /// </summary>
+    private static AuthenticationService CreateVenueAuthentication(IServiceProvider serviceProvider)
+    {
+        HttpClient http = serviceProvider
+            .GetRequiredService<IHttpClientFactory>()
+            .CreateClient(nameof(AuthenticationService));
+        return new AuthenticationService(
+            serviceProvider.GetRequiredService<ILogger<AuthenticationService>>(),
+            serviceProvider.GetRequiredService<IOptions<ProjectXOptions>>(),
+            http);
     }
 
 }

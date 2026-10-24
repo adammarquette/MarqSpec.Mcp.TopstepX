@@ -19,10 +19,18 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// </remarks>
 public sealed class HeldSession
 {
-    /// <summary>How long the venue client treats a token as cached after login or a validate rotation.</summary>
+    /// <summary>
+    /// How long the venue client treats a token as cached after login or a validate rotation.
+    /// Copied from <c>MarqSpec.Client.ProjectX</c> 3.0.0, where <c>AuthenticationService</c> sets the
+    /// cache expiry 55 minutes out.
+    /// </summary>
     public static readonly TimeSpan CacheLifetime = TimeSpan.FromMinutes(55);
 
-    /// <summary>The client refreshes when the cache is inside this buffer, so a probe must too.</summary>
+    /// <summary>
+    /// The client refreshes when the cache is inside this buffer, so a probe must too.
+    /// Copied from <c>MarqSpec.Client.ProjectX</c> 3.0.0, where <c>GetAccessTokenAsync</c> posts
+    /// <c>loginKey</c> inside a one-minute buffer.
+    /// </summary>
     public static readonly TimeSpan RefreshBuffer = TimeSpan.FromMinutes(1);
 
     private readonly object _gate = new();
@@ -54,6 +62,24 @@ public sealed class HeldSession
             _token = null;
             _expiresAt = default;
         }
+    }
+
+    /// <summary>Reads any held token, including one inside the client's refresh buffer.</summary>
+    /// <param name="token">The bearer, when this returns <see langword="true"/>.</param>
+    /// <returns><see langword="false"/> when nothing is held. This does not start a login.</returns>
+    public bool TryRead(out string token)
+    {
+        lock (_gate)
+        {
+            if (!string.IsNullOrEmpty(_token))
+            {
+                token = _token;
+                return true;
+            }
+        }
+
+        token = string.Empty;
+        return false;
     }
 
     /// <summary>Reads the held token when it is still outside the client's refresh buffer.</summary>

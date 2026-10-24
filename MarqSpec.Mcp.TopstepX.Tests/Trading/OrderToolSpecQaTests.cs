@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
@@ -63,6 +62,18 @@ public sealed class OrderToolSpecQaTests
             data.Add(op, ExecutionWriteRefusal.NonPracticeAccount);
             data.Add(op, ExecutionWriteRefusal.IdempotencyKeyTooLong);
             data.Add(op, ExecutionWriteRefusal.Transmitted);
+        }
+
+        return data;
+    }
+
+    public static TheoryData<string, bool> ToolByCleanupFault()
+    {
+        TheoryData<string, bool> data = [];
+        foreach (string op in AllTools())
+        {
+            data.Add(op, false);
+            data.Add(op, true);
         }
 
         return data;
@@ -258,6 +269,26 @@ public sealed class OrderToolSpecQaTests
         AssertOutcomeUnknown(first);
     }
 
+    [Theory]
+    [MemberData(nameof(ToolByCleanupFault))]
+    public async Task TradingOrderTools_CleanupFaultAfterTheAck_IsOutcomeUnknown_ForEveryTool(string op, bool venueFault)
+    {
+        using HostTelemetry telemetry = new();
+        TradingRiskGate gate = Gate(telemetry, On());
+        gate.CleanupFaultForTest = venueFault
+            ? new VenueException("cleanup failed after the send")
+            : new InvalidOperationException("cleanup failed after the send");
+
+        ToolPayloads.TradingWriteResult first = await Call(new TradingOrderTools(gate), op, "order-0");
+        if (first.RetrySafety == ToolPayloads.TradingRetrySafety.SafeToRetry)
+        {
+            await Call(Tools(telemetry, On()), op, "order-1");
+        }
+
+        _gateway.Total.Should().Be(1);
+        AssertOutcomeUnknown(first);
+    }
+
     // ---------------- Unmappable venue outcome after the send ----------------
     [Theory]
     [MemberData(nameof(AllTools))]
@@ -274,20 +305,17 @@ public sealed class OrderToolSpecQaTests
     }
 
     // ---------------- M2 / M6: the tool's last-resort catch ----------------
-    // The gate classifies every fault it sees, so this catch is reachable only from the tool's run step. It is
-    // private; the test drives it by reflection because the gate is sealed and offers no seam (no production change).
+    // The gate classifies every fault it sees, so this catch is reachable only from the tool's run step.
     [Fact]
     public async Task TradingOrderTools_RunStep_UnclassifiedException_IsOutcomeUnknown_NeverSafeToRetry()
     {
-        MethodInfo run = typeof(TradingOrderTools).GetMethod("RunAsync", BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new InvalidOperationException("TradingOrderTools.RunAsync not found; update this seam.");
-
-        var result = await (Task<ToolPayloads.TradingWriteResult>)run.Invoke(
-            null,
-            [Task.FromException<TradingRiskGateResult>(new InvalidOperationException("unclassified"))])!;
+        ToolPayloads.TradingWriteResult result = await TradingOrderTools.RunAsync(
+            Task.FromException<TradingRiskGateResult>(new InvalidOperationException("unclassified")));
 
         result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
         result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        result.RefusalCode.Should().BeNull();
+        result.ResultCode.Should().Be(ToolPayloads.UnclassifiedFaultResultCode);
         result.OrderId.Should().BeNull();
     }
 
@@ -390,7 +418,10 @@ public sealed class OrderToolSpecQaTests
         return listener;
     }
 
-    private TradingOrderTools Tools(HostTelemetry telemetry, TradingExecutionOptions options)
+    private TradingOrderTools Tools(HostTelemetry telemetry, TradingExecutionOptions options) =>
+        new(Gate(telemetry, options));
+
+    private TradingRiskGate Gate(HostTelemetry telemetry, TradingExecutionOptions options)
     {
         ProjectXAccountStageResolver stage = new();
         TradingExecutionGate execution = new(TradingOptionsMonitors.Fixed(options), _kill, stage);
@@ -402,7 +433,7 @@ public sealed class OrderToolSpecQaTests
             new(OtherPractice, AccountStage.Practice, CanTrade: true, IsVisible: true, Balance: 50_000m),
             new(Funded, AccountStage.Funded, CanTrade: true, IsVisible: true, Balance: 50_000m),
         ];
-        return new TradingOrderTools(new TradingRiskGate(
+        return new TradingRiskGate(
             execution,
             _gateway,
             new QaMarket(accounts),
@@ -412,7 +443,7 @@ public sealed class OrderToolSpecQaTests
             _audit,
             denylist,
             new TradingWriteVenueAccountCache(),
-            telemetry));
+            telemetry);
     }
 
     private static Task<ToolPayloads.TradingWriteResult> Call(

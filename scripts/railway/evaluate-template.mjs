@@ -215,8 +215,14 @@ for (const name of ["server", "recorder"]) {
   if (!(Number.isInteger(wait) && wait >= 30)) fail(`${name}: Store__StartupWaitSeconds must be an integer >= 30 (Railway has no depends_on), got ${JSON.stringify(env.Store__StartupWaitSeconds)}`);
   if (s.source?.autoUpdates?.type !== "disabled") fail(`${name}: image autoUpdates must be explicitly disabled (ADR-0001 pinning)`);
   if (s.deploy?.healthcheckPath !== "/health") fail(`${name}: deploy.healthcheckPath must be /health, got ${s.deploy?.healthcheckPath}`);
-  const floor = (Number(literal(env.Store__StartupWaitSeconds)) || 0) + 120;
-  if (!(s.deploy?.healthcheckTimeout >= floor)) fail(`${name}: healthcheckTimeout must be >= store wait + 120 s (${floor}), got ${s.deploy?.healthcheckTimeout}`);
+  // The migration runs before the app listens (#761), so a healthcheck must outlast store wait + migration + 120 s.
+  // Migrations__CommandTimeoutSeconds defaults to 3600 in code; if the template sets it, it must be plain digits.
+  const rawMig = env.Migrations__CommandTimeoutSeconds === undefined ? "3600" : literal(env.Migrations__CommandTimeoutSeconds);
+  const mig = /^\d+$/.test(rawMig ?? "") && Number(rawMig) >= 1 ? Number(rawMig) : NaN;
+  if (Number.isNaN(mig)) fail(`${name}: Migrations__CommandTimeoutSeconds must be a literal integer >= 1, got ${JSON.stringify(env.Migrations__CommandTimeoutSeconds)}`);
+  const floor = (Number(literal(env.Store__StartupWaitSeconds)) || 0) + (mig || 3600) + 120;
+  if (s.deploy?.healthcheckPath !== undefined && !(Number.isInteger(s.deploy?.healthcheckTimeout) && s.deploy.healthcheckTimeout >= floor))
+    fail(`${name}: healthcheckTimeout must be >= store wait + migration timeout + 120 s (${floor}), got ${s.deploy?.healthcheckTimeout}`);
   const want = {
     Trading__Enabled: "false", Trading__KillSwitch: "false", Trading__AllowedAccountIds: "",
     ASPNETCORE_HTTP_PORTS: "8080", PORT: "8080", Mcp__Transport: "Http",

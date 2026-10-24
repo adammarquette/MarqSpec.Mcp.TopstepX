@@ -167,7 +167,14 @@ deploy stays manual and needs Adam's approval.
 - **Ports:** only `ASPNETCORE_HTTP_PORTS=8080`. `ASPNETCORE_URLS` and `ASPNETCORE_HTTPS_PORTS` are rejected
   because TLS is at Railway's edge (ADR-0021).
 - **Store wait:** `Store__StartupWaitSeconds=90`, required ≥ 30, because Railway has no `depends_on`.
-- **Healthcheck:** the timeout must be ≥ store wait + 120 s.
+- **Healthcheck:** `/health` with `healthcheckTimeout=3900` on server and recorder. The EF migration runs
+  **before** the app listens and may build a per-chunk index on `Trades` under `Migrations__CommandTimeoutSeconds`
+  (default 3600, #761); Railway's default ~300 s healthcheck would kill the container mid-migration and retry
+  it forever. The check requires the timeout ≥ store wait + migration timeout + 120 s (90 + 3600 + 120 = 3810)
+  whenever a healthcheck path is set. The cost: a deploy that is genuinely broken takes up to ~65 min to fail,
+  while the old deployment keeps serving. The alternative, a pre-deploy migration command, would need an image
+  entrypoint that migrates and exits (no such mode today); revisit with #767. The timeout is per command, so a
+  migration of several long commands can still exceed it; watch first-deploy logs.
 - **Auth:** the server runs OAuth, not compose's static token. Its scope is locked to `topstepx-mcp/read`.
 - **Resource URL:** `Mcp__OAuth__ResourceUrl` is exactly `https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp`, the
   server's own domain.

@@ -116,4 +116,97 @@ public sealed class LogTextTests
 
         LogText.Sanitize(value).Should().Be(value[..LogText.MaxSanitizedLength] + LogText.TruncationMarker);
     }
+
+    [Theory]
+    [InlineData(0x200E, "\\u200E")]
+    [InlineData(0x200F, "\\u200F")]
+    [InlineData(0x061C, "\\u061C")]
+    [InlineData(0x200B, "\\u200B")]
+    [InlineData(0xFEFF, "\\uFEFF")]
+    public void AnInvisibleFormatMark_IsEscaped(int codePoint, string expected)
+    {
+        // LRM, RLM, ALM, ZWSP and BOM hide or reorder the rest of a line and are not in \p{Cc}.
+        string sanitized = LogText.Sanitize(((char)codePoint).ToString());
+
+        sanitized.Should().Be(expected);
+        sanitized.Should().NotContain(((char)codePoint).ToString());
+    }
+
+    [Theory]
+    [InlineData(0xD800, "\\uD800")]
+    [InlineData(0xDBFF, "\\uDBFF")]
+    [InlineData(0xDC00, "\\uDC00")]
+    [InlineData(0xDFFF, "\\uDFFF")]
+    public void ALoneSurrogate_IsEscaped(int codePoint, string expected)
+    {
+        string sanitized = LogText.Sanitize(((char)codePoint).ToString());
+
+        sanitized.Should().Be(expected);
+        char.IsSurrogate(sanitized, 0).Should().BeFalse();
+    }
+
+    [Fact]
+    public void AWellFormedEmoji_StaysOneCharacter()
+    {
+        // A pair is two Cs units. Escaping each would hide the character the cap has to keep intact.
+        const string emoji = "\U0001F600";
+
+        LogText.Sanitize("hi " + emoji).Should().Be("hi " + emoji);
+    }
+
+    [Theory]
+    [InlineData(1022)]
+    [InlineData(1023)]
+    [InlineData(1024)]
+    public void AnEmojiOnTheCapBoundary_IsNotSplit(int index)
+    {
+        const string emoji = "\U0001F600";
+        string input = new string('a', index) + emoji + "zzz";
+
+        string result = LogText.Sanitize(input);
+
+        result.Should().EndWith(LogText.TruncationMarker);
+        string body = result[..^LogText.TruncationMarker.Length];
+        (body.Length == 0 || !char.IsHighSurrogate(body[^1])).Should().BeTrue();
+        if (index == 1022)
+        {
+            body.Should().Be(new string('a', 1022) + emoji);
+        }
+        else if (index == 1023)
+        {
+            body.Should().Be(new string('a', 1023));
+        }
+        else
+        {
+            body.Should().Be(new string('a', 1024));
+        }
+    }
+
+    [Fact]
+    public void ACarriageReturnOnTheEscapeBoundary_IsNotSplit()
+    {
+        // 1020 ordinary characters leave four places under the cap, and a CR expands to six. The cut has
+        // to end before that escape, not inside it.
+        string input = new string('a', 1020) + "\r";
+
+        string result = LogText.Sanitize(input);
+
+        result.Should().Be(new string('a', 1020) + LogText.TruncationMarker);
+        result.Any(char.IsControl).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ACallerSuppliedTruncationMarker_IsNotTheCap()
+    {
+        // The exact marker is only the suffix Cap appends. A copy in the input is escaped instead.
+        LogText.Sanitize(LogText.TruncationMarker).Should().Be(" [\\u005Ctruncated]");
+
+        string input = LogText.TruncationMarker + new string('a', LogText.MaxSanitizedLength);
+        string result = LogText.Sanitize(input);
+        string body = result[..^LogText.TruncationMarker.Length];
+
+        result.Should().EndWith(LogText.TruncationMarker);
+        body.Should().NotContain(LogText.TruncationMarker);
+        body.Should().StartWith(" [\\u005Ctruncated]");
+    }
 }

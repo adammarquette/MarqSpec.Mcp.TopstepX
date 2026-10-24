@@ -41,6 +41,9 @@
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" />
     <PackageReference Include="Npgsql.OpenTelemetry" />
+    <!-- Scheduled tape copy: Parquet files, and Drive only when the operator set a folder and a credential. -->
+    <PackageReference Include="Parquet.Net" />
+    <PackageReference Include="Google.Apis.Drive.v3" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

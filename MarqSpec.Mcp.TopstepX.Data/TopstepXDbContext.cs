@@ -78,6 +78,9 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Buy and sell volume per price per bar — a projection over <see cref="Trades"/>.</summary>
     public DbSet<FootprintCellRecord> FootprintCells => Set<FootprintCellRecord>();
 
+    /// <summary>Status of each tape-export file. Not a copy of the tape and not a retention policy.</summary>
+    public DbSet<TapeExportReceipt> TapeExportReceipts => Set<TapeExportReceipt>();
+
     /// <summary>Append-only ledger of every trading attempt (ADR-0024 §5, gh#709).</summary>
     public DbSet<TradingAuditLogRecord> TradingAuditLog => Set<TradingAuditLogRecord>();
 
@@ -301,6 +304,34 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.Property(c => c.Price).HasColumnType(PriceColumnType);
 
             entity.HasIndex(c => new { c.Instrument, c.ResolutionMinutes, c.BucketStart });
+        });
+
+        modelBuilder.Entity<TapeExportReceipt>(entity =>
+        {
+            entity.ToTable("TapeExportReceipts");
+            entity.HasKey(receipt => new
+            {
+                receipt.Day,
+                receipt.Kind,
+                receipt.Format,
+                receipt.Venue,
+                receipt.Instrument,
+                receipt.ContractId,
+                receipt.ResolutionMinutes,
+            });
+
+            entity.Property(receipt => receipt.Kind).HasMaxLength(32);
+            entity.Property(receipt => receipt.Format).HasMaxLength(16);
+            entity.Property(receipt => receipt.Venue).HasMaxLength(64);
+            entity.Property(receipt => receipt.Instrument).HasMaxLength(32);
+            entity.Property(receipt => receipt.ContractId).HasMaxLength(64);
+            entity.Property(receipt => receipt.RelativePath).HasMaxLength(512);
+            entity.Property(receipt => receipt.Sha256).HasMaxLength(64);
+            entity.Property(receipt => receipt.DriveFileId).HasMaxLength(128);
+            entity.Property(receipt => receipt.UploadState).HasMaxLength(16);
+
+            // The read a later retention decision would make: one day, and whether each file landed.
+            entity.HasIndex(receipt => new { receipt.Day, receipt.UploadState });
         });
 
         modelBuilder.Entity<ObservationRecord>(entity =>

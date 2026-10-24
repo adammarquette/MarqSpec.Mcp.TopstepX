@@ -123,6 +123,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repository does not log the vendor's sentence. The venue client still logs its own text when its
   login methods run.
 
+- **Scheduled tape export (gh#755, `R-10`).** `TapeExportWorker` writes `Trades`, closed `TapeCoverage`
+  and `FootprintCells` as gzip CSV and Parquet under `TapeExport__Path` (default `/data/tape-exports`,
+  a mounted volume the process does not create). Trades and coverage are one pair of files per contract
+  per day; footprint files are per instrument and resolution because a cell has no contract.
+  `TapeExport__Format` accepts only `csv.gz+parquet`. Off unless the transport is HTTP and
+  `TapeExport__Enabled=true`. `TapeExport__Schedule` defaults to `06:00` UTC, with one pass at process
+  start. A UTC day is copied only after it has ended, and only when the manifest sha256 and row counts
+  verify. The export is additive: local rows are not deleted. Google Drive is a second copy, off unless
+  `TapeExport__Drive__FolderId` and a service-account JSON or path are set. A repeat replaces the Drive
+  file. A failed upload is retried and leaves the local file and the rows in place. `TapeExportReceipts`
+  records `local`, `uploaded`, or `failed`. `export-tape` and `import-tape` archive or restore one day
+  or every day; import refuses an unverified day and inserts nothing for it. `mcp.tape.exports`,
+  `mcp.tape.uploads` and `mcp.tape.export.duration` record the pass, and spans `tape.export` and
+  `tape.upload` trace it. Timescale `policy_retention` on `Trades` stays empty. gh#758's template uses
+  `TapeExport__Schedule`, `TapeExport__Path` and `TapeExport__Format`, plus the Drive keys above.
+  `Retention__*` is not read; dropping raw tape is out of scope and needs its own ADR.
+
 - **`TradingRiskGate` (gh#711).** Central practice-only gate with allowlist, symbol denylist, per-order and
   daily caps, dry-run preview, and append-only audit rows before every outcome. Future MCP order tools will call
   this type

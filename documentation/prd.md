@@ -692,6 +692,41 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 - **R-9.7** A window entirely **before recording began** refuses and **names the earliest covered
   time** for that instrument. An empty answer there would look like a quiet market (gh#222).
 
+## R-10 — Recorded tape survives a reset
+
+The tape is original data and it stays in Postgres. A container reset that drops the database volume
+drops prints that no REST call can refetch (gh#755). The export below is an additional copy on a
+mounted volume. Timescale `policy_retention` on `Trades` stays empty. **Deleting local tape is not
+this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758).
+
+- **R-10.1** The HTTP host writes a scheduled export of `Trades`, closed `TapeCoverage` and
+  `FootprintCells` as **both** gzip CSV and Parquet under `TapeExport__Path`. Trades and coverage are
+  one pair of files per contract per UTC day. Footprint cells have no contract column, so those files
+  are one pair per instrument and resolution per day. The worker runs only when the transport is HTTP
+  **and** `TapeExport__Enabled` is true. The default is **false**. It runs once at process start, then
+  daily at `TapeExport__Schedule` (default `06:00`, UTC, exact `HH:mm`). The `export-tape` and
+  `import-tape` verbs do not read `Enabled`.
+- **R-10.2** A UTC day is copied only after its exclusive end (00:00 UTC the next day). The current
+  day is not written. The manifest sha256 and row counts must match the files just written. A mismatch
+  refuses that day. The pass does not delete local rows on success or on failure.
+- **R-10.3** `import-tape` restores a verified day into Postgres and refuses a checksum or row-count
+  mismatch, inserting nothing for that day. A second import of the same rows inserts nothing
+  (`ON CONFLICT DO NOTHING`).
+- **R-10.4** `TapeExport__Path` is a filesystem directory, and it is expected to be a **mounted
+  volume**. The default is `/data/tape-exports`. The process creates subdirectories there; it does not
+  create the volume. An `s3://` URI and a relative path are refused as that path. The only accepted
+  `TapeExport__Format` is `csv.gz+parquet`.
+- **R-10.5** A still-listening coverage range (exclusive end `9999-12-31`) is not exported. The row
+  stays in Postgres, as does every other tape row.
+- **R-10.6** Google Drive is a second copy of the same files. It runs only when
+  `TapeExport__Drive__FolderId` and either `TapeExport__Drive__ServiceAccountJson` or
+  `TapeExport__Drive__ServiceAccountJsonPath` are set. Otherwise it makes no network call. A repeat
+  of the same relative path replaces the Drive file and does not create another. A failed upload is
+  retried in the pass; the local file and the local rows stay.
+- **R-10.7** Each file writes one `TapeExportReceipts` row (`local`, `uploaded`, or `failed`) so a
+  later retention decision can see whether the copy finished. This requirement does not delete tape.
+  `Retention__*` is not read and needs its own ADR (gh#758).
+
 ## Open questions
 
 - **Q-1 — Contract roll. RESOLVED 2026-08-23** by [ADR-0011](adr/0011-contract-roll-boundary.md) (gh#42),

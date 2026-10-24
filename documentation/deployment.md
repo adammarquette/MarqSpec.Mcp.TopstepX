@@ -227,6 +227,84 @@ Running the new image on your infrastructure is separate from release — not au
 - **Rollback:** pull the previous tag or digest and restart. GHCR tags can be overwritten; prefer digest
   pinning on production hosts.
 
+## Recorded tape on a persistent host (gh#755)
+
+Prints, closed listening ranges and footprint cells live in Postgres. The compose Postgres volume is
+not that store once the container is replaced. Two things a person does, neither of which this
+repository applies:
+
+1. Run Postgres that survives the server container (Railway Postgres, or a Timescale image when you
+   want parity with the tests) and point `ConnectionStrings__Default` at it.
+2. Mount a volume at `TapeExport__Path` and turn the export on for **the one** HTTP process that also
+   has `MarketData__RecordTape=true`.
+
+The process creates the `trades/`, `tape-coverage/`, `footprint-cells/` and `manifests/` directories.
+It does not create the volume. The image runs as uid **64198** (`Dockerfile` `USER 64198`); the mount
+has to be writable by that user. Files written only on the container filesystem die with the
+container. Compose forwards the variables below and does **not** add this mount, so
+`docker compose up` is unchanged while the switches stay at their defaults. The export does not delete
+local rows.
+
+### Config contract for #758
+
+gh#758's Railway template uses these names. An empty string is refused for the four `TapeExport__*`
+keys in the first table: the defaults below are what a running process accepts. The Drive keys are
+the opposite: empty means the upload is off.
+
+| Environment variable | Default | What it is |
+|---|---|---|
+| `TapeExport__Enabled` | `false` | The daily worker. Runs only on the HTTP transport, and only when this is true. `export-tape` and `import-tape` ignore it. |
+| `TapeExport__Schedule` | `06:00` | UTC time of day, exact `HH:mm`. One pass at process start, then this time each day. |
+| `TapeExport__Path` | `/data/tape-exports` | Absolute directory. **Exports write to a mounted volume at this path.** Not object storage. |
+| `TapeExport__Format` | `csv.gz+parquet` | The only accepted value. Both gzip CSV and Parquet are written. `csv.gz` alone, `parquet` alone, and an empty string are refused. |
+| `TapeExport__Drive__FolderId` | empty | Drive folder id. **Empty disables Drive.** No client is constructed and no network call is made. |
+| `TapeExport__Drive__ServiceAccountJson` | empty | Service-account JSON injected by the environment. **Empty is off** unless the path below is set. Never commit a value. A path wins when both are set. |
+| `TapeExport__Drive__ServiceAccountJsonPath` | empty | Absolute path of a service-account JSON file outside the image. **Empty is off** unless the JSON above is set. A relative path is refused. |
+
+Files on the volume, one pair per contract per day for trades and coverage:
+
+`trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.csv.gz` and `.parquet`, and the same shape under
+`tape-coverage/`. Footprint cells have no contract column, so those files are
+`footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.csv.gz` and `.parquet`. The manifest is
+`manifests/yyyy-MM-dd.json`. Drive uploads those same relative paths into `TapeExport__Drive__FolderId`
+and replaces a file instead of creating a second one. A failed upload is retried three times; the
+local file and the Postgres rows stay. `TapeExportReceipts` stores `local`, `uploaded`, or `failed`
+for each file so a later retention decision can check it. Reading the files back is
+[tape-export-reload.md](tape-export-reload.md).
+
+**Retention is out of scope.** `Retention__Enabled`, `Retention__RawTapeDays`,
+`Retention__DailySummaryDays` and `Retention__RequireExportBeforeDrop` are not read. The tape is
+permanent by schema: Timescale `policy_retention` on `Trades` stays empty
+([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)), and this process never deletes local rows.
+Changing that is a product decision that is still pending. It needs its own ADR before any template
+key is honoured. Do not set `Retention__*` expecting this build to drop tape, and do not treat a
+verified export as permission to prune.
+
+A UTC day is copied once its exclusive end has passed (00:00 UTC the next day). The current day stays
+only in Postgres until then. A mismatch between the manifest and the files refuses that day and still
+leaves the rows.
+
+Suggested values once the volume and the database are real, on the recorder only:
+`MarketData__RecordTape=true`, `TapeExport__Enabled=true`.
+
+```yaml
+# Attach on the recorder service only. Not part of the committed compose file.
+volumes:
+  - tape-exports:/data/tape-exports
+```
+
+### `export-tape` and `import-tape`
+
+```bash
+docker compose run --rm server export-tape
+docker compose run --rm server export-tape 2026-10-01
+docker compose run --rm server import-tape 2026-10-01
+```
+
+The optional day is exact `yyyy-MM-dd`. Exit `0` when every day verified, `1` when any day was refused,
+`2` when the argument is not that form, `3` when the store could not be migrated. Import inserts with
+`ON CONFLICT DO NOTHING` and inserts nothing for a day that fails verification.
+
 ## Troubleshooting
 
 ### Vendor DNS on a custom Docker network (gh#697)

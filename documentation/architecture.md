@@ -818,6 +818,9 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
 | `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
+| `mcp.tape.exports` | counter | `outcome` = skipped_open \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`) |
+| `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
+| `mcp.tape.uploads` | counter | `outcome` = drive_off \| drive_retried \| drive_uploaded \| drive_failed | `RetryingTapeDriveUploader` / `DisabledTapeDriveUploader` (gh#755, `R-10.6`) |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
 
@@ -1114,6 +1117,54 @@ around the tape changeover — every resolution together, so two contracts on di
 cannot hide as `SingleContract` — or omitted when the tape cannot prove a flip. The gateway pick
 is live only; a historical `asOfUtc` omits `gatewayContractId` and `agree` rather than
 dating today's pick. It does not fetch bars and does not write a roll row.
+
+## The tape export — a copy that outlives the container
+
+`Trades`, closed `TapeCoverage` and `FootprintCells` are the rows a reset can destroy and no venue call
+can put back (`R-10`, gh#755). `TapeExportWorker` is a `BackgroundService` registered beside the recorder.
+It runs only when the transport is HTTP **and** `TapeExport__Enabled` is true (default false). It takes
+one pass at process start, then waits until `TapeExport__Schedule` (default `06:00` UTC, exact `HH:mm`)
+and repeats. `export-tape` and `import-tape` call the same pass and do not read `Enabled`.
+
+**Where the files go.** Exports write to a mounted volume at `TapeExport__Path`, default
+`/data/tape-exports`. The process creates `trades/`, `tape-coverage/`, `footprint-cells/` and
+`manifests/` under it and does not create the volume. An `s3://` URI and a relative path are refused
+as that path. `TapeExport__Format` accepts only `csv.gz+parquet`: both files, not a choice of one.
+Trades and closed coverage are one pair per contract per day,
+`trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.csv.gz` and `.parquet` (coverage under
+`tape-coverage/`). Footprint cells have no contract column, so those files are
+`footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.csv.gz` and `.parquet`. The manifest is
+`manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`) and stores each file's sha256 and data-row count.
+The image user is uid 64198; a volume that user cannot write is a failed pass, not a silent success.
+The committed compose file forwards the environment variables and does not mount the volume.
+
+**Drive is optional and additive** (`R-10.6`). `TapeExport__Drive__FolderId` plus
+`TapeExport__Drive__ServiceAccountJson` or `TapeExport__Drive__ServiceAccountJsonPath` turn it on.
+Empty leaves it off and no client is constructed. The same relative path replaces the existing Drive
+file. A failed upload is retried three times in the pass; the local file and the Postgres rows stay.
+Spans are `tape.export` (one day) and `tape.upload` (one file). `TapeExportReceipts` records
+`local`, `uploaded`, or `failed` for a later retention check (`R-10.7`). That check is not this
+process.
+
+**The copy is additive.** A day is the UTC calendar day of `TradeTimeUtc`, of a closed coverage
+`RangeStart`, or of a footprint `BucketStart`, half-open `[dayStart, dayEnd)`. It is exported once
+`now` is at or after `dayEnd`. The current day is left for a later pass. A re-read of the files must
+match the manifest. Local rows are not deleted, on a verified day or on a refused one. Timescale
+`policy_retention` on `Trades` stays empty ([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)).
+`Retention__*` is not read. Dropping raw tape is out of scope and needs its own ADR (gh#758).
+
+The three reads share one repeatable-read transaction, so the file is one snapshot. A row committed
+after the snapshot stays in Postgres and is absent from that file until the next pass. Still-listening
+coverage (end `9999-12-31`) is not exported and is not deleted. An empty database does not rediscover
+a day, so a second pass does not replace a verified archive with an empty file. A path lock
+(`.export.lock`) skips the pass when another process holds it. `import-tape` inserts with
+`ON CONFLICT DO NOTHING` and writes nothing for a day that fails verification.
+
+`mcp.tape.exports` counts each export outcome above. `mcp.tape.uploads` counts Drive
+(`drive_off`, `drive_retried`, `drive_uploaded`, `drive_failed`), tagged only with `outcome`.
+`mcp.tape.export.duration` is the pass, in seconds, with no tags. A thrown pass is caught, counted
+`export_failed`, and does not fault the host. Loading the files back with DuckDB or pandas is
+[tape-export-reload.md](tape-export-reload.md).
 
 ## What is deliberately absent
 

@@ -407,6 +407,13 @@ prints that cannot be refetched — the same fact §8 states for the listening l
 chunks older than seven days compress in place. Compression is a different Timescale job from retention;
 `SchemaTests` asserts both (`policy_compression` present on `Trades`, `policy_retention` still empty).
 
+**The export copies a finished UTC day and does not delete rows** (`R-10`, gh#755). A day of
+`TradeTimeUtc` is written once that day has ended, as gzip CSV and Parquet, one pair of files per
+contract: `trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.csv.gz` and `.parquet`, on the mounted
+volume at `TapeExport__Path` (default `/data/tape-exports`). The volume is not created by a migration.
+`Retention__*` is not read; dropping raw tape needs its own ADR. Whether each file was copied, and
+whether a Drive upload of it finished, is §14.
+
 The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md): probe
 `pg_available_extensions`, create it when Timescale is present, warn and leave a plain table when it is not.
 
@@ -493,6 +500,10 @@ outage is the hole between two closed ranges: they must meet it with no slack on
 
 Not a hypertable. This is a ledger, like §3, not a time series of events.
 
+**Closed ranges are exported with the tape, one contract per day; the still-listening sentinel is not** (`R-10`). A row whose
+`RangeEnd` is `9999-12-31` is not written to `tape-coverage/`. A closed range is filed under the UTC
+day of `RangeStart`. Neither row is deleted by the export.
+
 ## §9 `FootprintCells` — a projection over §7
 
 | Column | Type | Note |
@@ -518,6 +529,12 @@ rebuild reconciles: cells the current tape no longer justifies are removed, not 
 tape yields empty cells, not a fabricated profile. **Two reads that need the contract join §7.**
 
 Not a hypertable. The tape is the high-volume series; this is its projection, rebuildable.
+
+**The export copies these cells anyway** (`R-10`), as gzip CSV and Parquet under
+`footprint-cells/{venue}/{instrument}/{resolution}/`, so a restore is readable before a replay.
+There is still no contract on the file: the cell does not store one. They stay a projection: the
+trades file is the source of truth, and a rebuild still reconciles cells the restored tape no longer
+justifies. A cell is filed under the UTC day of `BucketStart`. The export does not delete it.
 
 **A volume profile is not a twelfth table.** Point of control and the 70% value area are an aggregate over
 these cells plus §8 (`R-9`, gh#221). The host reads the cells and the listening ledger and calls Domain;
@@ -749,6 +766,35 @@ Tests truncate the table between cases; production has no other mutation path.
 
 Indexes: `(AccountId, AttemptedAt)` for an account's history; `(IdempotencyKey)` for correlating retries;
 unique partial `(AccountId, Tool, IdempotencyKey)` for the pre-send claim.
+
+## §14 `TapeExportReceipts` — status of one export file
+
+| Column | Type | Note |
+|---|---|---|
+| `Day` | `date` | UTC day the file covers. Part of the primary key |
+| `Kind` | `varchar(32)` | `trades`, `tape-coverage`, `footprint`, or `manifest` |
+| `Format` | `varchar(16)` | `csv.gz`, `parquet`, or `json` |
+| `Venue` | `varchar(64)` | Empty for the day manifest |
+| `Instrument` | `varchar(32)` | Empty for the day manifest |
+| `ContractId` | `varchar(64)` | Empty for footprint files and the manifest. A cell has no contract (§9) |
+| `ResolutionMinutes` | `integer` | Bar size for a footprint file; `0` otherwise |
+| `RelativePath` | `varchar(512)` | Path under `TapeExport__Path`, `/` separators |
+| `Sha256` | `varchar(64)` | Lowercase hex of the file bytes |
+| `RowCount` | `integer` | Data rows. `0` for a manifest |
+| `ExportedAtUtc` | `timestamptz` | When this status was written |
+| `DriveFileId` | `varchar(128)` | Drive file id after a successful upload. Null otherwise |
+| `UploadState` | `varchar(16)` | `local` (Drive off), `uploaded`, or `failed` |
+
+Primary key: `(Day, Kind, Format, Venue, Instrument, ContractId, ResolutionMinutes)`. A second pass of
+the same file updates this row (`ON CONFLICT DO UPDATE`). It does not insert another, and it does not
+delete tape.
+
+**This is not a retention policy** (`R-10.7`, gh#755). It records that a file was written and whether
+the Drive upload finished, so a later decision can check. `Retention__*` is not read.
+`UploadState = failed` means the local file and the local rows are still there. `local` means Drive
+was not configured. Not a hypertable.
+
+Index: `(Day, UploadState)` — the read that decision would make.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

@@ -111,6 +111,15 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Logged when bookkeeping fails. Constant, so a connection string cannot land in the line.</summary>
     private const string BookkeepingFaultMessage = "Trading bookkeeping failed.";
 
+    /// <summary>A scheduled tape-export outcome, by what the pass did with a day or its rows (gh#755).</summary>
+    public const string TapeExportsInstrument = "mcp.tape.exports";
+
+    /// <summary>How long one tape export or import pass took, in seconds.</summary>
+    public const string TapeExportDurationInstrument = "mcp.tape.export.duration";
+
+    /// <summary>A Drive upload of one export file (gh#755).</summary>
+    public const string TapeUploadsInstrument = "mcp.tape.uploads";
+
     /// <summary>Which cache-aside series a read was of. Values: <see cref="CacheSeries"/>.</summary>
     public const string SeriesTag = "series";
 
@@ -180,6 +189,9 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _executionWrites;
     private readonly Counter<long> _bookkeepingFaults;
     private readonly ILogger<HostTelemetry>? _logger;
+    private readonly Counter<long> _tapeExports;
+    private readonly Histogram<double> _tapeExportDuration;
+    private readonly Counter<long> _tapeUploads;
 
     /// <summary>Creates the meter and the activity source.</summary>
     /// <param name="logger">Optional. A bookkeeping failure logs one constant line through it.</param>
@@ -269,6 +281,21 @@ public sealed class HostTelemetry : IDisposable
             BookkeepingFaultsInstrument,
             unit: "{fault}",
             description: "Daily-cap unlock or execution-write telemetry failures. Untagged.");
+
+        _tapeExports = _meter.CreateCounter<long>(
+            TapeExportsInstrument,
+            unit: "{event}",
+            description: "Tape-export outcomes, by whether a day was archived, verified or refused.");
+
+        _tapeExportDuration = _meter.CreateHistogram<double>(
+            TapeExportDurationInstrument,
+            unit: "s",
+            description: "How long one tape export or import pass took.");
+
+        _tapeUploads = _meter.CreateCounter<long>(
+            TapeUploadsInstrument,
+            unit: "{upload}",
+            description: "Drive uploads of one export file, by whether Drive was off, the file landed, a retry ran, or the attempts failed.");
     }
 
     /// <summary>
@@ -569,6 +596,44 @@ public sealed class HostTelemetry : IDisposable
     /// </remarks>
     public void RecorderHealthRead(string outcome) =>
         _recorderHealthReads.Add(1, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+
+    /// <summary>Counts one tape-export outcome.</summary>
+    /// <param name="outcome">What happened, from <see cref="TapeExportOutcome"/>.</param>
+    /// <param name="count">Days or rows. Zero records nothing, so a quiet pass is not a series.</param>
+    /// <remarks>
+    /// Tagged only with <see cref="OutcomeTag"/>. A day, a path or a contract id would be a new series
+    /// per value, and a counter keeps one accumulator per tag set for the life of the process.
+    /// </remarks>
+    public void TapeExport(string outcome, int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        _tapeExports.Add(count, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+    }
+
+    /// <summary>Records how long one export or import pass took.</summary>
+    /// <param name="seconds">Elapsed seconds. Not tagged: one series for the pass, not one per day.</param>
+    public void TapeExportDuration(double seconds) => _tapeExportDuration.Record(seconds);
+
+    /// <summary>Counts one Drive upload outcome.</summary>
+    /// <param name="outcome">What happened, from <see cref="TapeUploadOutcome"/>.</param>
+    /// <param name="count">Files. Zero records nothing.</param>
+    /// <remarks>
+    /// Tagged only with <see cref="OutcomeTag"/>. A file id or a contract id would be a new series
+    /// per value. The span <c>tape.upload</c> is the trace; this counter is the aggregate.
+    /// </remarks>
+    public void TapeUpload(string outcome, int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        _tapeUploads.Add(count, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+    }
 
     /// <summary>Counts the values a projection pass wrote for one indicator.</summary>
     /// <param name="indicator">The indicator's stable lowercase name.</param>
@@ -1141,4 +1206,64 @@ public static class SessionRecoveryLogin
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Failed, CachedToken, Succeeded];
+}
+
+/// <summary>What a tape-export pass did — the <c>outcome</c> tag's vocabulary for <c>mcp.tape.exports</c>.</summary>
+public static class TapeExportOutcome
+{
+    /// <summary>The UTC day has not ended, so it was not archived. Local rows stay.</summary>
+    public const string SkippedOpen = "skipped_open";
+
+    /// <summary>A day whose files verified.</summary>
+    public const string DaysExported = "days_exported";
+
+    /// <summary>Rows written into a verified day.</summary>
+    public const string RowsExported = "rows_exported";
+
+    /// <summary>The files did not match the manifest. Local rows stay.</summary>
+    public const string VerificationFailed = "verification_failed";
+
+    /// <summary>Rows inserted by an import. A conflict inserts nothing.</summary>
+    public const string RowsImported = "rows_imported";
+
+    /// <summary>An import refused a day whose files did not verify.</summary>
+    public const string ImportRefused = "import_refused";
+
+    /// <summary>Another process holds the path lock. Nothing was written.</summary>
+    public const string LockHeld = "lock_held";
+
+    /// <summary>The day threw before a verified file was committed to the volume.</summary>
+    public const string ExportFailed = "export_failed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [
+            SkippedOpen,
+            DaysExported,
+            RowsExported,
+            VerificationFailed,
+            RowsImported,
+            ImportRefused,
+            LockHeld,
+            ExportFailed,
+        ];
+}
+
+/// <summary>What a Drive upload did — the <c>outcome</c> tag's vocabulary for <c>mcp.tape.uploads</c>.</summary>
+public static class TapeUploadOutcome
+{
+    /// <summary>The folder or the service account is unset. No network call.</summary>
+    public const string Off = "drive_off";
+
+    /// <summary>An attempt failed and another will run in this pass.</summary>
+    public const string Retried = "drive_retried";
+
+    /// <summary>The file is the single Drive object for that relative path.</summary>
+    public const string Uploaded = "drive_uploaded";
+
+    /// <summary>Every attempt failed. The local file and the local rows stay.</summary>
+    public const string Failed = "drive_failed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Off, Retried, Uploaded, Failed];
 }

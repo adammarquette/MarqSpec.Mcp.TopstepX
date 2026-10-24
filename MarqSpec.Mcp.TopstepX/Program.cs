@@ -88,6 +88,16 @@ public static class Program
             return await ReselectBarsAsync(app, args).ConfigureAwait(false);
         }
 
+        // Beside the other verbs. export-tape and import-tape both migrate: an empty database has to be
+        // able to receive a restore, and an export that writes through an unapplied schema is not the
+        // archive a later import can read (gh#755).
+        if (args.Length > 0
+            && (string.Equals(args[0], TapeExportCommands.ExportVerb, StringComparison.Ordinal)
+                || string.Equals(args[0], TapeExportCommands.ImportVerb, StringComparison.Ordinal)))
+        {
+            return await RunTapeExportAsync(app, args).ConfigureAwait(false);
+        }
+
         // The result is published into DI rather than thrown: the tools that need a store ask it, and the
         // ones that do not are unaffected.
         StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
@@ -613,6 +623,13 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // Scheduled tape export (gh#755). Off by default. The destination is a mounted-volume path;
+        // validation refuses an object-storage URI. Drive stays off until a folder and a credential are set.
+        services.AddOptions<TapeExportOptions>()
+            .Bind(builder.Configuration.GetSection(TapeExportOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<IndicatorOptions>()
             .Bind(builder.Configuration.GetSection(IndicatorOptions.SectionName))
             .ValidateDataAnnotations()
@@ -923,6 +940,25 @@ public static class Program
         // returns immediately unless the transport is HTTP and the switch is on. The
         // rebuilder is scoped, so the pass opens a scope (gh#350, ADR-0014).
         services.AddHostedService<IndicatorWarmup>();
+
+        // Tape export. Always registered so the container shape does not depend on the daily-copy switch.
+        // ExecuteAsync returns immediately unless the transport is HTTP and the switch is on. The pass
+        // is scoped because it takes the DbContext, so the worker opens a scope (gh#755). Drive is a
+        // singleton: the disabled implementation is used until a folder and a service account are both set.
+        services.AddSingleton<ITapeDriveUploader>(sp =>
+        {
+            TapeExportOptions export = sp.GetRequiredService<IOptions<TapeExportOptions>>().Value;
+            HostTelemetry telemetry = sp.GetRequiredService<HostTelemetry>();
+            if (!export.Drive.IsConfigured)
+            {
+                return new DisabledTapeDriveUploader(telemetry);
+            }
+
+            return new RetryingTapeDriveUploader(new GoogleTapeDriveClient(export.Drive), telemetry);
+        });
+        services.AddScoped<TapeExportPass>();
+        services.AddScoped<ITapeExportPass>(sp => sp.GetRequiredService<TapeExportPass>());
+        services.AddHostedService<TapeExportWorker>();
 
         // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which
         // series it has already found complete, and the scope is one request. A singleton would remember the
@@ -1257,6 +1293,50 @@ public static class Program
             serviceProvider.GetRequiredService<ILogger<AuthenticationService>>(),
             serviceProvider.GetRequiredService<IOptions<ProjectXOptions>>(),
             http);
+    }
+
+    private static async Task<int> RunTapeExportAsync(WebApplication app, string[] args)
+    {
+        try
+        {
+            ILogger logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("tape-export");
+
+            bool isExport;
+            DateOnly? day;
+            try
+            {
+                (isExport, day) = TapeExportCommands.Parse(args);
+            }
+            catch (ArgumentException exception)
+            {
+                logger.LogError(
+                    "tape export refused the command line: {Reason}",
+                    LogText.Sanitize(exception.Message));
+                return TapeExportCommands.ExitUsage;
+            }
+
+            StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+            if (!store.IsAvailable)
+            {
+                logger.LogError(
+                    "tape export cannot run: the store is unreachable or its migration did not complete "
+                    + "({Reason}). Nothing was written and nothing was deleted.",
+                    store.Explanation);
+                return TapeExportCommands.ExitStore;
+            }
+
+            using IServiceScope scope = app.Services.CreateScope();
+            ITapeExportPass pass = scope.ServiceProvider.GetRequiredService<ITapeExportPass>();
+            TapeExportReport report = isExport
+                ? await pass.ExportAsync(day, CancellationToken.None).ConfigureAwait(false)
+                : await pass.ImportAsync(day, CancellationToken.None).ConfigureAwait(false);
+
+            return report.DaysRefused > 0 ? TapeExportCommands.ExitRefused : TapeExportCommands.ExitOk;
+        }
+        finally
+        {
+            await ShutDownLoggingAsync(app).ConfigureAwait(false);
+        }
     }
 
 }

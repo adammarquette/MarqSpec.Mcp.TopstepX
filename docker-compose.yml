@@ -130,6 +130,17 @@ services:
       MarketData__SessionConflictBackoff: "${MarketData__SessionConflictBackoff:-00:00:05}"
       # Off by default: HTTP is not consent to warm either (ADR-0014, gh#350).
       MarketData__WarmIndicators: "${MarketData__WarmIndicators:-false}"
+      # Scheduled tape export (gh#755). Off until an operator mounts a volume at
+      # TapeExport__Path (default /data/tape-exports) and sets the daily-worker switch. The
+      # process does not create that volume. The copy is additive: local tape is not deleted.
+      # Drive stays off while the three Drive keys are empty. Do not put a key in this file.
+      TapeExport__Enabled: "${TapeExport__Enabled:-false}"
+      TapeExport__Schedule: "${TapeExport__Schedule:-06:00}"
+      TapeExport__Path: "${TapeExport__Path:-/data/tape-exports}"
+      TapeExport__Format: "${TapeExport__Format:-csv.gz+parquet}"
+      TapeExport__Drive__FolderId: "${TapeExport__Drive__FolderId:-}"
+      TapeExport__Drive__ServiceAccountJson: "${TapeExport__Drive__ServiceAccountJson:-}"
+      TapeExport__Drive__ServiceAccountJsonPath: "${TapeExport__Drive__ServiceAccountJsonPath:-}"
 
       Indicators__AtrPeriod: "${Indicators__AtrPeriod:-14}"
       Indicators__RsiPeriod: "${Indicators__RsiPeriod:-14}"

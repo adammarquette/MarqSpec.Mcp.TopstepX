@@ -605,13 +605,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   session-long gap and neither keeps the report degraded. `lastTickUtc` is omitted when that contract has
   no print inside the session. `gaps` are the `TapeCoverage` holes in the elapsed portion of the current
   product session, or of the session that most recently closed when the market is shut. A declared early
-  close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) ends that session at the declared time;
-  the hours after it are not a hole in this report. An open listen counts through the report instant only
+  close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this report's session and
+  ends that session at the declared time; the hours after it are not a hole in this report, and bar
+  expectation is unchanged. An open listen counts through the report instant only
   while that instrument is listening; a still-open row while it is not listening is not coverage. `gaps`
   is omitted when the ledger could not be read — an empty array means the window is covered. A missing
   print time is omitted, never substituted. The endpoint is not the liveness probe: a down feed is still
   HTTP 200, and `/health` stays the one unauthenticated path. The tool only reads. The read is bounded to
-  the configured symbols and that session, and a repeated call inside a few seconds reuses the report.
+  the configured symbols and that session. This process keeps a built report for five seconds. `cachedAtUtc`
+  and `ageMs` are omitted on a reply that was just built, and present when the reply was reused:
+  `cachedAtUtc` is when it was stored, `ageMs` is how old it is. A build the caller cancelled is not stored.
 
 ## R-6 — Observations
 

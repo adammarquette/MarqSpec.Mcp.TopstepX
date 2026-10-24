@@ -233,7 +233,19 @@ public sealed class SessionOptionsBindingTests
                 ["MarketData:EarlyCloses"] = "not-a-close",
             }));
 
-        start.Should().Throw<OptionsValidationException>().WithMessage("*Early close*");
+        start.Should().Throw<OptionsValidationException>().WithMessage("*EarlyCloses*");
+    }
+
+    [Fact]
+    public void EarlyCloses_WhenTheTimeIsNotBeforeTheSessionClose_FailsStartup()
+    {
+        Action start = () => BindWith(builder => builder.Configuration.AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["MarketData:EarlyCloses"] = "2026-11-27 16:00",
+            }));
+
+        start.Should().Throw<OptionsValidationException>().WithMessage("*EarlyCloses*");
     }
 
     /// <summary>

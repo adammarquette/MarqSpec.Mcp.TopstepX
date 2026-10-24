@@ -412,7 +412,9 @@ The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-ti
 
 Indexes: `(Instrument, ContractId, TradeTimeUtc)` — one instrument, one contract, a window; and
 `(Instrument, TradeTimeUtc)` — the recorder-health read, which names the instrument and the session and not
-the contract (gh#756).
+the contract (gh#756). That second index is created with `timescaledb.transaction_per_chunk`, outside the
+migration transaction, so startup does not hold one lock across every chunk while the index builds. The
+model and the snapshot still declare it.
 
 **Volume-front is a read over this table, not a filter and not a twelfth table** (gh#219). Per
 `(instrument, contract)` per session, total `Size`. The highest-volume contract is the tape's

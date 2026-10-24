@@ -51,9 +51,10 @@ evening belongs to the holiday's trade date, and that session does not happen.
 
 The holiday's **own** evening still reopens, because that leg belongs to the *next* trade date, which trades.
 
-Half-days are **declared, not inferred**, as `MarketData__EarlyCloses` (`yyyy-MM-dd HH:mm` Central). A
-declared early close shortens that trade date's recorder-health session, so the afternoon is not a tape-coverage
-hole. Bar expectation still uses the ordinary close: the hours between the early close and the normal close
+Half-days are **declared, not inferred**, as `MarketData__EarlyCloses` (`yyyy-MM-dd HH:mm` Central). An
+early close applies only to the recorder-health session: that trade date's health window ends at the declared
+time, so the afternoon is not a tape-coverage hole in the health report. Bar expectation still uses the
+ordinary close: the hours between the early close and the normal close
 look like a missing bar, and the server re-requests them until the ledger's TTL absorbs it. An undeclared
 early close is that same visible cost for the health report as well.
 

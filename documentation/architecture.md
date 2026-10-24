@@ -785,8 +785,9 @@ Two things about it are easy to undo by accident:
 session, `TapeCoverage` holes in that session, and whether the database answers now — and it is mapped
 after the gate, so it stays authenticated. A contract whose prints and coverage ended before the session
 is not a row. It is not the probe: a down feed is still HTTP 200, and it does open a database connection,
-which is why it is not on the 30 s check. The body carries no connection string and no token. The report
-span is `recorder.health`, and the HTTP span carries the same `outcome`. Tracing excludes only the exact
+which is why it is not on the 30 s check. The body carries no connection string and no token. A declared
+early close shortens only this report's session. The report span is `recorder.health`, and the HTTP span
+carries the same `outcome`. Tracing excludes only the exact
 `/health` probe, matched ordinally, the same comparison the probe uses, so `/Health` stays behind the gate
 and is still traced.
 
@@ -823,8 +824,9 @@ on a bump, so a dashboard that must not break is built on these
 `timeout`, not the cache `hit` / `miss` / `partial` set. `ok` means the hub is up, every reported contract is
 listening, the database answered, and the elapsed session has no hole. `timeout` means the database check
 exceeded its deadline; the wire still says `database` Unavailable, and a caller who cancelled is not this
-value and is not counted. A report is reused for a few seconds, so a tight poll does not scan the tape again
-and does not count a second read.
+value and is not counted. This process reuses a report for five seconds, so a tight poll does not scan the
+tape again and does not count a second read. A reused reply carries `cachedAtUtc` and `ageMs`; a reply that
+was just built omits both. A build the caller cancelled is not stored.
 
 **`resolution` and `session` are alternatives, never both, and which one a measurement carries is what says
 which kind of series it was over** (gh#501). A session series has no resolution — its window is wall-clock
@@ -1144,6 +1146,7 @@ dating today's pick. It does not fetch bars and does not write a roll row.
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
   in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.13).
+  A declared early close shortens only that session. This process reuses a built report for five seconds.
   `/health` stays liveness and the one unauthenticated path.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push
   subscriber, not a background poll of a quote endpoint the venue does not have. A second stdio process must

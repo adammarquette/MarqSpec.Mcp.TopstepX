@@ -75,9 +75,9 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </summary>
     /// <remarks>
     /// Configuration rather than a feed, on the same terms as <see cref="Holidays"/>. A declared date ends
-    /// that trade date's recorder-health session at the stated time. The next session still opens at the
-    /// ordinary reopen. Bar expectation keeps <see cref="SessionCloseCentral"/>, so the afternoon after an
-    /// early close still looks like missing bars. An undeclared early close is the same visible cost.
+    /// only that trade date's recorder-health session at the stated time. It does not change bar expectation,
+    /// session bars, or the next session's ordinary reopen. An undeclared early close is the same visible
+    /// cost on the health report, and the afternoon still looks like missing bars.
     /// </remarks>
     public string EarlyCloses { get; init; } = string.Empty;
 
@@ -287,18 +287,13 @@ public sealed partial class MarketDataOptions : IValidatableObject
                 HolidayList(),
                 earlyCloses: EarlyCloseList());
         }
-        catch (FormatException exception)
-        {
-            if (exception.Message.StartsWith("Early close", StringComparison.Ordinal))
-            {
-                results.Add(new ValidationResult(exception.Message, [nameof(EarlyCloses)]));
-            }
-
-            return results;
-        }
-        catch (ArgumentOutOfRangeException exception) when (exception.ParamName == "earlyCloses")
+        catch (EarlyCloseException exception)
         {
             results.Add(new ValidationResult(exception.Message, [nameof(EarlyCloses)]));
+            return results;
+        }
+        catch (FormatException)
+        {
             return results;
         }
 

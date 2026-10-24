@@ -985,7 +985,7 @@ Whether this process's recorder is doing its job (R-5.13, gh#756). A dead record
 an end-of-day job. The same payload is served to a monitor at `GET /health/recorder`, behind the bearer
 gate. `/health` stays the unauthenticated liveness probe and does not open a database connection.
 
-Returns `{ asOfUtc, feedConnected, feed, database, session?, contracts, gaps? }`.
+Returns `{ asOfUtc, feedConnected, feed, database, session?, contracts, gaps?, cachedAtUtc?, ageMs? }`.
 
 `feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
 subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
@@ -1001,15 +1001,17 @@ the session. `lastTickUtc` is omitted when that contract has no print inside the
 time is not filled in.
 
 `session` is the product session in progress, or the one that most recently closed when the market is shut.
-It is omitted when the calendar cannot name one. A declared early close (`MarketData__EarlyCloses`) ends
-that session at the declared Central time, and the afternoon after it is not a hole here. `gaps` are the
+It is omitted when the calendar cannot name one. A declared early close (`MarketData__EarlyCloses`) applies
+only to this report's session: it ends that session at the declared Central time, and the afternoon after it
+is not a hole here. It does not change bar expectation. `gaps` are the
 `TapeCoverage` holes in the elapsed part of that session. An open listen counts through `asOfUtc` only while
 that symbol is still listening; a still-open row while it is not listening is not coverage. An empty array
 means the elapsed window is covered. The array is omitted when the ledger could not be read, which is a
 different statement from "no holes". Time still in the future of an open session is not a hole. The database
 check has a short deadline; exceeding it leaves `database` Unavailable and counts `timeout`, which is not
-the same as the caller cancelling. A repeated call within a few seconds reuses the report rather than
-scanning the tape again.
+the same as the caller cancelling. This process keeps a built report for five seconds. A reply that was just
+built omits `cachedAtUtc` and `ageMs`. A reply reused from that memo includes `cachedAtUtc`, when it was
+stored, and `ageMs`, how old it is at this read. A build the caller cancelled is not stored.
 
 A down feed is still HTTP 200 on `GET /health/recorder`. The tool only reads.
 

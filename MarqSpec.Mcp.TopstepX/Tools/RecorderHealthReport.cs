@@ -8,7 +8,8 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// </summary>
 /// <remarks>
 /// Numbers, timestamps, booleans and enum names only (ADR-0008). A missing print time and an unreadable
-/// ledger are omitted, never filled in. Nothing here carries a connection target or a sentence.
+/// ledger are omitted, never filled in. A reply this process reused carries <c>cachedAtUtc</c> and
+/// <c>ageMs</c>; a reply that was just built omits both. Nothing here carries a connection target or a sentence.
 /// </remarks>
 public static class RecorderHealthReport
 {
@@ -35,6 +36,12 @@ public static class RecorderHealthReport
     /// Holes in the elapsed session. Omitted when the ledger could not be read. Empty when the window is
     /// covered.
     /// </param>
+    /// <param name="CachedAtUtc">
+    /// When this process stored the report. Omitted when the reply was just built.
+    /// </param>
+    /// <param name="AgeMs">
+    /// How old the stored report is at this read, in milliseconds. Omitted when the reply was just built.
+    /// </param>
     public sealed record Report(
         DateTimeOffset AsOfUtc,
         bool FeedConnected,
@@ -42,7 +49,9 @@ public static class RecorderHealthReport
         StoreConnectivity Database,
         Session? Session,
         IReadOnlyList<ContractStatus> Contracts,
-        IReadOnlyList<Gap>? Gaps);
+        IReadOnlyList<Gap>? Gaps,
+        DateTimeOffset? CachedAtUtc = null,
+        long? AgeMs = null);
 
     /// <summary>The product session the gaps were measured against.</summary>
     /// <param name="TradeDate">The trade date the calendar assigns.</param>

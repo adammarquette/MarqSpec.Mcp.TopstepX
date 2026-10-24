@@ -28,9 +28,10 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// coverage is how a dead recorder looks fully covered.
 /// </para>
 /// <para>
-/// The database work has its own deadline, <see cref="DefaultProbeTimeout"/>. The caller's cancellation is
-/// a different fact and is not counted. A fresh report is remembered for <see cref="RecorderHealthMemo.Ttl"/>
-/// so a tight poll does not scan the tape again.
+/// The database work has its own deadline, <see cref="DefaultProbeTimeout"/>, measured on the injected
+/// clock. The caller's cancellation is a different fact and is not counted, and a build the caller cancelled
+/// is not remembered. A fresh report is remembered for <see cref="RecorderHealthMemo.Ttl"/>, five seconds
+/// in this process, so a tight poll does not scan the tape again. A reused reply says when it was stored.
 /// </para>
 /// </remarks>
 public sealed class RecorderHealthService(
@@ -53,8 +54,8 @@ public sealed class RecorderHealthService(
     private readonly HostTelemetry _telemetry = telemetry;
     private readonly RecorderHealthMemo _memo = memo;
 
-    /// <summary>The deadline for this instance. Tests shorten it; production leaves the default.</summary>
-    public TimeSpan ProbeTimeout { get; set; } = DefaultProbeTimeout;
+    /// <summary>The deadline for this instance. Tests in this assembly shorten it; production leaves the default.</summary>
+    internal TimeSpan ProbeTimeout { get; set; } = DefaultProbeTimeout;
 
     /// <summary>The report as of the clock's current instant.</summary>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
@@ -66,7 +67,7 @@ public sealed class RecorderHealthService(
         if (_memo.Read(_clock) is { } cached)
         {
             Tag(span, cached.Outcome);
-            return cached.Report;
+            return Stamp(cached.Report, cached.CachedAt);
         }
 
         await _memo.EnterAsync(cancellationToken).ConfigureAwait(false);
@@ -75,7 +76,7 @@ public sealed class RecorderHealthService(
             if (_memo.Read(_clock) is { } fresh)
             {
                 Tag(span, fresh.Outcome);
-                return fresh.Report;
+                return Stamp(fresh.Report, fresh.CachedAt);
             }
 
             (RecorderHealthReport.Report report, string outcome) =
@@ -88,6 +89,12 @@ public sealed class RecorderHealthService(
         {
             _memo.Exit();
         }
+    }
+
+    private RecorderHealthReport.Report Stamp(RecorderHealthReport.Report report, DateTimeOffset cachedAt)
+    {
+        long ageMs = (long)(_clock.GetUtcNow() - cachedAt).TotalMilliseconds;
+        return report with { CachedAtUtc = cachedAt, AgeMs = ageMs };
     }
 
     private async Task<(RecorderHealthReport.Report Report, string Outcome)> BuildAsync(
@@ -108,14 +115,19 @@ public sealed class RecorderHealthService(
         Probe probe;
         IReadOnlyList<ContractLastTick> ticks = [];
         IReadOnlyList<CoverageSlice> slices = [];
-        using (CancellationTokenSource deadline = new(ProbeTimeout))
+        using CancellationTokenSource deadline = new();
+        using ITimer timeout = _clock.CreateTimer(
+            static state => ((CancellationTokenSource)state!).Cancel(),
+            deadline,
+            ProbeTimeout,
+            Timeout.InfiniteTimeSpan);
         using (CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
             deadline.Token))
         {
             try
             {
-                probe = await ProbeAsync(linked.Token, cancellationToken).ConfigureAwait(false);
+                probe = await ProbeAsync(linked.Token).ConfigureAwait(false);
                 if (probe == Probe.Up && window is { } elapsed)
                 {
                     ticks = await _store.LastTicksAsync(symbols, elapsed.Start, elapsed.End, linked.Token)
@@ -173,22 +185,14 @@ public sealed class RecorderHealthService(
         return (report, outcome);
     }
 
-    private async Task<Probe> ProbeAsync(CancellationToken databaseToken, CancellationToken callerToken)
+    private async Task<Probe> ProbeAsync(CancellationToken databaseToken)
     {
         try
         {
             bool up = await _store.DatabaseConnectedAsync(databaseToken).ConfigureAwait(false);
             return up ? Probe.Up : Probe.Down;
         }
-        catch (OperationCanceledException) when (!callerToken.IsCancellationRequested)
-        {
-            return Probe.TimedOut;
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception)
+        catch (Exception exception) when (exception is not OperationCanceledException)
         {
             return Probe.Down;
         }

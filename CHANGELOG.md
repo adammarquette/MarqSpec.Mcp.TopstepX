@@ -208,14 +208,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MigrateAsync` throws, including when a migration command fails, and when the call is cancelled. Startup
   passes the host stopping token into that migration, the same token the reach probe already uses. The
   index-build probe and unlock use the migration command's timeout, on the async failure path as well as
-  the sync one. An unlock that throws a database, timeout, or invalid-operation error is logged and does
-  not replace the original command error. A failure while resolving or writing that log is discarded. A
-  missing logger is `NullLogger`. Cancellation and fatal exceptions still propagate.
+  the sync one. The async unlock uses the async query API. An unlock that throws a database, timeout, or
+  invalid-operation error is logged and does not replace the original command error. A non-fatal failure
+  while resolving or writing that log is discarded. Out of memory and the other fatal exceptions still
+  propagate. A missing logger is `NullLogger`. Cancellation still propagates.
   `documentation/deployment.md` records that a missed Railway healthcheck stops the failed container and
-  marks the deploy failed, while the previous deployment keeps serving. `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`
-  is that timeout. The server and the recorder both migrate against the same advisory lock, so the window
-  has to cover the build plus the wait. A plain-Postgres build of the trade index blocks writes on
-  `Trades` for the build. The seven-day ceiling stays a typo guard.
+  marks the deploy failed, while the previous deployment keeps serving. The image build does not count:
+  the window starts after deploy. Size it as the startup wait plus the command timeout plus about 300
+  seconds. A Railway `healthcheckTimeout` overrides `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`. The server and the
+  recorder both migrate against the same advisory lock. Their waits overlap. The second service's wait is
+  one call, cancelled at the command timeout with `57014`. If the first index build (migration) runs close
+  to that timeout, redeploy the second once the first is healthy. A plain-Postgres index build (migration)
+  on `Trades` blocks writes for its duration. The seven-day ceiling stays a typo guard.
 
 ## [0.5.0] - 2026-09-11
 

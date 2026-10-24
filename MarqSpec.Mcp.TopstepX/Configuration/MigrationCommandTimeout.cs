@@ -10,13 +10,6 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 internal static class MigrationCommandTimeout
 {
     /// <summary>
-    /// Receives the token <see cref="ApplyAsync"/> was called with. Null except in a test that checks
-    /// <c>Program.MigrateAsync</c> passed the host stopping token through. A call that omits the token
-    /// delivers <see cref="CancellationToken.None"/> here.
-    /// </summary>
-    internal static Action<CancellationToken>? AppliedTokenObserver { get; set; }
-
-    /// <summary>
     /// Runs <c>MigrateAsync</c> with <paramref name="commandTimeoutSeconds"/> on every command, then puts
     /// the previous timeout back, including when <c>MigrateAsync</c> throws.
     /// </summary>
@@ -31,8 +24,6 @@ internal static class MigrationCommandTimeout
     {
         ArgumentNullException.ThrowIfNull(database);
 
-        AppliedTokenObserver?.Invoke(cancellationToken);
-
         int? previous = database.GetCommandTimeout();
         database.SetCommandTimeout(commandTimeoutSeconds);
         try
@@ -44,4 +35,23 @@ internal static class MigrationCommandTimeout
             database.SetCommandTimeout(previous);
         }
     }
+}
+
+/// <summary>The migration <c>Program.MigrateAsync</c> runs.</summary>
+internal interface IMigrationApplier
+{
+    /// <summary>Applies the migration at <paramref name="commandTimeoutSeconds"/>, then restores the previous timeout.</summary>
+    /// <param name="database">The store being migrated.</param>
+    /// <param name="commandTimeoutSeconds">The timeout, in seconds, for each migration command.</param>
+    /// <param name="cancellationToken">Cancels the migration. The previous timeout is still restored.</param>
+    /// <returns>The task.</returns>
+    Task ApplyAsync(DatabaseFacade database, int commandTimeoutSeconds, CancellationToken cancellationToken);
+}
+
+/// <summary>The production <see cref="IMigrationApplier"/>.</summary>
+internal sealed class MigrationApplier : IMigrationApplier
+{
+    /// <inheritdoc />
+    public Task ApplyAsync(DatabaseFacade database, int commandTimeoutSeconds, CancellationToken cancellationToken) =>
+        MigrationCommandTimeout.ApplyAsync(database, commandTimeoutSeconds, cancellationToken);
 }

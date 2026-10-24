@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -29,8 +30,9 @@ namespace MarqSpec.Mcp.TopstepX.Data;
 /// <see cref="TimeoutException"/> is logged and swallowed, so the original command error stays the one
 /// <c>CommandFailed</c> reports. <see cref="OperationCanceledException"/> and fatal exceptions are not in
 /// that set, so they propagate. When the context has no <see cref="ILoggerFactory"/>, the warning goes to
-/// <see cref="NullLogger"/>. Any failure while resolving that logger or writing the warning is discarded.
-/// It must not replace the command error.
+/// <see cref="NullLogger"/>. A non-fatal failure while resolving that logger or writing the warning is
+/// discarded, so it does not replace the command error. <see cref="OutOfMemoryException"/> and the other
+/// fatal exceptions propagate, including when the logger wraps one.
 /// </para>
 /// </remarks>
 internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandInterceptor
@@ -74,13 +76,13 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
     }
 
     /// <inheritdoc />
-    public override Task CommandFailedAsync(
+    public override async Task CommandFailedAsync(
         DbCommand command,
         CommandErrorEventData eventData,
         CancellationToken cancellationToken = default)
     {
-        ReleaseIfOurs(command, eventData);
-        return base.CommandFailedAsync(command, eventData, cancellationToken);
+        await ReleaseIfOursAsync(command, eventData, cancellationToken).ConfigureAwait(false);
+        await base.CommandFailedAsync(command, eventData, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary><c>1</c> is the only mark that means the per-chunk statement should be sent.</summary>
@@ -128,13 +130,7 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
 
     private static void ReleaseIfOurs(DbCommand command, CommandErrorEventData eventData)
     {
-        if (command.Connection is not { State: ConnectionState.Open } connection)
-        {
-            return;
-        }
-
-        if (!command.CommandText.Contains(PerChunkMarker, StringComparison.Ordinal)
-            && !command.CommandText.Contains("marqspec_build_ix_trades_instrument_time", StringComparison.Ordinal))
+        if (!TryOpenOurs(command, out DbConnection connection))
         {
             return;
         }
@@ -154,6 +150,43 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
         }
     }
 
+    private static async Task ReleaseIfOursAsync(
+        DbCommand command,
+        CommandErrorEventData eventData,
+        CancellationToken cancellationToken)
+    {
+        if (!TryOpenOurs(command, out DbConnection connection))
+        {
+            return;
+        }
+
+        await using DbCommand unlock = connection.CreateCommand();
+        unlock.CommandText = ReleaseLockSql;
+        unlock.CommandTimeout = command.CommandTimeout;
+        try
+        {
+            await unlock.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsRecoverableUnlockFailure(exception))
+        {
+            LogUnlockFailure(eventData, exception);
+        }
+    }
+
+    private static bool TryOpenOurs(DbCommand command, out DbConnection connection)
+    {
+        if (command.Connection is { State: ConnectionState.Open } open
+            && (command.CommandText.Contains(PerChunkMarker, StringComparison.Ordinal)
+                || command.CommandText.Contains("marqspec_build_ix_trades_instrument_time", StringComparison.Ordinal)))
+        {
+            connection = open;
+            return true;
+        }
+
+        connection = null!;
+        return false;
+    }
+
     /// <summary>
     /// Database, state, and timeout failures are recoverable here. Cancellation and fatal exceptions are
     /// outside this set, so they propagate.
@@ -163,8 +196,7 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
 
     private static void LogUnlockFailure(CommandErrorEventData eventData, Exception exception)
     {
-        // No logger is an explicit NullLogger. Anything thrown while resolving or writing the warning is
-        // discarded: CommandFailed has to keep reporting the original command error.
+        // No logger is an explicit NullLogger. See the catch below for which failures are discarded.
         try
         {
             ILogger logger = NullLogger<TradeInstrumentIndexBuildInterceptor>.Instance;
@@ -178,9 +210,43 @@ internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandIntercepto
                 exception,
                 "The trade index build lock was not released. The original command error is unchanged.");
         }
-        catch (Exception)
+        catch (Exception logFailure)
         {
-            // See the remarks. A log failure must not become the exception startup records.
+            // A non-fatal failure while resolving or writing the warning is discarded. Out of memory and
+            // the other fatal exceptions still propagate. The logger wraps a provider failure, so the
+            // fatal exception is the one inside that wrapper.
+            Exception? fatal = FindFatal(logFailure);
+            if (fatal is not null)
+            {
+                ExceptionDispatchInfo.Capture(fatal).Throw();
+            }
         }
+    }
+
+    /// <summary>
+    /// The exception to let out of the unlock warning, or null when the failure is safe to discard.
+    /// </summary>
+    private static Exception? FindFatal(Exception exception)
+    {
+        if (exception is OutOfMemoryException or AccessViolationException or InsufficientExecutionStackException)
+        {
+            return exception;
+        }
+
+        if (exception is AggregateException aggregate)
+        {
+            foreach (Exception inner in aggregate.InnerExceptions)
+            {
+                Exception? fatal = FindFatal(inner);
+                if (fatal is not null)
+                {
+                    return fatal;
+                }
+            }
+
+            return null;
+        }
+
+        return exception.InnerException is null ? null : FindFatal(exception.InnerException);
     }
 }

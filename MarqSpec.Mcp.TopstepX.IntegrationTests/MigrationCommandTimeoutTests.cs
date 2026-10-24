@@ -14,6 +14,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 
 namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
@@ -158,33 +159,27 @@ public sealed class MigrationCommandTimeoutTests
             ["Mcp:Transport"] = "Stdio",
         });
         Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
+        RecordingMigrationApplier recording = new();
+        builder.Services.Replace(ServiceDescriptor.Singleton<IMigrationApplier>(recording));
         await using WebApplication app = builder.Build();
 
-        CancellationToken? applied = null;
-        MigrationCommandTimeout.AppliedTokenObserver = token => applied = token;
-        try
-        {
-            StoreAvailability availability = await Program.MigrateAsync(app);
-            availability.IsAvailable.Should().BeTrue();
-        }
-        finally
-        {
-            MigrationCommandTimeout.AppliedTokenObserver = null;
-        }
+        StoreAvailability availability = await Program.MigrateAsync(app);
 
-        applied.Should().Be(app.Lifetime.ApplicationStopping);
+        availability.IsAvailable.Should().BeTrue();
+        recording.Called.Should().BeTrue();
+        recording.Token.Should().Be(app.Lifetime.ApplicationStopping);
     }
 
     private static string MigrationBeforeTheInstrumentTimeIndex()
     {
-        IReadOnlyList<string> ids = typeof(AddTradeInstrumentTimeIndex).Assembly
+        List<string> ids = typeof(AddTradeInstrumentTimeIndex).Assembly
             .GetTypes()
             .Select(type => type.GetCustomAttribute<MigrationAttribute>())
             .Where(attribute => attribute is not null)
             .Select(attribute => attribute!.Id)
             .Order(StringComparer.Ordinal)
             .ToList();
-        int index = ids.ToList().FindIndex(id =>
+        int index = ids.FindIndex(id =>
             id.EndsWith("AddTradeInstrumentTimeIndex", StringComparison.Ordinal));
         index.Should().BeGreaterThan(0);
         return ids[index - 1];
@@ -199,6 +194,20 @@ public sealed class MigrationCommandTimeoutTests
             .ToList())
         {
             sources.Sources.Remove(ambient);
+        }
+    }
+
+    private sealed class RecordingMigrationApplier : IMigrationApplier
+    {
+        public bool Called { get; private set; }
+
+        public CancellationToken Token { get; private set; }
+
+        public Task ApplyAsync(DatabaseFacade database, int commandTimeoutSeconds, CancellationToken cancellationToken)
+        {
+            Called = true;
+            Token = cancellationToken;
+            return Task.CompletedTask;
         }
     }
 

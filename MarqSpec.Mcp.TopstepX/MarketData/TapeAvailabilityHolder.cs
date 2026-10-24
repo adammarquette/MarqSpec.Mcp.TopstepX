@@ -29,7 +29,7 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// to listening would let a tool succeed before the recorder had written anything.
 /// </para>
 /// </remarks>
-public class TapeAvailabilityHolder
+public sealed class TapeAvailabilityHolder
 {
     private volatile TapeAvailability _value = TapeAvailability.NeverStarted();
     private readonly ConcurrentDictionary<string, TapeAvailability> _byInstrument = new(StringComparer.Ordinal);
@@ -38,16 +38,27 @@ public class TapeAvailabilityHolder
     /// <summary>The process-wide state, when no per-instrument override applies.</summary>
     public TapeAvailability Value => _value;
 
+    /// <summary>
+    /// Test seam. When set, <see cref="For"/> returns this answer and does not read the
+    /// stored state. Production leaves it unset. The test assembly reaches it through
+    /// InternalsVisibleTo, which is why this type stays sealed.
+    /// </summary>
+    internal Func<string, TapeAvailability>? ForOverride { get; set; }
+
     /// <summary>The current subscription state for one instrument.</summary>
     /// <param name="instrument">The instrument symbol.</param>
     /// <returns>That instrument's tape health.</returns>
     /// <remarks>
-    /// Virtual so a test double can answer the first read and a different value on the second.
-    /// Production has this one implementation. A tool that calls it twice can disagree with itself.
+    /// A tool that calls this twice can disagree with itself. Callers read it once per call.
     /// </remarks>
-    public virtual TapeAvailability For(string instrument)
+    public TapeAvailability For(string instrument)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
+
+        if (ForOverride is { } probe)
+        {
+            return probe(instrument);
+        }
 
         string symbol = new InstrumentId(instrument).Symbol;
 

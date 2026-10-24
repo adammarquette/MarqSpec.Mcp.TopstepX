@@ -931,7 +931,12 @@ instrument, the closed window is aggregated from stored prints in memory and `li
 `held_by_another_recorder`; the refusing states have codes too and still refuse). `live` true
 means this process is listening, not that the cells are current. A gap at the start, a cut at
 the end, a hole, or a roll sets `covered.narrowed`. That is the only short-window flag.
-`covered.end` is when the data ends. A still-open sentinel is not that coverage.
+`covered.end` is when the data ends. The ask is floored to the bar open before the ledger
+confines it, on both paths. When coverage reaches that open, the edge bar is complete and
+`covered.start` is that open; the floor itself is not a narrowing. When the ledger begins
+later in the bar, `covered.start` stays the ledger start, so a hole is not backdated. The
+end is not aligned.
+A still-open sentinel is not that coverage.
 **A window with no closed tape still refuses** with a sentence naming the fix — under stdio, run a
 separate HTTP recorder on the same database; the sentence does not say to stop a recorder. An empty
 answer and an absent tape must not look the same (gh#218). When this

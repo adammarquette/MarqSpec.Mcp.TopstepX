@@ -587,11 +587,16 @@ cells as it listens, so a stored projection would be stale or absent. `reason` i
 `live` true means this process is listening, not that the cells are current. A gap at the start
 or a cut at the end, including a window up to now while another process is still recording, sets
 `covered.narrowed`. That is the only short-window flag. `covered.end` is when the data ends.
-The recorder status is read once per call and passed through, so the flag and the window cannot disagree. The still-open
-sentinel stays what gh#365 made it: coverage only while that instrument is listening here. A
-window with no closed tape still refuses, and that fact is a typed result rather than a match
-on the sentence. The sentence names the fix and does not say to stop the recorder: under stdio
-it says to run a separate HTTP process on the same database (R-5.8, R-9.6, R-9.7). A recorder
+The ask is floored to the bar open before the ledger confines it, on both paths. When
+coverage reaches that open, the edge bar is complete and `covered.start` is that open; the
+floor itself is not a narrowing. When the ledger begins later in the bar, `covered.start`
+stays the ledger start, so a hole is not backdated. The end is not aligned. The recorder
+status is read once per call and passed through, so the flag and the
+window cannot disagree. The still-open sentinel stays what gh#365 made it: coverage only
+while that instrument is listening here. A window with no closed tape still refuses, and
+that fact is a typed result rather than a match on the sentence. The sentence names the fix
+and does not say to stop the recorder: under stdio it says to run a separate HTTP process
+on the same database (R-5.8, R-9.6, R-9.7). A recorder
 that is reconnecting, connected but not subscribed, or stopped still refuses, closed cells
 included — that is the gh#218 case. `ClaimTakenOver` and `ClaimLapsed` are their own reason
 codes, not `HeldByAnotherRecorder`, and they refuse the same way: this process was the recorder

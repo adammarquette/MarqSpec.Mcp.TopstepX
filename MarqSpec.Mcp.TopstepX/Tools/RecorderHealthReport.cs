@@ -4,7 +4,7 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 
 /// <summary>
 /// The recorder-health payload shared by <c>get_recorder_health</c> and <c>GET /health/recorder</c>
-/// (R-5.13, gh#756).
+/// (R-5.14, gh#756).
 /// </summary>
 /// <remarks>
 /// Numbers, timestamps, booleans and enum names only (ADR-0008). A missing print time and an unreadable

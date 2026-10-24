@@ -6,7 +6,7 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 
 /// <summary>
 /// A read of whether this process's recorder is connected, how fresh the tape is, and where the current
-/// session is missing (R-5.13, gh#756).
+/// session is missing (R-5.14, gh#756).
 /// </summary>
 /// <remarks>
 /// Reading the holder and the store transmits nothing. There is no path here that places, modifies, cancels

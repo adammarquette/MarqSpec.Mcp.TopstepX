@@ -6,7 +6,7 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 
 /// <summary>
 /// <c>GET /health/recorder</c> — the same report as <c>get_recorder_health</c>, for a monitor that is not an
-/// MCP client (R-5.13, gh#756).
+/// MCP client (R-5.14, gh#756).
 /// </summary>
 /// <remarks>
 /// A mapped endpoint, installed <b>after</b> the bearer gate, so it stays authenticated. It is not the

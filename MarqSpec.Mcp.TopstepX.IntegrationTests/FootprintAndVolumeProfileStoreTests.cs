@@ -24,8 +24,8 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// <para>
 /// <b>Split out of <c>FootprintAndVolumeProfileToolTests</c> by gh#387.</b> The cases that stayed in the unit
 /// tier stop at the tool boundary: a resolution nothing was projected at, a window before recording began, a
-/// tape that is not listening. Those never reach a store, so the in-memory provider is still honest about
-/// them. The two below carry prints in <c>Trades</c>, and a read over stored prints runs
+/// tape this process is not recording. Those are reads or refusals the in-memory provider can answer; they
+/// do not run the on-read replay's write. The two below carry prints in <c>Trades</c>, and a read over stored prints runs
 /// <c>FootprintCacheService</c>'s on-read replay — the real <c>ON CONFLICT … DO UPDATE</c> against
 /// <c>FootprintCells</c>, inside the one <c>RepeatableRead</c> transaction <c>SeriesUnitOfWork</c> now always
 /// opens.

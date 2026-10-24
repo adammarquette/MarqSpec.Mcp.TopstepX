@@ -197,6 +197,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`get_footprint` and `get_volume_profile` under stdio.** When this process is not the recorder,
+  closed tape coverage is served and `live` is false. A window with no closed tape still refuses and
+  names the fix. The still-open sentinel is not served as history (gh#728, R-5.8, R-9.6).
+
 - **The OAuth refusal line cannot be forged.** `LogText.Sanitize` escapes CR, LF, the other C0/C1 controls,
   U+2028, U+2029, the bidi overrides and isolates, LRM, RLM, ALM, ZWSP, BOM, a lone surrogate, and a literal
   backslash, and an opening bracket, then caps the escaped text — on an escape boundary, and not through a

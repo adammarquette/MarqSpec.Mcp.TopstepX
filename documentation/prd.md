@@ -506,9 +506,14 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   only goes forward: there is no historical footprint before recording began. A request for a window
   before recording began refuses and names the earliest covered time. A covered window whose tape
   has prints but no cells is projected on the read — no vendor call (gh#366). Live tape-subscription health is
-  required at the point of use (gh#218): when **that instrument's** tape is not listening the
-  tool refuses with a sentence naming the fix — never reported healthy by default, never
-  answered thinly. A session conflict stops the recorder rather than reconnecting
+read at the point of use (gh#218, gh#728). When **this process is not the recorder** for that
+  instrument — stdio, the switch off, or another process holding the claim — **closed** coverage is
+  served and `live` is false, so live coverage is reported absent rather than the call being refused.
+  A still-open sentinel is not coverage in that case. A window with no closed tape still refuses with
+  a sentence naming the fix — never reported healthy by default, never answered as an empty profile.
+  While this process is listening, `live` is true. A recorder that is reconnecting, connected but
+  not subscribed, or stopped still refuses with the sentence naming the fix — closed cells must not
+  read as that instrument's live tape. A session conflict stops the recorder rather than reconnecting
   (gh#757). The refusal names the trading platform and `MarketData__StopOnSessionConflict`,
   and it says the recorder will not reconnect the hub and will not call loginKey. The one-way
   stop latches only on positive conflict evidence. A missing token does not close login for
@@ -516,8 +521,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   not `loginKey`. A latched stop posts no further validate. An expired token, or one inside its
   refresh window after a failed renewal, may post a budgeted `loginKey`. That login disconnects
   any live session on the account. A failed login waits before it tries again. Tools may
-  keep using the token already held until it ages out. Another symbol's subscribe does not
-  make this one healthy. Reads refuse rather than truncate when over cap.
+  keep using the token already held until it ages out. Another symbol's subscribe does not make this one
+  healthy and does not make its closed history read as live. Reads refuse rather than truncate when over cap.
 - **R-5.9** **`get_contract_roll`** reports the most recent tape changeover a symbol's stored
   prints can prove, and the tape front at `asOfUtc` (default now, bounded like
   `get_market_session`'s `atUtc`, R-5.4). `front` is the same object the footprint tools
@@ -687,10 +692,13 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   has a beginning and can have holes, and neither is recoverable. A hole confines the answer to the
   **newest contiguous listening run** and reports the narrowing — the same cut `get_key_levels` makes.
   Collapsing two runs into a continuous envelope would claim coverage that was never there.
-- **R-9.6** A window with **no tape refuses** rather than returning an empty profile. Live
-  tape-subscription health for **that instrument** that is not listening refuses the same way,
-  with a sentence naming the fix — an empty profile and an absent tape must not look the same
-  (gh#218). Another symbol's subscribe does not make this one healthy.
+- **R-9.6** A window with **no tape refuses** rather than returning an empty profile. When this
+  process is not the recorder for that instrument, **closed** coverage is served and flagged
+  not-live (`live` false) — live coverage is absent, and the call is not refused for that reason
+  alone (gh#728). A still-open sentinel is not closed coverage. A window with no closed tape still
+  refuses with a sentence naming the fix — an empty profile and an absent tape must not look the
+  same (gh#218). A recorder that is reconnecting, connected but not subscribed, or stopped refuses
+  the same way even when closed cells exist. Another symbol's subscribe does not make this one healthy.
 - **R-9.7** A window entirely **before recording began** refuses and **names the earliest covered
   time** for that instrument. An empty answer there would look like a quiet market (gh#222).
 

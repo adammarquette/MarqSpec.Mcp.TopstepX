@@ -104,6 +104,28 @@ public sealed class VolumeProfileServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadCells_WhenThisProcessIsNotRecording_ServesClosedCoverage()
+    {
+        // The store tier already serves a closed run when this process is not the recorder.
+        // The still-open sentinel is the row it must not treat as coverage (gh#728).
+        DateTimeOffset runStart = new(2026, 10, 16, 13, 30, 0, TimeSpan.Zero);
+        DateTimeOffset runEnd = new(2026, 10, 16, 14, 30, 0, TimeSpan.Zero);
+        TapeAvailabilityHolder tape = new();
+        tape.Set(TapeAvailability.NeverStartedBecauseStdio());
+
+        await SeedCoverageAsync(Coverage(Next, runStart, runEnd));
+        await SeedCellsAsync(CellsAcross(runStart));
+
+        FootprintRead read = await new VolumeProfileService(_database, tape).ReadCellsAsync(
+            Venue, _es, FiveMinutes, runStart, runEnd, CancellationToken.None);
+
+        read.Cells.Should().HaveCount(24);
+        read.Window.Start.Should().Be(runStart);
+        read.Window.End.Should().Be(runEnd);
+        read.Window.Narrowed.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task AWindowWithNoTape_Refuses()
     {
         await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
@@ -179,4 +201,21 @@ public sealed class VolumeProfileServiceTests : IDisposable
             SellVolume = sell,
             RecordedAt = _recorded,
         };
+
+    /// <summary>
+    /// Twelve 5-minute buckets, two prices each. 6800.00 carries the volume, so a profile over
+    /// these cells has its point of control there.
+    /// </summary>
+    private static FootprintCellRecord[] CellsAcross(DateTimeOffset runStart)
+    {
+        FootprintCellRecord[] cells = new FootprintCellRecord[24];
+        for (int bucket = 0; bucket < 12; bucket++)
+        {
+            DateTimeOffset open = runStart.AddMinutes(FiveMinutes * bucket);
+            cells[bucket * 2] = Cell(open, 6800.00m, buy: 10, sell: 0);
+            cells[(bucket * 2) + 1] = Cell(open, 6800.25m, buy: 1, sell: 0);
+        }
+
+        return cells;
+    }
 }

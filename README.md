@@ -136,6 +136,15 @@ say so. Each absent dependency produces a refusal naming the fix, rather than a 
 would report as a bare transport failure ([ADR-0007](documentation/adr/0007-dual-transport.md)). So you can
 register it first and configure it after.
 
+**Footprint and volume profile under stdio read a tape this process does not record.** stdio never
+subscribes: two subscribers on one tape would double every volume
+([ADR-0016](documentation/adr/0016-subscribe-to-the-market-hub.md)). Run a separate HTTP process
+against the **same database** with `MarketData__RecordTape=true` (HTTP alone is not enough; the
+switch defaults off). `get_footprint` and `get_volume_profile` then serve that recorder's **closed**
+coverage and set `live` to false — live coverage is absent, and a still-open listen is not reported
+as history. A window with no closed tape still refuses and names the fix. There is no backfill for
+the period before that recorder started.
+
 ### The stdio transport in the container
 
 The image's own entrypoint speaks **stdio**. [`Dockerfile`](Dockerfile) pins no transport, and it is

@@ -1271,7 +1271,11 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed. `get_footprint` and
-  `get_volume_profile` refuse when **that instrument's** tape is not listening, with a sentence naming the fix. It resolves the
+  `get_volume_profile` serve **closed** coverage when this process is not the recorder for that
+  instrument, and set `live` false so the answer is not a live tape (gh#728). A window with no closed
+  tape still refuses with a sentence naming the fix. A recorder that is reconnecting, not
+  subscribed, or stopped still refuses, closed cells included. A still-open sentinel is coverage only while that
+  instrument is listening. The recorder resolves the
   scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
   stay out of this phase, and there is still no `get_quote`.
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether

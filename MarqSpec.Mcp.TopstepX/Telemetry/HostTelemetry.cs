@@ -84,6 +84,9 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>One recorder-health report (gh#756, R-5.14).</summary>
     public const string RecorderHealthReadsInstrument = "mcp.recorder.health.reads";
 
+    /// <summary>A session conflict that stopped the recorder (gh#757).</summary>
+    public const string TapeSessionConflictsInstrument = "mcp.tape.session_conflicts";
+
     /// <summary>Indicator values a projection pass wrote.</summary>
     public const string IndicatorProjectionsInstrument = "mcp.indicator.projections";
 
@@ -145,6 +148,9 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>What happened to a tape claim. Values: <see cref="TapeLeaseChange"/>.</summary>
     public const string ChangeTag = "change";
 
+    /// <summary>Where a session conflict was seen. Values: <see cref="SessionConflictSource"/>.</summary>
+    public const string SourceTag = "source";
+
     /// <summary>The indicator's stable lowercase name, from the catalogue.</summary>
     public const string IndicatorTag = "indicator";
 
@@ -157,6 +163,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapeReconnects;
     private readonly Counter<long> _tapeLeaseChanges;
     private readonly Counter<long> _recorderHealthReads;
+    private readonly Counter<long> _tapeSessionConflicts;
     private readonly Counter<long> _indicatorProjections;
     private readonly Counter<long> _executionWrites;
     private readonly Counter<long> _bookkeepingFaults;
@@ -215,6 +222,11 @@ public sealed class HostTelemetry : IDisposable
             RecorderHealthReadsInstrument,
             unit: "{read}",
             description: "Recorder-health reports, by whether the recorder was ok, degraded or unavailable.");
+
+        _tapeSessionConflicts = _meter.CreateCounter<long>(
+            TapeSessionConflictsInstrument,
+            unit: "{conflict}",
+            description: "Session conflicts that stopped the tape recorder, by where the signal was seen.");
 
         _indicatorProjections = _meter.CreateCounter<long>(
             IndicatorProjectionsInstrument,
@@ -427,6 +439,27 @@ public sealed class HostTelemetry : IDisposable
     /// </remarks>
     public void TapeReconnect(string transition) =>
         _tapeReconnects.Add(1, new KeyValuePair<string, object?>(TransitionTag, transition));
+
+    /// <summary>
+    /// Records one session conflict that stopped the recorder, as a counter and a span.
+    /// </summary>
+    /// <param name="source">Where it was seen, from <see cref="SessionConflictSource"/>.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    /// <remarks>
+    /// <b>The source only, never the vendor's sentence.</b> A hub close message is free text. Putting it on
+    /// the span would be a new series per distinct sentence, and a place a credential can land. The log line
+    /// in the recorder names the reason in this server's own words.
+    /// </remarks>
+    public Activity? SessionConflict(string source)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(source);
+
+        Activity? span = Activities.StartActivity("tape.session_conflict", ActivityKind.Internal);
+        span?.SetTag(SourceTag, source);
+
+        _tapeSessionConflicts.Add(1, new KeyValuePair<string, object?>(SourceTag, source));
+        return span;
+    }
 
     /// <summary>Counts one tape-claim hand-off.</summary>
     /// <param name="symbol">The venue-neutral instrument symbol the claim is over.</param>
@@ -940,4 +973,17 @@ public static class RecorderHealthOutcome
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Ok, Degraded, Unavailable, Timeout];
+}
+
+/// <summary>Where a session conflict was seen — the <c>source</c> tag's closed vocabulary (gh#757).</summary>
+public static class SessionConflictSource
+{
+    /// <summary>The market hub's close message named another session.</summary>
+    public const string Hub = "hub";
+
+    /// <summary>Session validate returned <c>InvalidSession</c> or <c>SessionNotFound</c>.</summary>
+    public const string Api = "api";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Hub, Api];
 }

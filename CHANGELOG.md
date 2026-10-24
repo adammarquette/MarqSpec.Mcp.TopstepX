@@ -79,6 +79,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once. `dotnet ef migrations script` includes the Timescale reloption unconditionally, and the five build
   statements have to share one connection.
 
+- **The trade-tape recorder stops on a TopstepX session conflict** (gh#757). The recorder and the
+  trading platform share one login, and another login disconnects the platform.
+  `MarketData__StopOnSessionConflict` defaults to true. A hub close that names another session, or
+  `POST /api/Auth/validate` returning `InvalidSession` or `SessionNotFound`, disconnects, waits
+  `MarketData__SessionConflictBackoff` (default five seconds, from zero through two minutes), and
+  does not reconnect. An expired token, an unknown code, or a probe that does not land is treated as
+  a transport drop and restored. `mcp.tape.session_conflicts` and the `tape.session_conflict` span
+  record `source` = `hub` or `api`, never the vendor's sentence.
+
 - **`TradingRiskGate` (gh#711).** Central practice-only gate with allowlist, symbol denylist, per-order and
   daily caps, dry-run preview, and append-only audit rows before every outcome. Future MCP order tools will call
   this type

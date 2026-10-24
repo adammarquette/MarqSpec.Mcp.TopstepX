@@ -817,6 +817,7 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.ticks` | counter, prints | `symbol` | `TradeTapeRecorder`, where the print landed |
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
+| `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
 
@@ -1145,6 +1146,12 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   moment it noticed; waiting to be told would leave both processes writing under different
   `Sequence` keys, which is doubled volume rather than a collapsed duplicate. Clock skew beyond one
   term is the acknowledged residual (ADR-0016).
+  A session conflict stops that loop instead of reconnecting (gh#757, ADR-0016): the recorder and
+  the trading platform share one TopstepX login, and another login disconnects the platform.
+  `MarketData__StopOnSessionConflict` defaults on. A hub close that names another session, or a
+  validate result of invalid session or session not found, disconnects, waits
+  `MarketData__SessionConflictBackoff`, and does not subscribe again. A plain transport drop is
+  still restored. The refusal the tape tools return names the platform and the switch.
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed. `get_footprint` and

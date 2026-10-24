@@ -1,4 +1,6 @@
 using System.Reflection;
+using MarqSpec.Client.ProjectX.Authentication;
+using MarqSpec.Client.ProjectX.Configuration;
 using MarqSpec.Client.ProjectX.DependencyInjection;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -834,6 +836,20 @@ public static class Program
             // the execution gateway can report TransmittedOutcomeUnknown (ADR-0024, gh#710).
             services.AddProjectXApiClient(builder.Configuration);
             services.SuppressTransportRetriesOnVenueWrites();
+
+            // The recorder's session probe. Registered only beside the venue client, because it reads
+            // IAuthenticationService, which does not exist on the unconfigured branch. It posts the token
+            // already held to /api/Auth/validate and does not start a login (gh#757).
+            services.AddHttpClient(ProjectXSessionConflictProbe.HttpClientName, (serviceProvider, client) =>
+            {
+                ProjectXOptions projectX = serviceProvider.GetRequiredService<IOptions<ProjectXOptions>>().Value;
+                client.BaseAddress = new Uri(projectX.BaseUrl);
+                client.Timeout = TimeSpan.FromSeconds(10);
+            });
+            services.AddSingleton<ISessionConflictProbe>(serviceProvider => new ProjectXSessionConflictProbe(
+                serviceProvider.GetRequiredService<IAuthenticationService>(),
+                serviceProvider.GetRequiredService<IHttpClientFactory>(),
+                serviceProvider.GetRequiredService<ILogger<ProjectXSessionConflictProbe>>()));
 
             // SINGLETON, while the gateway consuming it is scoped. The vendor's 50-requests-per-30-seconds
             // allowance on History/retrieveBars is counted against the CREDENTIAL, so it has to be shared

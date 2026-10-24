@@ -58,7 +58,8 @@ public sealed class TapeAvailabilityHolder
         TapeAvailability process = _value;
         if (process.Reason is TapeUnavailableReason.NeverStarted
             or TapeUnavailableReason.Reconnecting
-            or TapeUnavailableReason.Stopped)
+            or TapeUnavailableReason.Stopped
+            or TapeUnavailableReason.StoppedForSessionConflict)
         {
             return process;
         }

@@ -107,22 +107,52 @@ public sealed class VolumeProfileServiceTests : IDisposable
     public async Task ReadCells_WhenThisProcessIsNotRecording_ServesClosedCoverage()
     {
         // The store tier already serves a closed run when this process is not the recorder.
-        // The still-open sentinel is the row it must not treat as coverage (gh#728).
+        // The still-open sentinel is stored beside it and must not extend the window (gh#728).
         DateTimeOffset runStart = new(2026, 10, 16, 13, 30, 0, TimeSpan.Zero);
         DateTimeOffset runEnd = new(2026, 10, 16, 14, 30, 0, TimeSpan.Zero);
+        DateTimeOffset askedEnd = new(2026, 10, 16, 15, 30, 0, TimeSpan.Zero);
         TapeAvailabilityHolder tape = new();
         tape.Set(TapeAvailability.NeverStartedBecauseStdio());
 
-        await SeedCoverageAsync(Coverage(Next, runStart, runEnd));
+        await SeedCoverageAsync(
+            Coverage(Next, runStart, runEnd),
+            Coverage(Next, runEnd, TapeCoverageRecord.StillListeningEnd));
         await SeedCellsAsync(CellsAcross(runStart));
 
         FootprintRead read = await new VolumeProfileService(_database, tape).ReadCellsAsync(
-            Venue, _es, FiveMinutes, runStart, runEnd, CancellationToken.None);
+            Venue, _es, FiveMinutes, runStart, askedEnd, CancellationToken.None);
 
         read.Cells.Should().HaveCount(24);
         read.Window.Start.Should().Be(runStart);
         read.Window.End.Should().Be(runEnd);
-        read.Window.Narrowed.Should().BeFalse();
+        read.Window.End.Should().NotBe(askedEnd);
+        read.Window.Narrowed.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ReadCells_WhenTheCallerPassesHealth_IgnoresAListeningHolder()
+    {
+        // The holder says this process is listening, which would keep the sentinel and run
+        // the window to the ask. The status passed for the call says it is not. That snapshot
+        // wins, or the live flag and the window are two different reads.
+        TapeAvailabilityHolder listening = new();
+        listening.Set(TapeAvailability.Listening());
+
+        await SeedCoverageAsync(
+            Coverage(Next, _fourteen, _sixteen),
+            Coverage(Next, _sixteen, TapeCoverageRecord.StillListeningEnd));
+        await SeedCellsAsync(Cell(_bucket1430, 5000m, buy: 4, sell: 1));
+
+        FootprintRead read = await new VolumeProfileService(_database, listening).ReadCellsAsync(
+            Venue,
+            _es,
+            FiveMinutes,
+            _fourteen,
+            _sixteen.AddHours(2),
+            CancellationToken.None,
+            TapeAvailability.NeverStartedBecauseStdio());
+
+        read.Window.End.Should().Be(_sixteen);
     }
 
     [Fact]
@@ -133,7 +163,7 @@ public sealed class VolumeProfileServiceTests : IDisposable
         Func<Task> read = () => Service().ReadAsync(
             Venue, _es, FiveMinutes, _ten, _sixteen, CancellationToken.None);
 
-        await read.Should().ThrowAsync<InvalidOperationException>().WithMessage("*no tape*");
+        await read.Should().ThrowAsync<NoClosedTapeException>().WithMessage("*no tape*");
     }
 
     [Fact]

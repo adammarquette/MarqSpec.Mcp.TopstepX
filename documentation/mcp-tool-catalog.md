@@ -911,7 +911,7 @@ only goes forward from when recording began.
 Returns `{ symbol, resolutionMinutes, cells: [{ t, p, buy, sell }], covered: { start, end, narrowed },
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
 front: { used, agree, tapeContractId?, tapeSessionDate?, gatewayContractId?,
-changeover?: { sessionDate, flippedAtUtc?, fromContractId, toContractId } }, live }`.
+changeover?: { sessionDate, flippedAtUtc?, fromContractId, toContractId } }, live, partial, reason, dataEndsAt }`.
 
 **`covered` is the ledger window, not the ask.** A roll or listening hole narrows to the newest contiguous
 run of the contract in front and sets `narrowed`. `contracts.span` is always `SingleContract` — a profile
@@ -919,30 +919,37 @@ or footprint is never computed across a roll (`R-9.4`). Segment `firstBucket` / 
 times from the cells**, not the exclusive coverage end — that range stays on `covered`.
 
 **A window before recording began is refused** and names the earliest covered time. **A covered window
-whose stored tape has prints the cells do not yet reflect is projected on this read** — no vendor
+whose stored tape has prints the cells do not yet reflect is projected on this read while this
+process is the recorder** — no vendor
 call, the same trigger as indicators
 ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md) shape, gh#366). Completeness is
 whether the cells match the tape, not whether two `RecordedAt` clocks agree (gh#377).
 If the tape still produces no cell (a roll inside the bar, or prints that do not count) the tool
 **refuses** rather than returning empty `cells`. **When this process is not the recorder** for that
-instrument, closed coverage is served and `live` is false — live coverage is absent, and the answer is
-not a live tape (gh#728). A still-open sentinel is not that coverage. **A window with no closed tape
-still refuses** with a sentence naming the fix — an empty answer and an absent tape must not look the
-same (gh#218). `live` is true only while this process is listening for that instrument. When this
-process is the recorder but that instrument is reconnecting, not subscribed, or stopped, the tool
-still refuses with a sentence naming the fix. A session conflict stops the recorder (gh#757). The
-refusal names the trading platform and `MarketData__StopOnSessionConflict`, and it says the recorder
-will not reconnect the hub and will not call loginKey. The one-way stop latches only on a documented
-hub name, HTTP 401, `InvalidSession`, or `SessionNotFound`. A missing token stops the recorder and
-does not close login for these tools. The held token is renewed with `POST /api/Auth/validate`
-whenever the venue client is configured, not `loginKey`. A latched stop posts no further validate.
-An expired token, or one inside its refresh window after a failed renewal, may post a budgeted
-loginKey. That login disconnects any live session on the account, including a healthy trading
-platform. A failed login waits before it tries again. With the switch off, replicas (gh#772) kick
-each other about once per 54-minute cycle. Tools
-may keep using the token already held until it ages out. Another
+instrument, closed coverage is served read-only and `live` is false (gh#728). `reason` is a closed
+code (`listening`, `never_started`, `held_by_another_recorder`). `dataEndsAt` is the exclusive end
+of the data served. `live` true means this process is listening, not that the cells are current.
+A window that runs past the last closed run is cut back to that run and `partial` is true. This
+process does not project or write cells on that path. A still-open sentinel is not that coverage.
+**A window with no closed tape still refuses** with a sentence naming the fix — under stdio, run a
+separate HTTP recorder on the same database; the sentence does not say to stop a recorder. An empty
+answer and an absent tape must not look the same (gh#218). When this
+process is the recorder but that instrument is reconnecting, not subscribed, or stopped, or its
+claim was taken over or lapsed, the tool still refuses with a sentence naming the fix. Those last
+two are their own reason codes, not "another recorder holds the claim". A session conflict stops
+the recorder (gh#757). The refusal names the trading platform and
+`MarketData__StopOnSessionConflict`, and it says the recorder will not reconnect the hub and will
+not call loginKey. The one-way stop latches only on a documented hub name, HTTP 401,
+`InvalidSession`, or `SessionNotFound`. A missing token stops the recorder and does not close login
+for these tools. The held token is renewed with `POST /api/Auth/validate` whenever the venue client
+is configured, not `loginKey`. A latched stop posts no further validate. An expired token, or one
+inside its refresh window after a failed renewal, may post a budgeted loginKey. That login
+disconnects any live session on the account, including a healthy trading platform. A failed login
+waits before it tries again. With the switch off, replicas (gh#772) kick each other about once per
+54-minute cycle. Tools may keep using the token already held until it ages out. Another
 symbol's subscribe does not make this one healthy and does not make its closed history read as live.
-Top-level fields are always present, `live` included. **`front` is a new object, not a replacement for `contracts`.** `used` is `tape-volume`
+A served read with `live` false is counted, tagged with `reason`.
+Top-level fields are always present, `live`, `partial`, `reason` and `dataEndsAt` included. **`front` is a new object, not a replacement for `contracts`.** `used` is `tape-volume`
 or `none` — never a silent prefer of the gateway. `tapeContractId`, `tapeSessionDate`,
 `gatewayContractId` and `changeover` are omitted when that answer does not exist. No `why` sentence
 (ADR-0008). `contracts` stays the newest listening run from cells and `TapeCoverage`.
@@ -950,30 +957,32 @@ or `none` — never a silent prefer of the gateway. `tapeContractId`, `tapeSessi
 ### `get_volume_profile(symbol, resolutionMinutes, fromUtc, toUtc)`
 Volume by price, the point of control, and the 70% value area — an aggregate over the same stored cells
 `get_footprint` reads (`R-9`). Same covered-window and contract-provenance rules, same forward-only
-refusal, same on-read projection when the stored tape has prints the cells do not yet reflect (gh#366,
-gh#377).
+refusal, same on-read projection while this process is the recorder and the stored tape has prints
+the cells do not yet reflect (gh#366, gh#377).
 
 Returns `{ symbol, resolutionMinutes, byPrice: [{ p, v }], pointOfControl, valueAreaLow, valueAreaHigh,
-valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts, front, live }`.
+valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts, front, live, partial, reason, dataEndsAt }`.
 
 Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). **When this process
-is not the recorder**, closed coverage is served and `live` is false — live coverage is absent (gh#728).
+is not the recorder**, closed coverage is served read-only and `live` is false (gh#728). `reason`,
+`partial` and `dataEndsAt` mean what they mean on `get_footprint`. `live` true means this process is
+listening, not that the cells are current. A window that runs past the last closed run is cut back
+and `partial` is true.
 A window with no closed tape still **refuses** with a sentence naming the fix — an empty profile and an
-absent tape must not look the same (gh#218). `live` is true only while this process is listening.
+absent tape must not look the same, and the sentence does not say to stop the recorder (gh#218).
 When this process is the recorder but that instrument is reconnecting, not subscribed, or stopped,
-the tool still refuses with a sentence naming the fix. A session conflict stops the recorder (gh#757).
-The refusal names the trading platform and `MarketData__StopOnSessionConflict`, and it says the
-recorder will not reconnect the hub and will not call loginKey. The one-way stop latches only on a
-documented hub name, HTTP 401, `InvalidSession`, or `SessionNotFound`. A missing token stops the
-recorder and does not close login for these tools. The held token is renewed with
-`POST /api/Auth/validate` whenever the venue client is configured, not `loginKey`. A latched stop
-posts no further validate. An expired token, or one inside its refresh window after a failed renewal,
-may post a budgeted loginKey. That login disconnects any live session on the account, including a
-healthy trading platform. A failed login waits before it tries again. With the switch off, replicas
-(gh#772) kick each other about once per 54-minute cycle. Tools
-may keep using the token already held until it ages out.
-Another symbol's subscribe does not make this one healthy. Top-level fields are always present, `live`
-included. **`front` is the same object `get_footprint` returns** — tape volume-front
+or its claim was taken over or lapsed, the tool still refuses with a sentence naming the fix.
+A session conflict stops the recorder (gh#757). The refusal names the trading platform and
+`MarketData__StopOnSessionConflict`, and it says the recorder will not reconnect the hub and will
+not call loginKey. The one-way stop latches only on a documented hub name, HTTP 401,
+`InvalidSession`, or `SessionNotFound`. A missing token stops the recorder and does not close login
+for these tools. The held token is renewed with `POST /api/Auth/validate` whenever the venue client
+is configured, not `loginKey`. A latched stop posts no further validate. An expired token, or one
+inside its refresh window after a failed renewal, may post a budgeted loginKey. That login
+disconnects any live session on the account, including a healthy trading platform. A failed login
+waits before it tries again. With the switch off, replicas (gh#772) kick each other about once per
+54-minute cycle. Tools may keep using the token already held until it ages out.
+Another symbol's subscribe does not make this one healthy. Top-level fields are always present. **`front` is the same object `get_footprint` returns** — tape volume-front
 and the gateway pick as separate fields; `contracts` is still the listening-run cut.
 
 ### `get_contract_roll(symbol, asOfUtc?)`

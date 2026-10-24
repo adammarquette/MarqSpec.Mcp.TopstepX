@@ -46,8 +46,14 @@ public sealed class VolumeProfileService(
     /// <param name="start">The start of the ask, inclusive.</param>
     /// <param name="end">The end of the ask, exclusive.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <param name="health">
+    /// The recorder status read once for this call. When set, it wins over
+    /// <see cref="TapeAvailabilityHolder"/>, so the window and the caller's live flag
+    /// cannot be decided from two different instants.
+    /// </param>
     /// <returns>The profile and the window the ledger actually covered.</returns>
-    /// <exception cref="InvalidOperationException">No tape overlaps the ask.</exception>
+    /// <exception cref="NoClosedTapeException">No closed tape overlaps the ask.</exception>
+    /// <exception cref="InvalidOperationException">The ask is entirely before recording began.</exception>
     /// <exception cref="ArgumentException">The covered cells carry no volume.</exception>
     public async Task<VolumeProfileRead> ReadAsync(
         string venue,
@@ -55,10 +61,11 @@ public sealed class VolumeProfileService(
         int resolutionMinutes,
         DateTimeOffset start,
         DateTimeOffset end,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TapeAvailability? health = null)
     {
         FootprintRead cells = await ReadCellsAsync(
-                venue, instrument, resolutionMinutes, start, end, cancellationToken)
+                venue, instrument, resolutionMinutes, start, end, cancellationToken, health)
             .ConfigureAwait(false);
 
         return new VolumeProfileRead(VolumeProfileAggregator.From(cells.Cells), cells.Window);
@@ -74,15 +81,21 @@ public sealed class VolumeProfileService(
     /// <param name="start">The start of the ask, inclusive.</param>
     /// <param name="end">The end of the ask, exclusive.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <param name="health">
+    /// The recorder status read once for this call. When set, a still-open row is coverage
+    /// only while that snapshot is listening — the holder is not read again.
+    /// </param>
     /// <returns>The cells and the window the ledger actually covered.</returns>
-    /// <exception cref="InvalidOperationException">No tape overlaps the ask.</exception>
+    /// <exception cref="NoClosedTapeException">No closed tape overlaps the ask.</exception>
+    /// <exception cref="InvalidOperationException">The ask is entirely before recording began.</exception>
     public async Task<FootprintRead> ReadCellsAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
         DateTimeOffset start,
         DateTimeOffset end,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TapeAvailability? health = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(venue);
 
@@ -95,7 +108,7 @@ public sealed class VolumeProfileService(
         }
 
         CoveredTapeWindow window = await ConfineAsync(
-                venue, instrument, start, end, cancellationToken)
+                venue, instrument, start, end, cancellationToken, health)
             .ConfigureAwait(false);
 
         DateTimeOffset loadFrom = window.Start.AddMinutes(-resolutionMinutes);
@@ -140,7 +153,8 @@ public sealed class VolumeProfileService(
         InstrumentId instrument,
         DateTimeOffset start,
         DateTimeOffset end,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TapeAvailability? health)
     {
         IQueryable<TapeCoverageRecord> query = _database.TapeCoverage
             .AsNoTracking()
@@ -148,7 +162,7 @@ public sealed class VolumeProfileService(
                 && c.Instrument == instrument.Symbol
                 && c.RangeStart < end
                 && c.RangeEnd > start);
-        if (!IsListening(instrument))
+        if (!IsListening(instrument, health))
         {
             query = query.Where(c => c.RangeEnd != TapeCoverageRecord.StillListeningEnd);
         }
@@ -159,7 +173,7 @@ public sealed class VolumeProfileService(
 
         if (rows.Count == 0)
         {
-            throw await EmptyTapeRefusalAsync(venue, instrument, cancellationToken)
+            throw await EmptyTapeRefusalAsync(venue, instrument, cancellationToken, health)
                 .ConfigureAwait(false);
         }
 
@@ -176,12 +190,13 @@ public sealed class VolumeProfileService(
     private async Task<InvalidOperationException> EmptyTapeRefusalAsync(
         string venue,
         InstrumentId instrument,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TapeAvailability? health)
     {
         IQueryable<TapeCoverageRecord> covered = _database.TapeCoverage
             .AsNoTracking()
             .Where(c => c.Venue == venue && c.Instrument == instrument.Symbol);
-        if (!IsListening(instrument))
+        if (!IsListening(instrument, health))
         {
             covered = covered.Where(c => c.RangeEnd != TapeCoverageRecord.StillListeningEnd);
         }
@@ -202,16 +217,25 @@ public sealed class VolumeProfileService(
                 + ". An empty answer here would look like a quiet market.");
         }
 
-        return new InvalidOperationException(
+        return new NoClosedTapeException(
             "A window with no tape cannot produce a footprint or volume profile. There is no "
             + "market-tape backfill, so an empty answer would look like a quiet market.");
     }
 
     /// <summary>
-    /// A still-open row is a taped window only while this instrument is Listening. Without a
-    /// holder — get_key_levels used to construct one that way — the sentinel is never ordinary
+    /// A still-open row is a taped window only while this instrument is Listening. A status
+    /// handed in for this call wins, so a holder that moves between the tool's read and this
+    /// one cannot include the sentinel the tool already decided was not coverage. Without
+    /// either — get_key_levels used to construct one that way — the sentinel is never ordinary
     /// coverage: a leftover during an outage must not bind as a POC of the lookback (gh#221).
     /// </summary>
-    private bool IsListening(InstrumentId instrument) =>
-        _tape is { } holder && holder.For(instrument.Symbol).IsListening;
+    private bool IsListening(InstrumentId instrument, TapeAvailability? health)
+    {
+        if (health is not null)
+        {
+            return health.IsListening;
+        }
+
+        return _tape is { } holder && holder.For(instrument.Symbol).IsListening;
+    }
 }

@@ -98,7 +98,8 @@ public sealed class FootprintAndVolumeProfileStoreTests : IAsyncLifetime
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 clock,
                 NullLogger<FootprintCacheService>.Instance,
-                _telemetry));
+                _telemetry),
+            _telemetry);
     }
 
     /// <inheritdoc />

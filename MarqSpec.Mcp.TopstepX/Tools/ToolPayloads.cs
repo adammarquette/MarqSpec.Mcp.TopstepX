@@ -969,16 +969,31 @@ public static class ToolPayloads
     /// keys inside it are omitted when that answer does not exist.
     /// </param>
     /// <param name="Live">
-    /// Whether this process is recording that instrument. False means the cells are closed coverage
-    /// from a recorder this process is not, and live coverage is absent (gh#728). Always present.
+    /// Whether this process is listening for that instrument. True means the subscription is up
+    /// here. It does not mean the cells are current: <see cref="DataEndsAt"/> is when the served
+    /// data ends (gh#728). Always present.
+    /// </param>
+    /// <param name="Partial">
+    /// Whether the served data ends before the window asked for. True when another process is
+    /// still recording and the ask ran past the last closed run, and whenever
+    /// <see cref="DataEndsAt"/> is earlier than the ask's end. Always present.
+    /// </param>
+    /// <param name="Reason">
+    /// A closed code for <see cref="Live"/>: <c>listening</c>, <c>never_started</c>, or
+    /// <c>held_by_another_recorder</c>. Not a sentence (ADR-0008). Always present.
+    /// </param>
+    /// <param name="DataEndsAt">
+    /// The exclusive end of the data served, the same instant as <c>covered.end</c>. Always present.
     /// </param>
     /// <remarks>
     /// Top-level fields are always present. When this process is not the recorder, closed coverage
-    /// is served with <see cref="Live"/> false rather than refused (gh#728). A window with no closed
-    /// tape still refuses with a sentence naming the fix (gh#218). A covered window whose stored tape
-    /// has prints the cells do not yet reflect is projected on the read (gh#366, gh#377). If the tape
-    /// still produces no cell the tool refuses rather than returning empty <c>cells</c> — that
-    /// quiet-looking shape would hide a roll or an uncounted tape.
+    /// is served with <see cref="Live"/> false rather than refused, and the cells already stored
+    /// are what is returned — this process does not project or write them (gh#728, ADR-0016). A
+    /// window with no closed tape still refuses with a sentence naming the fix (gh#218). While
+    /// this process is the recorder, a covered window whose stored tape has prints the cells do
+    /// not yet reflect is projected on the read (gh#366, gh#377). If the tape still produces no
+    /// cell the tool refuses rather than returning empty <c>cells</c> — that quiet-looking shape
+    /// would hide a roll or an uncounted tape.
     /// </remarks>
     public sealed record FootprintSeries(
         string Symbol,
@@ -987,7 +1002,10 @@ public static class ToolPayloads
         CoveredWindow Covered,
         ContractCoverage Contracts,
         VolumeFrontInfo Front,
-        bool Live);
+        bool Live,
+        bool Partial,
+        string Reason,
+        DateTimeOffset DataEndsAt);
 
     /// <summary>Volume at one price on the wire.</summary>
     /// <param name="P">The price.</param>
@@ -1014,13 +1032,24 @@ public static class ToolPayloads
     /// keys inside it are omitted when that answer does not exist.
     /// </param>
     /// <param name="Live">
-    /// Whether this process is recording that instrument. False means the profile is closed coverage
-    /// from a recorder this process is not, and live coverage is absent (gh#728). Always present.
+    /// Whether this process is listening for that instrument. True means the subscription is up
+    /// here. It does not mean the cells behind the profile are current:
+    /// <see cref="DataEndsAt"/> is when the served data ends (gh#728). Always present.
+    /// </param>
+    /// <param name="Partial">
+    /// Whether the served data ends before the window asked for. Always present.
+    /// </param>
+    /// <param name="Reason">
+    /// A closed code for <see cref="Live"/>: <c>listening</c>, <c>never_started</c>, or
+    /// <c>held_by_another_recorder</c>. Not a sentence (ADR-0008). Always present.
+    /// </param>
+    /// <param name="DataEndsAt">
+    /// The exclusive end of the data served, the same instant as <c>covered.end</c>. Always present.
     /// </param>
     /// <remarks>
     /// Top-level fields are always present. When this process is not the recorder, closed coverage
-    /// is served with <see cref="Live"/> false rather than refused (gh#728). A window with no closed
-    /// tape still refuses with a sentence naming the fix (gh#218).
+    /// is served with <see cref="Live"/> false rather than refused, from cells already stored
+    /// (gh#728). A window with no closed tape still refuses with a sentence naming the fix (gh#218).
     /// </remarks>
     public sealed record VolumeProfileSeries(
         string Symbol,
@@ -1034,7 +1063,10 @@ public static class ToolPayloads
         CoveredWindow Covered,
         ContractCoverage Contracts,
         VolumeFrontInfo Front,
-        bool Live);
+        bool Live,
+        bool Partial,
+        string Reason,
+        DateTimeOffset DataEndsAt);
 
     /// <summary>
     /// The session — and the instant inside it — when the volume-front flipped.

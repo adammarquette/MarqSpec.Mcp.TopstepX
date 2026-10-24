@@ -506,13 +506,19 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   only goes forward: there is no historical footprint before recording began. A request for a window
   before recording began refuses and names the earliest covered time. A covered window whose tape
   has prints but no cells is projected on the read — no vendor call (gh#366). Live tape-subscription health is
-read at the point of use (gh#218, gh#728). When **this process is not the recorder** for that
+  read once per call and passed through, so the window and the live flag are the same instant
+  (gh#218, gh#728). When **this process is not the recorder** for that
   instrument — stdio, the switch off, or another process holding the claim — **closed** coverage is
-  served and `live` is false, so live coverage is reported absent rather than the call being refused.
+  served read-only and `live` is false. `reason` is a closed code. `dataEndsAt` is when the served
+  data ends. `live` true means this process is listening, not that the cells are current. A window
+  that runs past the last closed run is cut back to that run and `partial` is true. This process
+  does not project or write cells on that path: the recorder stays the single writer (ADR-0016).
   A still-open sentinel is not coverage in that case. A window with no closed tape still refuses with
-  a sentence naming the fix — never reported healthy by default, never answered as an empty profile.
-  While this process is listening, `live` is true. A recorder that is reconnecting, connected but
-  not subscribed, or stopped still refuses with the sentence naming the fix — closed cells must not
+  a sentence naming the fix — under stdio, run a separate HTTP recorder on the same database; the
+  sentence does not say to stop a recorder. Never reported healthy by default, never answered as an
+  empty profile. A recorder that is reconnecting, connected but not subscribed, or stopped still
+  refuses, and so does a claim this process held and then lost (`ClaimTakenOver`, `ClaimLapsed`) —
+  those are not "another recorder holds the claim". Closed cells must not
   read as that instrument's live tape. A session conflict stops the recorder rather than reconnecting
   (gh#757). The refusal names the trading platform and `MarketData__StopOnSessionConflict`,
   and it says the recorder will not reconnect the hub and will not call loginKey. The one-way
@@ -522,7 +528,8 @@ read at the point of use (gh#218, gh#728). When **this process is not the record
   refresh window after a failed renewal, may post a budgeted `loginKey`. That login disconnects
   any live session on the account. A failed login waits before it tries again. Tools may
   keep using the token already held until it ages out. Another symbol's subscribe does not make this one
-  healthy and does not make its closed history read as live. Reads refuse rather than truncate when over cap.
+  healthy and does not make its closed history read as live. A served read with `live` false is
+  counted, tagged with why. Reads refuse rather than truncate when over cap.
 - **R-5.9** **`get_contract_roll`** reports the most recent tape changeover a symbol's stored
   prints can prove, and the tape front at `asOfUtc` (default now, bounded like
   `get_market_session`'s `atUtc`, R-5.4). `front` is the same object the footprint tools
@@ -692,13 +699,18 @@ read at the point of use (gh#218, gh#728). When **this process is not the record
   has a beginning and can have holes, and neither is recoverable. A hole confines the answer to the
   **newest contiguous listening run** and reports the narrowing — the same cut `get_key_levels` makes.
   Collapsing two runs into a continuous envelope would claim coverage that was never there.
-- **R-9.6** A window with **no tape refuses** rather than returning an empty profile. When this
-  process is not the recorder for that instrument, **closed** coverage is served and flagged
-  not-live (`live` false) — live coverage is absent, and the call is not refused for that reason
-  alone (gh#728). A still-open sentinel is not closed coverage. A window with no closed tape still
-  refuses with a sentence naming the fix — an empty profile and an absent tape must not look the
+- **R-9.6** A window with **no tape refuses** rather than returning an empty profile. That refusal
+  is a typed result, not a match on the sentence. When this
+  process is not the recorder for that instrument, **closed** coverage is served read-only and
+  flagged not-live (`live` false, with `reason` and `dataEndsAt`) — the call is not refused for
+  that reason alone (gh#728). `live` true means this process is listening, not that the cells are
+  current. A window that runs past the last closed run is cut back and `partial` is true. A
+  still-open sentinel is not closed coverage. A window with no closed tape still
+  refuses with a sentence naming the fix, and that sentence does not say to stop the recorder —
+  an empty profile and an absent tape must not look the
   same (gh#218). A recorder that is reconnecting, connected but not subscribed, or stopped refuses
-  the same way even when closed cells exist. Another symbol's subscribe does not make this one healthy.
+  the same way even when closed cells exist, as do `ClaimTakenOver` and `ClaimLapsed`, which are
+  not the same reason as another recorder holding the claim. Another symbol's subscribe does not make this one healthy.
 - **R-9.7** A window entirely **before recording began** refuses and **names the earliest covered
   time** for that instrument. An empty answer there would look like a quiet market (gh#222).
 

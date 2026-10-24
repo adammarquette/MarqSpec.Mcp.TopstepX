@@ -29,9 +29,11 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// </para>
 /// <para>
 /// <b>What reaches a log line.</b> On success, <c>sub</c> and <c>client_id</c> as a scope on everything the
-/// request logs, so an operator can say who asked. On refusal, the failure's type name or a fixed reason
-/// naming a claim. <b>Never the token</b>: <c>SaveToken</c> is off so it is not retained on the
-/// authentication properties either, and THIS REPOSITORY IS PUBLIC.
+/// request logs, so an operator can say who asked. On refusal, the method, the path and a fixed reason
+/// naming a claim. Method and path are the caller's, so <see cref="LogText.Sanitize"/> escapes CR, LF and
+/// the other control characters and the results are logged as structured parameters — a line break in
+/// either value cannot open a second entry. <b>Never the token</b>: <c>SaveToken</c> is off so it is not
+/// retained on the authentication properties either, and THIS REPOSITORY IS PUBLIC.
 /// </para>
 /// <para>
 /// <b>An unreachable issuer fails closed.</b> A token that cannot be verified is refused; nothing here
@@ -70,8 +72,9 @@ public static class OAuthBearerGate
         // validation failed. Issuer: '…'", "IDX10503 … The token's kid is: '…'"). Both are attacker-chosen
         // strings on a listener the internet can reach, and an unauthenticated request should not be able
         // to write what it likes into the log at the product's default level. The category is filtered to
-        // Warning here, in the one mode that registers the handler; the gate's own refusal line above it
-        // names a claim and never a value, so nothing an operator needs is lost.
+        // Warning here, in the one mode that registers the handler; the gate's own refusal line names a
+        // claim and the request method and path, the latter two only after their control characters are
+        // escaped, so nothing an operator needs is lost and the request cannot forge a second entry.
         services.AddLogging(logging => logging.AddFilter(AuthenticationLogCategory, LogLevel.Warning));
 
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -165,7 +168,13 @@ public static class OAuthBearerGate
 
             if (!result.Succeeded)
             {
-                logger.LogInformation("Refused {Method} {Path}: {Reason}.", context.Request.Method, context.Request.Path, Describe(result));
+                // Method and path are attacker-chosen. Escape controls, then log the results as structured
+                // parameters — interpolating them would put the same bytes in the template. Never a token.
+                logger.LogInformation(
+                    "Refused {Method} {Path}: {Reason}.",
+                    LogText.Sanitize(context.Request.Method),
+                    LogText.Sanitize(context.Request.Path.Value),
+                    LogText.Sanitize(Describe(result)));
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 context.Response.Headers.WWWAuthenticate = challenge;
                 await context.Response.WriteAsync("Unauthorized.").ConfigureAwait(false);

@@ -40,7 +40,9 @@
 #         - every docker-compose*.y(a)ml / compose*.y(a)ml at any depth passes ${Trading__Enabled:-false} (or false), any key casing;
 #         - Dockerfile ENV/ARG and .env.example never set it to anything but false.
 #         - every file under .railway/ (the Railway IaC template, gh#758) and any railway.json/railway.toml
-#           sets it only as the literal "false" (code comments skipped), and .railway/railway.ts sets it at all.
+#           sets it only as a line that is exactly the literal "false" -- no ternary, variable or fallback
+#           (code comments skipped) -- and .railway/railway.ts sets it at all. check-railway-template.sh then
+#           evaluates the file for several environments, including arbitrary names, and asserts the value.
 #       RAILWAY'S DASHBOARD VARIABLES ARE STILL NOT CI-VERIFIABLE: the template is what a reviewed deploy
 #       applies, but an edit made in Railway afterwards is invisible here and rests on the code default and on
 #       whoever made it.
@@ -299,8 +301,9 @@ while IFS= read -r r; do
     [ -n "$l" ] || continue
     body="${l#*:}"
     printf '%s\n' "$body" | grep -qE '^[[:space:]]*(//|#|\*|/\*)' && continue
-    printf '%s\n' "$body" | grep -qiE '^[[:space:]]*["'"'"']?trading__enabled["'"'"']?[[:space:]]*[:=][[:space:]]*' \
-      && printf '%s\n' "$body" | grep -qE '[:=][[:space:]]*"false"[[:space:]]*,?[[:space:]]*(//.*)?$' && continue
+    # The WHOLE line is `Trading__Enabled: "false"` (JSON/TOML quoting allowed) and nothing else: no ternary,
+    # no variable, no || fallback, no value on a continuation line. Anything cleverer is refused, not parsed.
+    printf '%s\n' "$body" | grep -qE '^[[:space:]]*["'"'"']?Trading__Enabled["'"'"']?[[:space:]]*[:=][[:space:]]*"false"[[:space:]]*,?[[:space:]]*(//[^"]*)?$' && continue
     fail "MASTER SWITCH  $r:${l%%:*} must set Trading__Enabled to the literal \"false\"" "$body"
   done <<<"$lines"
 done <<<"$railways"

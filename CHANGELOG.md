@@ -76,10 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The OAuth refusal line cannot be forged.** `LogText.Sanitize` escapes CR, LF, the other C0/C1 controls,
   U+2028, U+2029, the bidi overrides and isolates, LRM, RLM, ALM, ZWSP, BOM, a lone surrogate, and a literal
-  backslash, then caps the escaped text — on an escape boundary, and not through a surrogate pair — so an
-  8 KB control-character path cannot expand to about 48 KB. A caller-supplied ` [truncated]` is not left
-  intact. The gate logs method, path, reason, `sub` and `client_id` through it, and the `reselect-bars`
-  command-line refusal does too. The token is still never logged (gh#747,
+  backslash, and an opening bracket, then caps the escaped text — on an escape boundary, and not through a
+  surrogate pair — so an 8 KB control-character path cannot expand to about 48 KB. Escaping the bracket keeps
+  a caller-supplied ` [truncated]` distinct from one that already contains a backslash, and distinct from the
+  suffix the cap appends. The gate logs method, path, reason, `sub` and `client_id` through it, and the
+  `reselect-bars` command-line refusal does too. The token is still never logged (gh#747,
   [ADR-0007](documentation/adr/0007-dual-transport.md)).
 
 ## [0.5.0] - 2026-09-11

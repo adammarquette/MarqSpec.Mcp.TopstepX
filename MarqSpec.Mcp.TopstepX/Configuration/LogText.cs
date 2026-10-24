@@ -10,8 +10,8 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <para>
 /// CR, LF, the other C0/C1 controls, the Unicode line and paragraph separators (U+2028, U+2029), the bidi
 /// overrides and isolates (U+202A–U+202E, U+2066–U+2069), LRM and RLM (U+200E, U+200F), ALM (U+061C),
-/// ZWSP (U+200B), BOM (U+FEFF), a lone surrogate, and a literal backslash are escaped as a backslash, the
-/// letter u, and four hexadecimal digits. The backslash is escaped in the same pass, so those six characters
+/// ZWSP (U+200B), BOM (U+FEFF), a lone surrogate, a literal backslash, and an opening bracket are escaped
+/// as a backslash, the letter u, and four hexadecimal digits. The backslash is escaped in the same pass, so those six characters
 /// written out for a carriage return are not what a real carriage return becomes. A well-formed surrogate
 /// pair is left as one character, so the cap below can see it. A value is then logged as a structured
 /// parameter, so the characters cannot open a second entry or hide one.
@@ -19,9 +19,10 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <para>
 /// The escaped text is capped at <see cref="MaxSanitizedLength"/> characters, and
 /// <see cref="TruncationMarker"/> is appended when it is longer. The cap is on that output: one control
-/// becomes six characters, so an 8 KB path of controls would otherwise be about 48 KB. A caller who writes
-/// the marker itself does not get it back unchanged — a backslash is inserted and then escaped — so the
-/// exact marker occurs only when this method appended it.
+/// becomes six characters, so an 8 KB path of controls would otherwise be about 48 KB. An opening bracket
+/// is escaped in the same pass, so a caller who writes the marker does not get it back, and a bracket
+/// followed by a backslash stays distinct from a bracket alone. The exact marker occurs only when this
+/// method appended it.
 /// </para>
 /// <para>
 /// This does not redact secrets — do not pass a token. A missing value stays missing:
@@ -39,15 +40,9 @@ public static class LogText
     public const string TruncationMarker = " [truncated]";
 
     /// <summary>
-    /// A caller-supplied copy of <see cref="TruncationMarker"/>, with a backslash inserted so the escape
-    /// pass can tell it from the marker <see cref="Cap"/> appends.
-    /// </summary>
-    private const string DefusedTruncationMarker = " [\\truncated]";
-
-    /// <summary>
-    /// Controls, line separators, bidi marks, the other invisible format characters, a lone surrogate, and
-    /// a literal backslash. Built from code points: a unicode escape in this file would be invisible to the
-    /// order-name scan and is rejected for that reason.
+    /// C0/C1 controls, line and paragraph separators, bidi overrides and isolates, LRM, RLM, ALM, ZWSP, BOM,
+    /// a lone surrogate, a literal backslash, and an opening bracket. Built from code points: a unicode
+    /// escape in this file would be invisible to the order-name scan and is rejected for that reason.
     /// </summary>
     private static readonly Regex _unsafeCharacters = new(
         BuildPattern(),
@@ -69,11 +64,9 @@ public static class LogText
             return string.Empty;
         }
 
-        // Regex.Replace is the barrier CodeQL's cs/log-forging query treats as sanitising the result.
-        // The marker is defused first, on the raw text, so the backslash this inserts is escaped with
-        // everything else and the replacement is not scanned again.
-        string prepared = value.Replace(TruncationMarker, DefusedTruncationMarker, StringComparison.Ordinal);
-        string escaped = _unsafeCharacters.Replace(prepared, static match => Escape(match.Value[0]));
+        // Regex.Replace is the barrier CodeQL's cs/log-forging query treats as sanitising the result,
+        // and it is the last one. The cap only cuts this result and appends a constant.
+        string escaped = _unsafeCharacters.Replace(value, static match => Escape(match.Value[0]));
         return escaped.Length <= MaxSanitizedLength ? escaped : Cap(escaped);
     }
 
@@ -111,17 +104,24 @@ public static class LogText
     {
         char[] extras =
         [
+            // Line and paragraph separators.
             (char)0x2028,
             (char)0x2029,
+
+            // Bidi overrides.
             (char)0x202A,
             (char)0x202B,
             (char)0x202C,
             (char)0x202D,
             (char)0x202E,
+
+            // Bidi isolates.
             (char)0x2066,
             (char)0x2067,
             (char)0x2068,
             (char)0x2069,
+
+            // LRM, RLM, ALM, ZWSP, BOM.
             (char)0x200E,
             (char)0x200F,
             (char)0x061C,
@@ -136,6 +136,10 @@ public static class LogText
         string high = "[" + (char)0xD800 + "-" + (char)0xDBFF + "]";
         string low = "[" + (char)0xDC00 + "-" + (char)0xDFFF + "]";
         string lone = "(?<!" + high + ")" + low + "|" + high + "(?!" + low + ")";
-        return "(?:" + marks + "|" + lone + ")";
+
+        // One more alternative in this same pattern: an opening bracket. Cap appends the truncation
+        // marker after the replace, so a caller cannot write that marker by sending the bracket.
+        string openBracket = Regex.Escape(((char)0x005B).ToString());
+        return "(?:" + marks + "|" + lone + "|" + openBracket + ")";
     }
 }

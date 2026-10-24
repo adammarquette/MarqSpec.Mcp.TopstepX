@@ -198,8 +198,8 @@ public sealed class LogTextTests
     [Fact]
     public void ACallerSuppliedTruncationMarker_IsNotTheCap()
     {
-        // The exact marker is only the suffix Cap appends. A copy in the input is escaped instead.
-        LogText.Sanitize(LogText.TruncationMarker).Should().Be(" [\\u005Ctruncated]");
+        // The exact marker is only the suffix Cap appends. The caller's opening bracket is escaped.
+        LogText.Sanitize(LogText.TruncationMarker).Should().Be(" \\u005Btruncated]");
 
         string input = LogText.TruncationMarker + new string('a', LogText.MaxSanitizedLength);
         string result = LogText.Sanitize(input);
@@ -207,6 +207,36 @@ public sealed class LogTextTests
 
         result.Should().EndWith(LogText.TruncationMarker);
         body.Should().NotContain(LogText.TruncationMarker);
-        body.Should().StartWith(" [\\u005Ctruncated]");
+        body.Should().StartWith(" \\u005Btruncated]");
+    }
+
+    [Fact]
+    public void APlainMarkerAndOneWithABackslash_StayDistinct()
+    {
+        // Escaping the bracket, not rewriting the marker first, keeps these two inputs apart.
+        string plain = LogText.Sanitize("abc [truncated]");
+        string withBackslash = LogText.Sanitize("abc [\\truncated]");
+
+        plain.Should().Be("abc \\u005Btruncated]");
+        withBackslash.Should().Be("abc \\u005B\\u005Ctruncated]");
+        plain.Should().NotBe(withBackslash);
+    }
+
+    [Fact]
+    public void ACallerSuppliedMarkerAtTheCapBoundary_IsNotTheCap()
+    {
+        // The marker fills the last places under the cap. Escaping the bracket grows it past the cut,
+        // and what is kept must not still read as the suffix Cap appends.
+        string marker = LogText.TruncationMarker;
+        int lead = LogText.MaxSanitizedLength - marker.Length;
+        string input = new string('a', lead) + marker;
+
+        string result = LogText.Sanitize(input);
+        string body = result[..^marker.Length];
+
+        result.Should().EndWith(marker);
+        body.Should().Be(new string('a', lead) + " \\u005Btrunc");
+        body.Should().NotContain(marker);
+        body.Should().NotContain("[");
     }
 }

@@ -1137,17 +1137,23 @@ checked first, so a blank or over-long key while trading is disabled is `trading
 taken after that check.
 
 **`retrySafety` is the retry signal.** `SafeToRetry` is a refusal, a preview, a venue rejection, or a fault
-the gate classified as before the send (`GateRefusedBeforeSendException` only). `NotSafeToRetry` is a broker
+the gate classified as before the send (`PreSendFaultException` only). `NotSafeToRetry` is a broker
 acknowledgment (`status: Live`). `OutcomeUnknown` is returned when the send may have happened: a throw from
 the send, including a timeout during the send, an audit write that fails after an ack, a daily-cap unlock
 or a telemetry listener that fails after the send has started, or a broker success that carried no order id.
-The tool catch-all is defensive. Any other exception that reaches the tool is `OutcomeUnknown`, with refusal
-code `error`, and is never `SafeToRetry`. The gate is registered scoped and serves one order operation per
-instance; a second operation on that instance throws before any vendor call. The unlock and the telemetry dispose catch their own failures, log one constant line, and
-count them; they do not throw, and they do not by themselves choose `SafeToRetry`. `Live` is only a broker
-acknowledgment.
+The tool catch-all is defensive. Any other exception that reaches the tool is `OutcomeUnknown`, the refusal
+is omitted, and `resultCode` is `-1` (`UnclassifiedFaultResultCode`). That code is not a venue error and is
+never `SafeToRetry`. A structured `OutcomeUnknown` from the gate omits both the refusal and the result code.
+The gate is registered scoped and serves one order operation per instance; the send-started flags are
+per call, and a second operation on that instance throws before any vendor call. A throw before the gate's
+telemetry try can report a false `OutcomeUnknown` when the vendor was not called. That report is
+conservative: reconcile, do not send again. The unlock and the telemetry dispose catch their own failures, log one constant line, and
+count them. The disposal itself does not throw. After the send, the gate raises a failed unlock into the
+post-send handler, which returns structured `OutcomeUnknown` and does not mark the call safe to retry.
+`Live` is only a broker acknowledgment.
 `refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
-for them — they are fields, so the test is key presence.
+for them — they are fields, so the test is key presence. The unclassified catch-all is the exception:
+it omits the refusal and sets `resultCode` to `-1`.
 
 **Validation runs before any audit row.** `size` must be greater than 0 (`size_not_positive`). A limit needs
 a positive `limitPrice`, a stop needs a positive `stopPrice`, a stop-limit needs both, and a trailing stop

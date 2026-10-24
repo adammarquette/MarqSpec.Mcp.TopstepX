@@ -204,8 +204,12 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    trading off without a process restart. The same monitor is what a reload of `Trading__KillSwitch`,
    `Trading__KillSwitchFile`, `Trading__DeniedSymbols`, `Trading__AllowedAccountIds`,
    `Trading__MaxContractsPerOrder` and `Trading__MaxContractsPerDay` is read through. A reload that fails
-   validation throws from the options monitor rather than publishing the invalid document, and the next
-   check refuses with `trading_configuration_invalid`. The last good values are not kept. A disable
+   validation throws out of `Configuration.Reload()` itself: the options factory runs inside the change
+   notification and raises `OptionsValidationException`, which `Reload()` surfaces as `AggregateException`.
+   That throw is not swallowed, so the kill-switch `OnChange` callback does not finish and the file watcher
+   is not retargeted on that reload; the previous watcher stays. The cached options are dropped. The last
+   good values are not kept. The next gate check refuses with `trading_configuration_invalid`, and the kill
+   switch treats the validation failure as engaged. A disable
    that lands before the idempotency claim writes no audit
    row. A disable that lands after the claim
    records the refusal and does not send. The kill switch blocks cancel and close on that same path.
@@ -215,7 +219,9 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
 2. **Kill switch** — env, file, or `Trading__KillSwitch` in configuration. The environment variable and the
    file are read on every check. The configured flag and the file path come from
    `IOptionsMonitor<TradingExecutionOptions>.CurrentValue`, so a reload changes them without a restart and
-   retargets the watcher when the path changes. A reload that fails validation engages the switch. Checked
+   retargets the watcher when the path changes. An invalid reload throws out of `Reload()` before that
+   retarget runs, so the watcher stays on the previous path, and the switch engages on the next check.
+   Checked
    on every call, including cancel and close. Same pending decision as the master-enable bullet.
 3. **Practice-only stage gate (hard, v1)** — fresh account fetch + `ResolveStage` as §2; **cannot be overridden
    by config** in v1.
@@ -277,12 +283,21 @@ An order is **not treated as live** until the **broker acknowledgment** arrives.
 - **Live transmit** calls the gateway; the MCP outcome is **`Live` only after** the broker acknowledgment.
   A request sent but not acked, a timeout, or `success: false` is **not** live. The pre-send audit row is
   `Unknown` **before** the send, so a throw during the send, or an audit write that fails after an ack,
-  returns a structured `OutcomeUnknown` and does not rethrow. A failure before the send — a venue read, an
+  returns a structured `OutcomeUnknown` and does not rethrow. A daily-cap release that fails after the send is
+  counted, then raised into that same post-send handler, which returns structured `OutcomeUnknown` and does
+  not mark the call safe to retry. A failure before the send — a venue read, an
   HTTP fault, or a store fault that happens before the gateway is called — is a retryable `error` with no
   side effects, not `OutcomeUnknown`. The risk gate is registered scoped and serves one order operation
-  per instance. A second operation on that instance throws before any vendor call: the send-started state
-  is instance state, and reusing it could report a live send as safe to retry. The tool catch-all is
-  defensive and maps any other exception to `OutcomeUnknown`, never `SafeToRetry`. A replay of a bare Unknown claim returns that `Unknown` unless a later
+  per instance. The send-started and lease-release flags travel on a per-call object through the send,
+  not on the instance. A second operation on that instance throws before any vendor call, so those flags
+  cannot be cleared and a live send reported as safe to retry. Only `PreSendFaultException` is
+  `SafeToRetry`. The tool catch-all is defensive: any other exception is `OutcomeUnknown`, the refusal is
+  omitted, and `resultCode` is `-1` (`UnclassifiedFaultResultCode`), which is not a venue code and is not
+  a retry. A structured `OutcomeUnknown` from the gate has neither a refusal nor a result code.
+  **Known conservative case:** a throw before the gate's telemetry try — constructing the span, or the
+  one-shot guard — is outside the classification that wraps a pre-send fault as `PreSendFaultException`.
+  The tool then reports `OutcomeUnknown` even though the vendor was not called. That can be a false
+  unknown. It is the conservative report: the caller reconciles instead of sending again. A replay of a bare Unknown claim returns that `Unknown` unless a later
   `Live`, `Failed`, or `Refused` row exists, and it is never rewritten as `Live`.
   **Why an unacknowledged result is stored:** the earlier rule was "do not cache an unacked result as
   success." Caching it as `Unknown` is the opposite of caching it as success. The row exists so a crash

@@ -19,12 +19,14 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// send so a throw or a lost acknowledgment cannot be retried into a second send. A refusal recorded after
 /// that claim is what a replay returns. <see cref="TradingAttemptOutcome.Unknown"/> is returned only when
 /// the send may already have happened. Once the send has started, a later throw — including a daily-cap
-/// unlock or a telemetry listener — is <see cref="TradingAttemptOutcome.Unknown"/>, never a retry. Only
-/// <see cref="GateRefusedBeforeSendException"/> leaves this type for a fault from before the send.
+/// unlock raised from cleanup, or a telemetry listener — is <see cref="TradingAttemptOutcome.Unknown"/>,
+/// never a retry. Only
+/// <see cref="PreSendFaultException"/> leaves this type for a fault from before the send.
 /// One instance serves one order operation. The type is registered scoped so each request gets a
-/// fresh gate. <see cref="_sendStarted"/> and <see cref="_leaseReleaseFailed"/> are instance state;
-/// a second operation would clear them and could report a live send as safe to retry, so it throws
-/// <see cref="InvalidOperationException"/> before any vendor call.
+/// fresh gate. The send-started and lease-release flags live on a per-call <see cref="SendAttempt"/>
+/// passed into <see cref="SendAndFinalizeAsync"/>, not on the instance. A second operation throws
+/// <see cref="InvalidOperationException"/> before any vendor call, so a shared instance cannot clear
+/// those flags and report a live send as safe to retry.
 /// </remarks>
 public sealed class TradingRiskGate
 {
@@ -39,18 +41,37 @@ public sealed class TradingRiskGate
     private readonly TradingWriteVenueAccountCache _accountCache;
     private readonly HostTelemetry _telemetry;
 
-    /// <summary>Set immediately before the vendor send. Cleared at the start of the one operation.</summary>
-    private bool _sendStarted;
-
-    /// <summary>Set when a test double's lock throws on dispose. The production lock does not throw.</summary>
-    private bool _leaseReleaseFailed;
-
     /// <summary>
-    /// One order operation per instance. Set at entry, before <see cref="_sendStarted"/> is cleared.
-    /// Those flags are only safe because the gate is registered scoped and each request builds a new
-    /// instance. A second operation on this instance throws rather than reuse them.
+    /// One order operation per instance. Set at entry, before the per-call <see cref="SendAttempt"/>
+    /// exists. The gate is registered scoped and each request builds a new instance. A second operation
+    /// on this instance throws rather than reuse the send-started state.
     /// </summary>
     private bool _operationStarted;
+
+    /// <summary>
+    /// Cleanup fault planted by a test and copied onto the per-call attempt. Production leaves this null.
+    /// Cancel and close take no daily-cap lease, so this is how those operations raise a post-send cleanup
+    /// fault into the handler that must not report a retry.
+    /// </summary>
+    internal Exception? CleanupFaultForTest { get; set; }
+
+    /// <summary>
+    /// Send-started and lease-release state for one order operation. Passed through
+    /// <see cref="SendAndFinalizeAsync"/> so it cannot survive onto the next call.
+    /// </summary>
+    private sealed class SendAttempt
+    {
+        public bool SendStarted { get; set; }
+
+        public bool LeaseReleaseFailed { get; set; }
+
+        /// <summary>
+        /// Raised after the send, inside the telemetry try, when cleanup failed. The daily-cap release
+        /// sets it from the dispose exception. A null value with <see cref="ITradingDailyCapCoordinator.LastReleaseFailed"/>
+        /// becomes an <see cref="InvalidOperationException"/> at that same site.
+        /// </summary>
+        public Exception? CleanupFault { get; set; }
+    }
 
     /// <summary>Creates the risk gate.</summary>
     public TradingRiskGate(
@@ -84,7 +105,7 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.PlaceOrderOperation,
-            () => RunPlaceAsync(command, context, cancellationToken));
+            attempt => RunPlaceAsync(command, context, attempt, cancellationToken));
 
     /// <summary>Modifies an order when every gate layer permits.</summary>
     public Task<TradingRiskGateResult> SubmitModify(
@@ -93,7 +114,7 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.ModifyOrderOperation,
-            () => RunModifyAsync(command, context, cancellationToken));
+            attempt => RunModifyAsync(command, context, attempt, cancellationToken));
 
     /// <summary>Cancels an order when every gate layer permits.</summary>
     public Task<TradingRiskGateResult> SubmitCancel(
@@ -102,7 +123,7 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.CancelOrderOperation,
-            () => RunCancelAsync(command, context, cancellationToken));
+            attempt => RunCancelAsync(command, context, attempt, cancellationToken));
 
     /// <summary>Flattens a position when every gate layer permits.</summary>
     public Task<TradingRiskGateResult> SubmitClose(
@@ -111,7 +132,7 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.ClosePositionOperation,
-            () => RunCloseAsync(command, context, cancellationToken));
+            attempt => RunCloseAsync(command, context, attempt, cancellationToken));
 
     /// <summary>Partially closes a position when every gate layer permits.</summary>
     public Task<TradingRiskGateResult> SubmitPartialClose(
@@ -120,11 +141,11 @@ public sealed class TradingRiskGate
         CancellationToken cancellationToken) =>
         RunWithTelemetry(
             ExecutionOperation.PartialClosePositionOperation,
-            () => RunPartialCloseAsync(command, context, cancellationToken));
+            attempt => RunPartialCloseAsync(command, context, attempt, cancellationToken));
 
     private async Task<TradingRiskGateResult> RunWithTelemetry(
         string operation,
-        Func<Task<TradingRiskGateResult>> body)
+        Func<SendAttempt, Task<TradingRiskGateResult>> body)
     {
         if (_operationStarted)
         {
@@ -133,16 +154,27 @@ public sealed class TradingRiskGate
         }
 
         _operationStarted = true;
+        SendAttempt attempt = new() { CleanupFault = CleanupFaultForTest };
         _accountCache.Clear();
-        _sendStarted = false;
-        _leaseReleaseFailed = false;
         HostTelemetry.ExecutionWriteScope write = _telemetry.ExecutionWrite(operation);
         TradingRiskGateResult result;
         try
         {
             try
             {
-                result = await body().ConfigureAwait(false);
+                result = await body(attempt).ConfigureAwait(false);
+                if (attempt.SendStarted && _dailyCap.LastReleaseFailed && attempt.CleanupFault is null)
+                {
+                    attempt.CleanupFault = new InvalidOperationException("Trading bookkeeping failed.");
+                }
+
+                if (attempt.SendStarted && attempt.CleanupFault is not null)
+                {
+                    // Cleanup runs after the send. Raising it here is what the post-send handler classifies.
+                    // Returning a result instead would never enter that handler.
+                    throw attempt.CleanupFault;
+                }
+
                 if (result.IsReplay)
                 {
                     write.MarkReplay();
@@ -150,27 +182,28 @@ public sealed class TradingRiskGate
 
                 write.Outcome(ExecutionWriteRefusalForResult.For(result));
             }
-            catch (VenueException exception) when (!_sendStarted)
+            catch (VenueException exception) when (!attempt.SendStarted)
             {
                 // Named so the venue-failure walk sees a translation on this route. Before the send it is
                 // the same retryable fault as any other pre-send exception.
                 write.Outcome(ExecutionWriteRefusal.Error);
-                throw new GateRefusedBeforeSendException(exception);
+                throw new PreSendFaultException(exception);
             }
             catch (VenueException)
             {
+                // The send has started. Do not wrap this as PreSendFaultException: that type is SafeToRetry.
                 write.Outcome(ExecutionWriteRefusal.OutcomeUnknown);
                 result = UnknownTransmit(AccountStage.Unknown);
             }
-            catch (Exception exception) when (!_sendStarted)
+            catch (Exception exception) when (!attempt.SendStarted)
             {
                 write.Outcome(ExecutionWriteRefusal.Error);
-                throw new GateRefusedBeforeSendException(exception);
+                throw new PreSendFaultException(exception);
             }
             catch (Exception)
             {
-                // The send has started. Do not rethrow: the tool would otherwise have to guess, and a guess
-                // of SafeToRetry places a second live order.
+                // The send has started. Do not rethrow, and do not wrap as PreSendFaultException.
+                // SafeToRetry would place a second live order.
                 write.Outcome(ExecutionWriteRefusal.OutcomeUnknown);
                 result = UnknownTransmit(AccountStage.Unknown);
             }
@@ -181,7 +214,7 @@ public sealed class TradingRiskGate
             _accountCache.Clear();
         }
 
-        if (_sendStarted && write.BookkeepingFailed)
+        if (attempt.SendStarted && write.BookkeepingFailed)
         {
             return UnknownTransmit(result.ParsedStage);
         }
@@ -192,6 +225,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunPlaceAsync(
         ExecutionPlaceOrderCommand command,
         TradingRiskAttemptContext context,
+        SendAttempt attempt,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -271,7 +305,7 @@ public sealed class TradingRiskGate
 
         return await WithDailyCapAsync(
             command.AccountId,
-            stage,
+            attempt,
             async () =>
             {
                 if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken)
@@ -301,6 +335,7 @@ public sealed class TradingRiskGate
                     stage,
                     audit,
                     capChargeSize: command.Size,
+                    attempt,
                     ct => _gateway.PlaceOrder(command, ct),
                     cancellationToken).ConfigureAwait(false);
             },
@@ -310,6 +345,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunModifyAsync(
         ExecutionModifyOrderCommand command,
         TradingRiskAttemptContext context,
+        SendAttempt attempt,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -399,7 +435,7 @@ public sealed class TradingRiskGate
 
         return await WithDailyCapAsync(
             command.AccountId,
-            stage,
+            attempt,
             async () =>
             {
                 if (modifySize is int dailySize
@@ -436,6 +472,7 @@ public sealed class TradingRiskGate
                     stage,
                     audit,
                     capChargeSize: capCharge,
+                    attempt,
                     ct => _gateway.ModifyOrder(command, ct),
                     cancellationToken).ConfigureAwait(false);
             },
@@ -445,6 +482,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunCancelAsync(
         ExecutionCancelOrderCommand command,
         TradingRiskAttemptContext context,
+        SendAttempt attempt,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -509,6 +547,7 @@ public sealed class TradingRiskGate
             command.AccountId,
             stage,
             audit,
+            attempt,
             ct => _gateway.CancelOrder(command, ct),
             cancellationToken).ConfigureAwait(false);
     }
@@ -516,6 +555,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunCloseAsync(
         ExecutionClosePositionCommand command,
         TradingRiskAttemptContext context,
+        SendAttempt attempt,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -591,6 +631,7 @@ public sealed class TradingRiskGate
             command.AccountId,
             stage,
             audit,
+            attempt,
             ct => _gateway.ClosePosition(command, ct),
             cancellationToken).ConfigureAwait(false);
     }
@@ -598,6 +639,7 @@ public sealed class TradingRiskGate
     private async Task<TradingRiskGateResult> RunPartialCloseAsync(
         ExecutionPartialClosePositionCommand command,
         TradingRiskAttemptContext context,
+        SendAttempt attempt,
         CancellationToken cancellationToken)
     {
         AuditEnvelope audit = Envelope(
@@ -699,7 +741,7 @@ public sealed class TradingRiskGate
 
         return await WithDailyCapAsync(
             command.AccountId,
-            stage,
+            attempt,
             async () =>
             {
                 if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken)
@@ -729,6 +771,7 @@ public sealed class TradingRiskGate
                     stage,
                     audit,
                     capChargeSize: command.Size,
+                    attempt,
                     ct => _gateway.PartialClosePosition(command, ct),
                     cancellationToken).ConfigureAwait(false);
             },
@@ -837,6 +880,7 @@ public sealed class TradingRiskGate
         AccountStage stage,
         AuditEnvelope audit,
         int capChargeSize,
+        SendAttempt attempt,
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
         CancellationToken cancellationToken)
     {
@@ -899,6 +943,7 @@ public sealed class TradingRiskGate
             stage,
             audit,
             capChargeSize,
+            attempt,
             send,
             cancellationToken).ConfigureAwait(false);
     }
@@ -907,6 +952,7 @@ public sealed class TradingRiskGate
         int accountId,
         AccountStage stage,
         AuditEnvelope audit,
+        SendAttempt attempt,
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
         CancellationToken cancellationToken)
     {
@@ -968,6 +1014,7 @@ public sealed class TradingRiskGate
             stage,
             audit,
             capChargeApplied: 0,
+            attempt,
             send,
             cancellationToken).ConfigureAwait(false);
     }
@@ -987,6 +1034,7 @@ public sealed class TradingRiskGate
         AccountStage stage,
         AuditEnvelope audit,
         int capChargeApplied,
+        SendAttempt attempt,
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
         CancellationToken cancellationToken)
     {
@@ -1024,7 +1072,7 @@ public sealed class TradingRiskGate
         ExecutionWriteResult write;
         try
         {
-            _sendStarted = true;
+            attempt.SendStarted = true;
             write = await send(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception)
@@ -1456,13 +1504,14 @@ public sealed class TradingRiskGate
     }
 
     /// <summary>
-    /// Holds the daily-cap lock around <paramref name="body"/>. A release failure after the send has started
-    /// becomes <see cref="TradingAttemptOutcome.Unknown"/>. A release failure before the send leaves the
-    /// body's result alone. The release itself does not throw.
+    /// Holds the daily-cap lock around <paramref name="body"/>. A release failure is counted here and stored
+    /// on the attempt. After the send, <see cref="RunWithTelemetry"/> raises that fault into the post-send
+    /// handler. A release failure before the send leaves the body's result alone. The release itself does
+    /// not throw.
     /// </summary>
     private async Task<TradingRiskGateResult> WithDailyCapAsync(
         int accountId,
-        AccountStage stage,
+        SendAttempt attempt,
         Func<Task<TradingRiskGateResult>> body,
         CancellationToken cancellationToken)
     {
@@ -1476,28 +1525,24 @@ public sealed class TradingRiskGate
         }
         finally
         {
-            await ReleaseDailyCapLeaseAsync(lease).ConfigureAwait(false);
-        }
-
-        if (_sendStarted && (_leaseReleaseFailed || _dailyCap.LastReleaseFailed))
-        {
-            return UnknownTransmit(stage);
+            await ReleaseDailyCapLeaseAsync(attempt, lease).ConfigureAwait(false);
         }
 
         return result;
     }
 
-    private async ValueTask ReleaseDailyCapLeaseAsync(IAsyncDisposable lease)
+    private async ValueTask ReleaseDailyCapLeaseAsync(SendAttempt attempt, IAsyncDisposable lease)
     {
         try
         {
             await lease.DisposeAsync().ConfigureAwait(false);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            // A double whose dispose throws is the probe. The production lock catches the same failure
-            // itself. Either way the exception stops here and cannot become SafeToRetry.
-            _leaseReleaseFailed = true;
+            // Counted here. RunWithTelemetry raises CleanupFault after the send so the post-send handler
+            // returns OutcomeUnknown. Returning a result from this catch would never enter that handler.
+            attempt.LeaseReleaseFailed = true;
+            attempt.CleanupFault = exception;
             _telemetry.RecordBookkeepingFault();
         }
     }

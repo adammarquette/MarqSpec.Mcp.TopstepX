@@ -25,9 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns structured `OutcomeUnknown` and does not rethrow. Only a fault the gate classified as before the
   send is a retryable error. Anything thrown after the send has started, including a daily-cap unlock or a
   telemetry listener, is `OutcomeUnknown`. Those two disposals catch, log a constant line and count the
-  failure, and they do not throw. The gate is scoped and serves one order operation per instance; a second
-  operation throws before any vendor call. The tool catch-all is defensive and maps any other exception to
-  `OutcomeUnknown`. A replay ignores a `Refused`
+  failure. The disposal itself does not throw. After the send, the gate raises a failed unlock into the
+  post-send handler, which returns structured `OutcomeUnknown`. The gate is scoped. Send-started state is per call, and a second
+  operation on the same instance throws before any vendor call. Only `PreSendFaultException` is retryable.
+  The tool catch-all is defensive: any other exception is `OutcomeUnknown` with no refusal and result code
+  `-1`. A replay ignores a `Refused`
   row written before the claim, and a later refusal with a different request hash. A refusal recorded after
   the claim with the same hash is replayed as that refusal. The master switch is read through
   `IOptionsMonitor`, so turning trading off, the kill switch, the denylist, the allowlist and the contract

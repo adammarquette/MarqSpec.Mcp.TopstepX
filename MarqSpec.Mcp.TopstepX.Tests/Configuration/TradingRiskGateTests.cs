@@ -968,6 +968,8 @@ public sealed class TradingRiskGateTests
 
         public bool LockHeldDuringLastCapSend { get; set; }
 
+        public bool LastReleaseFailed => false;
+
         public Task<IAsyncDisposable> AcquireAccountDayLockAsync(int accountId, CancellationToken cancellationToken)
         {
             LockAcquisitions++;

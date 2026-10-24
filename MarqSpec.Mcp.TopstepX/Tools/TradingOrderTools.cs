@@ -16,9 +16,10 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// composition root registers this type only when trading is enabled, so a disabled server does not list
 /// the tools. Each method still refuses when trading is disabled, which is the second layer if a call
 /// arrives anyway. The kill switch blocks cancel and close on the same path. There is no carve-out.
-/// Only <see cref="GateRefusedBeforeSendException"/> is a retryable error. The catch-all below that is
+/// Only <see cref="PreSendFaultException"/> is a retryable error. The catch-all below that is
 /// defensive: it maps any other exception to <see cref="TradingAttemptOutcome.Unknown"/> with
-/// <see cref="ToolPayloads.TradingRetrySafety.OutcomeUnknown"/>, never a retry.
+/// <see cref="ToolPayloads.TradingRetrySafety.OutcomeUnknown"/>, a null refusal, and
+/// <see cref="ToolPayloads.UnclassifiedFaultResultCode"/>. Never a retry.
 /// </remarks>
 public sealed class TradingOrderTools(TradingRiskGate gate)
 {
@@ -237,7 +238,7 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
     /// <summary>
     /// Maps a gate task onto the tool payload. Internal so a test can pass an exception the public
     /// methods do not raise. The public methods reach the catch-all only when the gate throws something
-    /// other than <see cref="GateRefusedBeforeSendException"/>.
+    /// other than <see cref="PreSendFaultException"/>.
     /// </summary>
     internal static async Task<ToolPayloads.TradingWriteResult> RunAsync(Task<TradingRiskGateResult> attempt)
     {
@@ -246,7 +247,7 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
             TradingRiskGateResult result = await attempt.ConfigureAwait(false);
             return ToolPayloads.FromGate(result);
         }
-        catch (GateRefusedBeforeSendException)
+        catch (PreSendFaultException)
         {
             // The gate raises this only when the send has not started. The venue was not touched by this
             // failure, so the caller may retry.
@@ -254,8 +255,9 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
         }
         catch (Exception)
         {
-            // Defensive. Anything that is not GateRefusedBeforeSendException maps to OutcomeUnknown,
-            // never SafeToRetry. A Live row may already exist, and a fresh key must not place another.
+            // Defensive. Anything that is not PreSendFaultException maps to OutcomeUnknown, never
+            // SafeToRetry. The refusal is omitted. ResultCode is UnclassifiedFaultResultCode, not a
+            // venue code and not the refusal word "error", which a caller can misread as a retry.
             return UnclassifiedFault();
         }
     }
@@ -275,15 +277,16 @@ public sealed class TradingOrderTools(TradingRiskGate gate)
 
     /// <summary>
     /// Defensive fallback. Not retryable: <see cref="ToolPayloads.TradingRetrySafety.OutcomeUnknown"/>.
-    /// The refusal code is <see cref="ExecutionWriteRefusal.Error"/> so this fallback cannot be mistaken
-    /// for the structured <c>OutcomeUnknown</c> the gate returns, which carries no refusal code.
+    /// The refusal is omitted. <see cref="ToolPayloads.UnclassifiedFaultResultCode"/> marks this path so
+    /// it cannot be mistaken for the structured <c>OutcomeUnknown</c> the gate returns, which has no
+    /// result code, and so a refusal word is not sitting next to an unknown outcome.
     /// </summary>
     private static ToolPayloads.TradingWriteResult UnclassifiedFault() =>
         new(
             nameof(TradingAttemptOutcome.Unknown),
             ToolPayloads.TradingRetrySafety.OutcomeUnknown,
             AccountStage.Unknown,
-            ExecutionWriteRefusal.Error,
-            ResultCode: null,
+            RefusalCode: null,
+            ToolPayloads.UnclassifiedFaultResultCode,
             OrderId: null);
 }

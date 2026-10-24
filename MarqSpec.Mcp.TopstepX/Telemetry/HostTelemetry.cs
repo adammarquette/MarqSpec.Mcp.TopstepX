@@ -233,15 +233,16 @@ public sealed class HostTelemetry : IDisposable
     }
 
     /// <summary>
-    /// Counts one bookkeeping failure and logs a constant line. Never throws: a listener on this counter
-    /// must not replace the trading outcome.
+    /// Counts one bookkeeping failure, then logs a constant line. The counter is incremented first so a
+    /// throwing logger still leaves the measurement. Never throws: a listener on this counter must not
+    /// replace the trading outcome.
     /// </summary>
     public void RecordBookkeepingFault()
     {
         try
         {
-            _logger?.LogError(BookkeepingFaultMessage);
             _bookkeepingFaults.Add(1);
+            _logger?.LogError(BookkeepingFaultMessage);
         }
         catch (Exception)
         {

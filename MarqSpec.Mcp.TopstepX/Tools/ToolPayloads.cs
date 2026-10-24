@@ -799,6 +799,12 @@ public static class ToolPayloads
         OutcomeUnknown,
     }
 
+    /// <summary>
+    /// Result code when the tool catch-all could not classify an exception. Not a venue code. The refusal
+    /// is omitted and <see cref="TradingRetrySafety.OutcomeUnknown"/> is the retry signal. Do not retry.
+    /// </summary>
+    public const int UnclassifiedFaultResultCode = -1;
+
     /// <summary>One gated order-tool result. Numeric fields and closed names only (ADR-0008, ADR-0024).</summary>
     /// <param name="Status">Preview, Refused, Live, Failed, or Unknown. Live is only a broker acknowledgment.</param>
     /// <param name="RetrySafety">Whether another send of this command is safe.</param>
@@ -807,7 +813,9 @@ public static class ToolPayloads
     /// The gate refusal code when <paramref name="Status"/> is Refused. Omitted from the wire otherwise.
     /// </param>
     /// <param name="ResultCode">
-    /// The venue business error code when a write returned one. Omitted when the venue returned none.
+    /// The venue business error code when a write returned one, or
+    /// <see cref="UnclassifiedFaultResultCode"/> when the tool catch-all handled an exception it could
+    /// not classify. Omitted when neither applies.
     /// </param>
     /// <param name="OrderId">
     /// The broker-assigned order id after an acknowledged place. Omitted when the venue assigned none.

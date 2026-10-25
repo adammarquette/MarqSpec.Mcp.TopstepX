@@ -210,17 +210,20 @@ tracker and drifts from it.
 
 ### AI-assisted commits
 
-If an AI tool helped write a commit, end the message with a trailer naming the model and version you used:
+If an AI tool helped write a commit, end the message with a trailer in the form `<model>:<version>`:
 
 ```
 Assisted-by: grok-bot:<agent-name>
 ```
 
-- The value is `<model>:<version>`, with no spaces. Grok Bot agents sign `grok-bot:<agent-name>` in lowercase kebab-case, e.g. `grok-bot:sgt-squash`. The check rejects the literal `example-model:1.2.3`.
+- The value is `<model>:<version>`, with no spaces. Grok Bot agents sign `grok-bot:<agent-name>` in lowercase
+  kebab-case, e.g. `grok-bot:sgt-squash`. The check rejects the literal `example-model:1.2.3`.
 - `Co-Authored-By` is no longer required. Add one only for a human co-author.
-- Put trailers in the last paragraph of the message, with no blank lines between them and nothing after them. If another paragraph follows, git doesn't read them as trailers and the check skips them without warning.
+- Put trailers in the last paragraph of the message, with no blank lines between them and nothing after them.
+  If another paragraph follows, git doesn't read them as trailers and the check skips them without warning.
 
-**Enforcement.** The commit-hygiene job runs `scripts/check-commit-trailers.sh` on every PR. It only checks commits that carry an `Assisted-by:` trailer, and it picks the rule by author date:
+**Enforcement.** The commit-hygiene job runs `scripts/check-commit-trailers.sh` on every PR. It only checks
+commits that carry an `Assisted-by:` trailer, and it picks the rule by author date:
 
 | Author date | Rule |
 | --- | --- |
@@ -228,7 +231,8 @@ Assisted-by: grok-bot:<agent-name>
 | From then until `2026-10-25T12:36:00-05:00` | Interim rule: `Assisted-by: <Model Name> (<tool>)` and at least one `Co-Authored-By: <Name> <email>`. |
 | From `2026-10-25T12:36:00-05:00` on | `Assisted-by:` must match `<model>:<version>`. `Co-Authored-By` isn't required. |
 
-Merged history stays as it is. To fix a failing commit on an open PR, you have to reword it and force-push, and that needs Adam's approval first.
+Merged history stays as it is. To fix a failing commit on an open PR, you have to reword it and force-push,
+and that needs Adam's approval first.
 
 ## Pull requests
 

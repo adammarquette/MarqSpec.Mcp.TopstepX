@@ -145,10 +145,8 @@ verdict; it is still the same kickback.
 Any unresolved finding wins. `Ready to Merge` requires every reviewer approving
 ([board case 5](../project-board-workflow.md#5-two-reviewers-split-verdict)).
 
-**`BLOCKED` at `Ready to Merge` is the expected end, not a fault.** `develop` carries
-`require_extra_approval_for_unattributed_changes`, and it fires on AI-assisted commits, which the
-[root contract](../../AGENTS.md) marks with an `Assisted-by: <model>:<version>` trailer (`Co-Authored-By`
-isn't required). So a PR that is approved, green on every
+**`BLOCKED` at `Ready to Merge` is the expected end, not a fault.** `develop`'s ruleset sets
+`require_extra_approval_for_unattributed_changes`, and in practice a PR that is approved, green on every
 required check, unconflicted and up to date still reads:
 
 ```

@@ -181,7 +181,21 @@ public sealed class OrderToolSpecQaTests
         ToolPayloads.TradingWriteResult result = await Call(Tools(telemetry, On()), op, "short", size: 2);
 
         result.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        result.OrderId.Should().NotBeNull();
         _gateway.Total.Should().Be(1);
+        if (op == TradingMcpTools.PartialClosePositionOperation)
+        {
+            _gateway.LastPartialClose.Should().Be(
+                new ExecutionPartialClosePositionCommand(Practice, Mes, 2),
+                "a partial close of a short sends the requested size against the absolute position, not a signed one");
+            _gateway.LastClose.Should().BeNull();
+        }
+        else
+        {
+            // The close command carries no side or size; the venue flattens whatever is open.
+            _gateway.LastClose.Should().Be(new ExecutionClosePositionCommand(Practice, Mes));
+            _gateway.LastPartialClose.Should().BeNull();
+        }
     }
 
     // ---------------- ADR-0024 s5.5: caps and denylist, exact codes ----------------
@@ -225,17 +239,27 @@ public sealed class OrderToolSpecQaTests
         _gateway.HoldPlace = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using HostTelemetry telemetry = new();
 
+        TimeSpan bound = TimeSpan.FromSeconds(10);
         Task<ToolPayloads.TradingWriteResult> first =
             Call(Tools(telemetry, On()), TradingMcpTools.PlaceOrderOperation, "race");
-        await _gateway.PlaceEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        ToolPayloads.TradingWriteResult[] inFlight;
+        try
+        {
+            await _gateway.PlaceEntered.Task.WaitAsync(bound);
 
-        ToolPayloads.TradingWriteResult[] inFlight = await Task.WhenAll(Enumerable.Range(0, 7)
-            .Select(_ => Call(Tools(telemetry, On()), TradingMcpTools.PlaceOrderOperation, "race")));
-        _gateway.Place.Should().Be(1, "the duplicates must not send while the first send is unanswered");
-        _audit.Snapshot().Where(r => r.Outcome == TradingAuditOutcomes.Unknown).Should().ContainSingle();
+            // Bounded so a broken claim guard fails here instead of hanging behind the held send.
+            inFlight = await Task.WhenAll(Enumerable.Range(0, 7)
+                .Select(_ => Call(Tools(telemetry, On()), TradingMcpTools.PlaceOrderOperation, "race")))
+                .WaitAsync(bound);
+            _gateway.Place.Should().Be(1, "the duplicates must not send while the first send is unanswered");
+            _audit.Snapshot().Where(r => r.Outcome == TradingAuditOutcomes.Unknown).Should().ContainSingle();
+        }
+        finally
+        {
+            _gateway.HoldPlace.TrySetResult();
+        }
 
-        _gateway.HoldPlace.SetResult();
-        ToolPayloads.TradingWriteResult winner = await first;
+        ToolPayloads.TradingWriteResult winner = await first.WaitAsync(bound);
         ToolPayloads.TradingWriteResult replay =
             await Call(Tools(telemetry, On()), TradingMcpTools.PlaceOrderOperation, "race");
 
@@ -304,6 +328,9 @@ public sealed class OrderToolSpecQaTests
         _gateway.Total.Should().Be(1);
         first.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
         first.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        // Current behaviour: the venue's id is passed through for reconciliation, though the status stays Unknown.
+        first.OrderId.Should().Be(4242);
+        _audit.Snapshot().Select(r => r.Outcome).Should().NotContain(TradingAuditOutcomes.Live);
     }
 
     // ---------------- Control: a lease fault with no send stays a plain refusal ----------------
@@ -323,14 +350,18 @@ public sealed class OrderToolSpecQaTests
         result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
         result.RefusalCode.Should().Be(ExecutionWriteRefusal.DailyContractLimitExceeded);
         result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        AssertOnlyARefusalRow(_audit.Snapshot(), ExecutionWriteRefusal.DailyContractLimitExceeded);
+        _daily.Acquisitions.Should().Be(1);
+        _daily.HeldNow.Should().Be(0, "the lease is released even when its dispose faults");
     }
 
     // ---------------- Spec gaps ----------------
-    [Fact(Skip = "SpecGap #770: whether the kill switch keeps blocking cancel_order and close_position is pending Adam (ADR-0024 s5.1-5.2).")]
-    public void TradingOrderTools_KillSwitch_CancelAndClose_PendingDecision()
+    [Fact(Skip = "SpecGap #770: #769 pins cancel_order and close_position as refused with kill_switch; whether ADR-0024 s5.1-5.2 intends that, or lets risk-reducing writes through, is Adam's call.")]
+    public void TradingOrderTools_KillSwitch_CancelAndClose_SpecUnconfirmed()
     {
-        // Once decided: engage the kill switch, call cancel_order and close_position, and assert the decided
-        // outcome (refused with kill_switch, or transmitted) plus the matching telemetry.
+        // If confirmed as refused: drop this skip, since TradingOrderToolGateTests already pins it. If changed to
+        // transmit: engage the kill switch, call cancel_order and close_position, and assert one send each plus
+        // the Live audit row and telemetry.
     }
 
     [Fact(Skip = "SpecGap #771: no venue-side client order id; customTag is not exposed (ADR-0008), so a lost ack plus a fresh key relies on OutcomeUnknown and reconcile only.")]
@@ -509,11 +540,23 @@ public sealed class OrderToolSpecQaTests
 
         public Task<ExecutionWriteResult> CancelOrder(ExecutionCancelOrderCommand command, CancellationToken cancellationToken) => Other();
 
-        public Task<ExecutionWriteResult> ClosePosition(ExecutionClosePositionCommand command, CancellationToken cancellationToken) => Other();
+        public ExecutionClosePositionCommand? LastClose { get; private set; }
+
+        public ExecutionPartialClosePositionCommand? LastPartialClose { get; private set; }
+
+        public Task<ExecutionWriteResult> ClosePosition(ExecutionClosePositionCommand command, CancellationToken cancellationToken)
+        {
+            LastClose = command;
+            return Other();
+        }
 
         public Task<ExecutionWriteResult> PartialClosePosition(
             ExecutionPartialClosePositionCommand command,
-            CancellationToken cancellationToken) => Other();
+            CancellationToken cancellationToken)
+        {
+            LastPartialClose = command;
+            return Other();
+        }
 
         private Task<ExecutionWriteResult> Other()
         {

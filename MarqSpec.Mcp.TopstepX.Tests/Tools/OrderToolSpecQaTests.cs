@@ -261,7 +261,7 @@ public sealed class OrderToolSpecQaTests
 
         ToolPayloads.TradingWriteResult winner = await first.WaitAsync(bound);
         ToolPayloads.TradingWriteResult replay =
-            await Call(Tools(telemetry, On()), TradingMcpTools.PlaceOrderOperation, "race");
+            await Call(Tools(telemetry, On()), TradingMcpTools.PlaceOrderOperation, "race").WaitAsync(bound);
 
         _gateway.Place.Should().Be(1);
         inFlight.Should().OnlyContain(r => r.Status == nameof(TradingAttemptOutcome.Unknown)

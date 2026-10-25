@@ -920,7 +920,7 @@ public sealed class TapeExportPass(
     }
 
     private static bool IsLockSessionFault(Exception exception) =>
-        exception is not OperationCanceledException;
+        exception is OperationCanceledException || exception is not OperationCanceledException;
 
     private void RecordUpload(
         string outcome,

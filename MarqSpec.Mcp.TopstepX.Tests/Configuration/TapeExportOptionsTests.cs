@@ -47,7 +47,22 @@ public sealed class TapeExportOptionsTests
         envExample.Should().NotContain("TapeExport__Retention");
         envExample.Should().NotContain("TapeExport__Prune");
         envExample.Should().NotContain("TapeExport__SafeAge");
-        envExample.Should().NotContain("Retention__");
+        // gh#758 lists proposed Retention__ names as comments. They are not read. A live key is still refused.
+        foreach (string line in envExample.Split('\n'))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.StartsWith('#'))
+            {
+                continue;
+            }
+
+            trimmed.Should().NotContain("Retention__");
+        }
+
+        envExample.Should().Contain("# Retention__Enabled=false");
+        envExample.Should().Contain("# Retention__RawTapeDays=30");
+        envExample.Should().Contain("# Retention__DailySummaryDays=0");
+        envExample.Should().Contain("# Retention__RequireExportBeforeDrop=true");
 
         compose.Should().Contain("${TapeExport__Enabled:-false}");
         compose.Should().Contain("${TapeExport__Schedule:-" + TapeExportOptions.DefaultSchedule + "}");

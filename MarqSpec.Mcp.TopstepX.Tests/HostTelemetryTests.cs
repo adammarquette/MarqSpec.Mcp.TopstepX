@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using FluentAssertions;
@@ -6,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
+using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.Tests;
 
@@ -737,6 +739,58 @@ public sealed class HostTelemetryTests
         }
     }
 
+    [Fact]
+    public void RecordBookkeepingFault_CountsEvenWhenTheLoggerThrows()
+    {
+        ThrowingLogger logger = new();
+        using HostTelemetry telemetry = new(logger);
+        using MetricCollector<long> faults = Collect(telemetry, HostTelemetry.BookkeepingFaultsInstrument);
+
+        telemetry.RecordBookkeepingFault();
+
+        faults.GetMeasurementSnapshot().Should().ContainSingle().Which.Value.Should().Be(1);
+        logger.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public void ABookkeepingFaultOnAnotherMeterWithTheSameNameIsIgnored()
+    {
+        using HostTelemetry watched = new();
+        using HostTelemetry other = new();
+        BookkeepingFaultCounter counter = new();
+        using MeterListener listener = counter.Listen(watched);
+
+        other.RecordBookkeepingFault();
+        counter.Value.Should().Be(0);
+
+        watched.RecordBookkeepingFault();
+        counter.Value.Should().Be(1);
+    }
+
+    [Fact]
+    public void ConcurrentBookkeepingFaultsSumExactly()
+    {
+        const int threads = 8;
+        const int perThread = 2_000;
+        using HostTelemetry telemetry = new();
+        BookkeepingFaultCounter counter = new();
+        using MeterListener listener = counter.Listen(telemetry);
+
+        Parallel.For(
+            0,
+            threads,
+            new ParallelOptions { MaxDegreeOfParallelism = threads },
+            _ =>
+            {
+                for (int i = 0; i < perThread; i++)
+                {
+                    telemetry.RecordBookkeepingFault();
+                }
+            });
+
+        counter.Value.Should().Be(threads * perThread);
+    }
+
     private static MetricCollector<long> Collect(HostTelemetry telemetry, string instrument) =>
         Collect<long>(telemetry, instrument);
 
@@ -771,5 +825,35 @@ public sealed class HostTelemetryTests
 
         ActivitySource.AddActivityListener(listener);
         return listener;
+    }
+
+    private sealed class ThrowingLogger : ILogger<HostTelemetry>
+    {
+        public int Calls { get; private set; }
+
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Calls++;
+            throw new InvalidOperationException("logger failed");
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose()
+            {
+            }
+        }
     }
 }

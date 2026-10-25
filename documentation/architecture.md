@@ -1143,7 +1143,7 @@ Export on Railway is deferred until gh#767 (the template, gh#774, keeps `[export
 set `RAILWAY_RUN_UID=0` or enable the export on Railway now. The start command in
 [deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755) is the shape gh#767 moves into
 the image: it refuses symlinks, `chown -h` only top-level entries that are not already uid 64198, and
-`exec runuser` drops to `mcp`. Without uid 0 that command exits and the container crash-loops. A
+`exec /usr/sbin/runuser` drops to `mcp`. Without uid 0 that command exits and the container crash-loops. A
 volume the application cannot write is still a skipped pass, not a crash and not a silent success.
 A key placed after start stays root-owned mode 0644 until the next start, or until it is chowned
 and chmodded at placement time. The committed compose file forwards the environment variables and

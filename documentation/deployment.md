@@ -270,7 +270,7 @@ find /data -maxdepth 1 \( -type d -o -type f \) ! -user 64198 -exec chown -h 641
 find /data -maxdepth 1 -name keys -type d -exec chmod 0700 {} +
 find /data/keys -maxdepth 1 -name drive-sa.json -type f ! -user 64198 -exec chown -h 64198:64198 {} +
 find /data/keys -maxdepth 1 -name drive-sa.json -type f -exec chmod 0400 {} +
-exec runuser -u mcp -- dotnet MarqSpec.Mcp.TopstepX.dll'
+exec /usr/sbin/runuser -u mcp -- dotnet MarqSpec.Mcp.TopstepX.dll'
 ```
 
 That command is also [`scripts/prepare-tape-volume.sh`](../scripts/prepare-tape-volume.sh), which takes the
@@ -284,7 +284,7 @@ A start command replaces the image entrypoint
 crash-loops. That is deliberate: falling through to `dotnet` would hide a volume that is still
 root-owned. The app's log-and-skip path never runs, because the process never reaches it.
 
-Only `mkdir`, `find`, `chown`, and `chmod` run as root. `exec runuser -u mcp` replaces that shell,
+Only `mkdir`, `find`, `chown`, and `chmod` run as root. `exec /usr/sbin/runuser -u mcp` replaces that shell,
 so no root process remains. `chown -R` of the whole volume is not used: it would include
 `lost+found` and grow with the export tree, and a root `chmod` that follows a symlink can change a
 path outside the volume. `find -type d` and `-type f` do not follow links. Every `chown` in the

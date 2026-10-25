@@ -255,6 +255,12 @@ commits that carry an `Assisted-by:` trailer, and it picks the rule by author da
 | From then until `2026-10-25T12:36:00-05:00` | Interim rule: `Assisted-by: <Model Name> (<tool>)` and at least one `Co-Authored-By: <Name> <email>`. |
 | From `2026-10-25T12:36:00-05:00` on | `Assisted-by:` must match `<model>:<version>`. `Co-Authored-By` isn't required. |
 
+**Gating scripts run from the base commit** (gh#827). `commit-hygiene` and `issue-link` run the base
+commit's copy of `scripts/check-commit-trailers.sh` and `scripts/check-issue-link.sh`, not your PR's copy. A
+PR that changes one of these scripts is still judged by `develop`'s copy, so the change takes effect for gating
+only after it merges (the self-tests in `ci.yml` still run your copy). A PR that adds a new gating script has
+no base copy, so the check fails closed and the PR needs a one-time manual gate by a maintainer.
+
 Merged history stays as it is. To fix a failing commit on an open PR, you have to reword it and force-push,
 and that needs Adam's approval first.
 

@@ -261,6 +261,26 @@ jobs:
 
           exit "$failed"
 
+      # gh#802. CONTRIBUTING.md asks AI-assisted commits for `Assisted-by: <Name> (<tool>)` AND
+      # `Co-Authored-By: <Name> <email>`. Applies to commits AUTHORED on or after 2026-10-25 00:00 CDT (author
+      # date survives a rebase; committer date does not). Commits without `Assisted-by:` (Dependabot included)
+      # are untouched. The logic and its cases live in the script and its self-test, run by ci.yml.
+      - name: Check AI-assistance trailers
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "merge_group" ]; then
+            RANGE="${MG_BASE}..${MG_HEAD}"
+          else
+            RANGE="${BASE_SHA}..${HEAD_SHA}"
+          fi
+          ./scripts/check-commit-trailers.sh "$RANGE"
+
   # ENFORCING, as of gh#35. It used to be advisory by construction -- continue-on-error, no `set -e`, every
   # branch ending in `exit 0` -- so it reported success on a PR citing no issue at all. The platform contract's
   # own rule applies: a gate that cannot fail is not a gate, and one named like enforcement while providing

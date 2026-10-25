@@ -207,8 +207,14 @@ tracker and drifts from it.
 
   ```
   Assisted-by: <Model Name> (<tool>)
-  Co-Authored-By: <Model Name> <noreply@anthropic.com>
+  Co-Authored-By: <Name> <email>
   ```
+
+  The `Co-Authored-By:` email is whatever the tool or provider uses for its commits; a noreply address is fine.
+
+  `commit-hygiene` enforces this for commits authored on or after 2026-10-25 00:00 CDT: an `Assisted-by:` trailer
+  must read `<Name> (<tool>)` and come with a `Co-Authored-By: <Name> <email>` in the final trailer paragraph
+  (`scripts/check-commit-trailers.sh`, gh#802).
 
   Both, every time. The single-trailer and model-id-parenthetical variants that appear in the sibling repos are
   drift, not alternatives.

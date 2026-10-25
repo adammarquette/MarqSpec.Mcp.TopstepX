@@ -89,6 +89,12 @@ jobs:
       - name: Prove the size gate can still fail
         run: ./scripts/check-doc-sizes-selftest.sh
 
+      # gh#802. commit-hygiene (branch-policy.yml) runs check-commit-trailers.sh on the PR range; this proves it
+      # still rejects each known trailer fault by name, skips pre-cutoff and rebased-old commits, and passes a
+      # sound pair and a Dependabot-shaped message.
+      - name: Prove the commit-trailer gate can still fail
+        run: ./scripts/check-commit-trailers-selftest.sh
+
       # gh#182. `R-#` is half this repo's symbol table (AGENTS.md), and check-doc-links.sh proves only that a
       # relative LINK resolves -- nothing proved an ID did. gh#172 found two citations naming another
       # repository's PRD entirely, sitting in Directory.Build.props since the scaffolding commit and missed by

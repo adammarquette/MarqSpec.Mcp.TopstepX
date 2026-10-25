@@ -328,7 +328,8 @@ public sealed class OrderToolSpecQaTests
         _gateway.Total.Should().Be(1);
         first.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
         first.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
-        // Current behaviour: the venue's id is passed through for reconciliation, though the status stays Unknown.
+        // The venue's id is passed through for reconciliation, though the status stays Unknown. A replay is not
+        // pinned: the id is never stored for this outcome, so a replay returns none (#784).
         first.OrderId.Should().Be(4242);
         _audit.Snapshot().Select(r => r.Outcome).Should().NotContain(TradingAuditOutcomes.Live);
     }

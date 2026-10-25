@@ -654,6 +654,61 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Export_WhenDriveFailsAndTheLockProbeFails_CountsLockLostOnce()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        await Pass(
+                telemetry,
+                new RetryingTapeDriveUploader(
+                    new FailingAndKillingClient(_fixture.ConnectionString),
+                    telemetry,
+                    NullLogger.Instance,
+                    new TapeDriveRetryTiming()))
+            .ExportAsync(null, CancellationToken.None);
+
+        _database.ChangeTracker.Clear();
+        TapeExportReceipt dropped = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
+        dropped.UploadState.Should().Be(TapeExportReceipt.StateFailed);
+        dropped.FailureType.Should().Be("LockLost");
+
+        List<CollectedMeasurement<long>> terminal = uploads.GetMeasurementSnapshot()
+            .Where(measurement => (string)measurement.Tags[HostTelemetry.ReasonTag]! is TapeUploadReason.Failed
+                or TapeUploadReason.Permanent
+                or TapeUploadReason.Timeout
+                or TapeUploadReason.LockLost)
+            .ToList();
+        CollectedMeasurement<long> measurement = terminal.Should().ContainSingle().Subject;
+        measurement.Value.Should().Be(1);
+        measurement.Tags[HostTelemetry.OutcomeTag].Should().Be(TapeUploadOutcome.Failed);
+        measurement.Tags[HostTelemetry.OperationTag].Should().Be(TapeUploadOperation.Lock);
+        measurement.Tags[HostTelemetry.ReasonTag].Should().Be(TapeUploadReason.LockLost);
+
+        Activity span = spans
+            .Where(candidate => candidate.OperationName == "tape.upload"
+                && candidate.GetTagItem(HostTelemetry.ReasonTag) is string reason
+                && reason is TapeUploadReason.Failed
+                    or TapeUploadReason.Permanent
+                    or TapeUploadReason.Timeout
+                    or TapeUploadReason.LockLost)
+            .Should().ContainSingle().Subject;
+        span.Status.Should().Be(ActivityStatusCode.Error);
+        span.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(TapeUploadOutcome.Failed);
+        span.GetTagItem(HostTelemetry.OperationTag).Should().Be(TapeUploadOperation.Lock);
+        span.GetTagItem(HostTelemetry.ReasonTag).Should().Be(TapeUploadReason.LockLost);
+
+        uploads.GetMeasurementSnapshot().Count(row =>
+            (string)row.Tags[HostTelemetry.OutcomeTag]! == TapeUploadOutcome.Uploaded)
+            .Should().Be(await UploadedReceiptsAsync());
+    }
+
+    [Fact]
     public async Task Export_WhenTwoDaysUpload_UsesOneLockConnection()
     {
         await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
@@ -1093,6 +1148,39 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             }
 
             return "killed-" + upload.Identity.Kind + "-" + upload.Identity.Format;
+        }
+    }
+
+    /// <summary>
+    /// The first identity fails in Drive and the lock session is killed before that failure returns,
+    /// so the probe fails too. Later identities upload. One file must not be counted twice.
+    /// </summary>
+    private sealed class FailingAndKillingClient(string connectionString) : ITapeDriveClient
+    {
+        private int _calls;
+
+        public async Task<string> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                await using NpgsqlConnection connection = new(connectionString);
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await using NpgsqlCommand command = new(
+                    """
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE application_name = 'tape-export-lock' AND pid <> pg_backend_pid()
+                    """,
+                    connection);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                throw new TapeDriveException(
+                    "Drive request failed.",
+                    403,
+                    permanent: true,
+                    failureType: "GoogleApiException");
+            }
+
+            return "kept-" + upload.Identity.Kind + "-" + upload.Identity.Format;
         }
     }
 

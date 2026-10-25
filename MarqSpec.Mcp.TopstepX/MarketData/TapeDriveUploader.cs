@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.Extensions.Logging;
@@ -69,12 +68,19 @@ public sealed record TapeDriveUpload(
 /// <param name="Attempts">How many times the client was called. Zero when Drive is off. One when the error is permanent.</param>
 /// <param name="FailureType">The exception type name. Null on success. Never a credential.</param>
 /// <param name="FailureStatus">The HTTP status when the client reported one. Null when there is no status.</param>
+/// <param name="TerminalOutcome">
+/// The <c>mcp.tape.uploads</c> outcome for this failure. Null on success. The uploader does not record it.
+/// The pass records it once, after the lock probe, and only when the lock is still held.
+/// </param>
+/// <param name="TerminalReason">The reason tag paired with <paramref name="TerminalOutcome"/>. Null on success.</param>
 public sealed record TapeDriveUploadResult(
     TapeDriveUploadStatus Status,
     string? FileId,
     int Attempts,
     string? FailureType,
-    int? FailureStatus)
+    int? FailureStatus,
+    string? TerminalOutcome = null,
+    string? TerminalReason = null)
 {
     /// <summary>Drive is not configured.</summary>
     public static TapeDriveUploadResult NotConfigured { get; } = new(TapeDriveUploadStatus.Disabled, null, 0, null, null);
@@ -210,6 +216,7 @@ public sealed class DisabledTapeDriveUploader : ITapeDriveUploader
 /// <summary>
 /// Calls the client up to <see cref="MaxAttempts"/> times. A permanent error is not retried.
 /// A transient error waits with exponential backoff and jitter. The local file is not touched.
+/// Retries are counted here. The terminal outcome is not: the pass records that once, after the lock probe.
 /// </summary>
 public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
 {
@@ -279,7 +286,6 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
     /// <inheritdoc />
     public async Task<TapeDriveUploadResult> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
     {
-        using Activity? span = _telemetry.Activities.StartActivity("tape.upload", ActivityKind.Client);
         using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         DateTimeOffset started = _clock.GetUtcNow();
         using ITimer timer = _clock.CreateTimer(
@@ -298,7 +304,7 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
 
             if (token.IsCancellationRequested || PastDeadline(started))
             {
-                return Failed(span, upload, attempt, retries, "Timeout", status: null, permanent: false);
+                return Failed(upload, attempt, retries, "Timeout", status: null, permanent: false);
             }
 
             try
@@ -313,8 +319,9 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
                         TapeUploadReason.Retried);
                 }
 
-                // The pass counts drive_uploaded only after the identity lock is still held.
-                // Counting it here would disagree with a receipt the pass then marks failed.
+                // The pass counts every terminal outcome after the identity lock is still held.
+                // Counting a success or a failure here would disagree with a receipt the pass
+                // then marks LockLost, and one file would be measured twice.
                 return new TapeDriveUploadResult(TapeDriveUploadStatus.Uploaded, fileId, attempt, null, null);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -323,14 +330,14 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
             }
             catch (OperationCanceledException)
             {
-                return Failed(span, upload, attempt, retries, "Timeout", status: null, permanent: false);
+                return Failed(upload, attempt, retries, "Timeout", status: null, permanent: false);
             }
             catch (Exception exception)
             {
                 (string type, int? status, bool permanent, TimeSpan? retryAfter) = Describe(exception);
                 if (permanent || attempt == MaxAttempts)
                 {
-                    return Failed(span, upload, attempt, retries, type, status, permanent);
+                    return Failed(upload, attempt, retries, type, status, permanent);
                 }
 
                 double unit = retryAfter is null ? _timing.NextUnit() : 0d;
@@ -345,7 +352,7 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
                 }
                 catch (OperationCanceledException)
                 {
-                    return Failed(span, upload, attempt, retries, "Timeout", status: null, permanent: false);
+                    return Failed(upload, attempt, retries, "Timeout", status: null, permanent: false);
                 }
 
                 if (cancellationToken.IsCancellationRequested)
@@ -355,15 +362,21 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
 
                 if (token.IsCancellationRequested || PastDeadline(started))
                 {
-                    return Failed(span, upload, attempt, retries, "Timeout", status: null, permanent: false);
+                    return Failed(upload, attempt, retries, "Timeout", status: null, permanent: false);
                 }
 
                 retries++;
             }
         }
 
-        MarkFailure(span, TapeUploadOutcome.Failed, TapeUploadReason.Failed, 1);
-        return new TapeDriveUploadResult(TapeDriveUploadStatus.Failed, null, MaxAttempts, "TapeDriveException", null);
+        return new TapeDriveUploadResult(
+            TapeDriveUploadStatus.Failed,
+            null,
+            MaxAttempts,
+            "TapeDriveException",
+            null,
+            TapeUploadOutcome.Failed,
+            TapeUploadReason.Failed);
     }
 
     /// <inheritdoc />
@@ -372,17 +385,7 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
     private bool PastDeadline(DateTimeOffset started) =>
         _clock.GetUtcNow() - started >= TapeDriveRetryTiming.Deadline;
 
-    private void MarkFailure(Activity? span, string outcome, string reason, int count)
-    {
-        span?.SetTag(HostTelemetry.OperationTag, TapeUploadOperation.Upload);
-        span?.SetTag(HostTelemetry.ReasonTag, reason);
-        span?.SetTag(HostTelemetry.OutcomeTag, outcome);
-        span?.SetStatus(ActivityStatusCode.Error);
-        _telemetry.TapeUpload(outcome, count, TapeUploadOperation.Upload, reason);
-    }
-
     private TapeDriveUploadResult Failed(
-        Activity? span,
         TapeDriveUpload upload,
         int attempt,
         int retries,
@@ -403,14 +406,23 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
                 TapeUploadReason.Retried);
         }
 
-        MarkFailure(span, outcome, reason, 1);
+        // The pass records this terminal outcome after the lock probe. Recording it here
+        // would count the file again when that probe fails: the receipt is LockLost, and
+        // that is the one measurement. Retries above are attempts, not that outcome.
         _logger.LogError(
             "Drive upload failed for {Kind} {Day}. Type {FailureType}, status {FailureStatus}.",
             upload.Identity.Kind,
             upload.Identity.Day,
             type,
             status);
-        return new TapeDriveUploadResult(TapeDriveUploadStatus.Failed, null, attempt, type, status);
+        return new TapeDriveUploadResult(
+            TapeDriveUploadStatus.Failed,
+            null,
+            attempt,
+            type,
+            status,
+            outcome,
+            reason);
     }
 
     private static (string Type, int? Status, bool Permanent, TimeSpan? RetryAfter) Describe(Exception exception)

@@ -820,7 +820,7 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
 | `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`). One measurement per pass for a repeated outcome |
 | `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
-| `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent \| drive_orphan_pending · `operation` = upload \| lock · `reason` = uploaded \| retried \| upload_timeout \| permanent \| failed \| disabled \| orphan_pending \| identity_busy \| lock_lost | `TapeExportPass` records `drive_disabled` once when Drive is off, `drive_orphan_pending` for receipts still pending, `drive_uploaded` only when the receipt is uploaded, and `drive_failed` with `identity_busy` or `lock_lost` when the lock does not stay held. The retrying uploader records retries, timeouts, and other Drive failures (gh#755, `R-10.6`). `drive_retried` counts the retries, not one event per attempt. A lock lost after the bytes land is `lock_lost`, not `drive_uploaded` |
+| `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent \| drive_orphan_pending · `operation` = upload \| lock · `reason` = uploaded \| retried \| upload_timeout \| permanent \| failed \| disabled \| orphan_pending \| identity_busy \| lock_lost | `TapeExportPass` records `drive_disabled` once when Drive is off, `drive_orphan_pending` for receipts still pending, and exactly one terminal measurement per file. `drive_uploaded` only when the receipt is `uploaded`. `drive_failed` with `identity_busy` or `lock_lost` when the lock does not stay held. A lost lock wins over a Drive failure on the same file: the receipt is `LockLost`, and the counter and the `tape.upload` span are `lock_lost` once, not also `failed`, `permanent`, or `upload_timeout`. The uploader records `drive_retried` only. The pass records a Drive timeout, a permanent failure, or another Drive failure after the probe shows the lock is still held (gh#755, `R-10.6`). `drive_retried` counts the retries, not one event per attempt. A lock lost after the bytes land is `lock_lost`, not `drive_uploaded` |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
 
@@ -1168,7 +1168,8 @@ the trading coordinator's two-int advisory locks (`objsubid` 2). The connection 
 and it is not returned to the pool. The lock is released in a `finally` before the next file, not
 only when the connection is disposed. A drop mid-upload is `LockLost`: that file is failed, any
 returned file id is kept, the counter is `lock_lost` rather than `drive_uploaded`, and the pass
-reopens the same connection for the next file. A lock timeout is `IdentityBusy` and the pass
+reopens the same connection for the next file. A Drive failure on that same file is not a second
+count. The lost lock is the one terminal measurement, because that is the receipt. A lock timeout is `IdentityBusy` and the pass
 continues. Both record a `tape.upload` span and a counter tagged with operation and reason. `pending` is committed before the upload. The file id is
 committed after. Rows still `pending` at the start of a pass are logged and counted
 `drive_orphan_pending`, then retried. A `drive_disabled` day is finished only while Drive is off;
@@ -1178,7 +1179,8 @@ turning Drive on exports it. A transient failure waits with exponential backoff 
 records `Timeout` and the pass continues to the next file. The Google client's own 503 backoff is
 off. HTTP 408, 429, 500, 502, and 503 stay transient. A permanent failure is not retried. The local
 file, the Postgres rows, and the last good file id stay. Spans are `tape.export` (a day the pass
-touches) and `tape.upload` (one file, across its retries). `TapeExportReceipts` records `pending`,
+touches) and `tape.upload` (one terminal outcome for one file, recorded by the pass after the lock
+probe). `TapeExportReceipts` records `pending`,
 `drive_disabled`, `uploaded`, or `failed` (`R-10.7`). That is not a retention check.
 
 **The copy is additive.** A day is the UTC calendar day of `TradeTimeUtc`, of a closed coverage
@@ -1200,9 +1202,11 @@ open listen still overlaps is skipped. An empty database does not rediscover a d
 `mcp.tape.uploads` counts `drive_disabled`, `drive_retried`, `drive_uploaded`, `drive_failed`,
 `drive_permanent`, and `drive_orphan_pending`, each tagged with `outcome`, `operation`, and `reason`.
 `drive_uploaded` is only the receipt state `uploaded`. `upload_timeout`, `identity_busy`, and `lock_lost` are
-reasons on `drive_failed`. The lock reasons use operation `lock`. `upload_timeout` is not the recorder-health
-`timeout` value. `mcp.tape.export.duration` is the pass, in seconds,
-with no tags. A thrown pass is caught, counted `export_failed`, and does not fault the host. Loading
+reasons on `drive_failed`. The lock reasons use operation `lock`. One file has one terminal measurement.
+When the upload fails and the lock probe also fails, that measurement is `lock_lost` only.
+`upload_timeout` is not the recorder-health `timeout` value. A non-Postgres `NpgsqlException` is a lost
+lock only when Npgsql marks it transient, which is a broken stream. Anything else propagates.
+`mcp.tape.export.duration` is the pass, in seconds, with no tags. A thrown pass is caught, counted `export_failed`, and does not fault the host. Loading
 the files back with DuckDB or pandas is [tape-export-reload.md](tape-export-reload.md).
 
 ## What is deliberately absent

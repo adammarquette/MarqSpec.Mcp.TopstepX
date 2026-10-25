@@ -626,8 +626,10 @@ public sealed class HostTelemetry : IDisposable
     /// <remarks>
     /// Tagged with <see cref="OutcomeTag"/>, <see cref="OperationTag"/>, and <see cref="ReasonTag"/>.
     /// A file id or a contract id would be a new series per value. The span <c>tape.upload</c> is the
-    /// trace; this counter is the aggregate. A lock lost after the bytes land is <see cref="TapeUploadReason.LockLost"/>,
-    /// not <see cref="TapeUploadOutcome.Uploaded"/>.
+    /// trace; this counter is the aggregate. One file has one terminal measurement, recorded by the
+    /// pass after the lock probe. A lock lost after the bytes land, or after a Drive failure, is
+    /// <see cref="TapeUploadReason.LockLost"/>, not <see cref="TapeUploadOutcome.Uploaded"/> and not a
+    /// second <see cref="TapeUploadOutcome.Failed"/> for the Drive error. The uploader records retries only.
     /// </remarks>
     public void TapeUpload(string outcome, int count, string operation, string reason)
     {

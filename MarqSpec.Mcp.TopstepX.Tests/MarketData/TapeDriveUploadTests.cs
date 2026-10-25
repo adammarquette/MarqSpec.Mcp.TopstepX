@@ -76,8 +76,10 @@ public sealed class TapeDriveUploadTests
         result.FailureStatus.Should().Be(403);
         waits.Should().BeEmpty();
         client.Creates.Should().Be(0);
-        uploads.GetMeasurementSnapshot().Select(measurement => measurement.Tags[HostTelemetry.OutcomeTag])
-            .Should().Equal(TapeUploadOutcome.Permanent);
+        result.TerminalOutcome.Should().Be(TapeUploadOutcome.Permanent);
+        result.TerminalReason.Should().Be(TapeUploadReason.Permanent);
+        // The pass records the terminal outcome after the lock probe. The uploader must not.
+        uploads.GetMeasurementSnapshot().Should().BeEmpty();
     }
 
     [Theory]
@@ -168,16 +170,12 @@ public sealed class TapeDriveUploadTests
         result.Status.Should().Be(TapeDriveUploadStatus.Failed);
         result.Attempts.Should().Be(1);
         result.FailureType.Should().Be("Timeout");
+        result.TerminalOutcome.Should().Be(TapeUploadOutcome.Failed);
+        result.TerminalReason.Should().Be(TapeUploadReason.Timeout);
         waits.Should().ContainSingle();
-        CollectedMeasurement<long> measurement = uploads.GetMeasurementSnapshot().Should().ContainSingle().Subject;
-        measurement.Tags[HostTelemetry.OutcomeTag].Should().Be(TapeUploadOutcome.Failed);
-        measurement.Tags[HostTelemetry.OperationTag].Should().Be(TapeUploadOperation.Upload);
-        measurement.Tags[HostTelemetry.ReasonTag].Should().Be(TapeUploadReason.Timeout);
-        Activity span = spans.Should().ContainSingle().Subject;
-        span.OperationName.Should().Be("tape.upload");
-        span.Status.Should().Be(ActivityStatusCode.Error);
-        span.GetTagItem(HostTelemetry.ReasonTag).Should().Be(TapeUploadReason.Timeout);
-        span.GetTagItem(HostTelemetry.OperationTag).Should().Be(TapeUploadOperation.Upload);
+        // No terminal span or counter here. The pass records that one measurement after the probe.
+        uploads.GetMeasurementSnapshot().Should().BeEmpty();
+        spans.Should().BeEmpty();
     }
 
     [Fact]

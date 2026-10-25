@@ -337,7 +337,8 @@ account and set `TapeExport__Drive__FolderId` to that id. A repeat updates the s
 not trash anything. A transient failure is retried with backoff. A permanent failure keeps the last
 good file id. `TapeExportReceipts` stores `pending`, `drive_disabled`, `uploaded`, or `failed`. A `pending` row
 left by a crash is logged and counted, then retried. A deadline during backoff records `Timeout`
-and the pass continues. A dropped lock records `LockLost` and continues. A lock held past 30 seconds
+and the pass continues. A dropped lock records `LockLost` and continues. That record is the file's
+only terminal upload count, including when Drive also failed. A lock held past 30 seconds
 records `IdentityBusy` and continues. Turning Drive on later uploads days that were
 `drive_disabled`. Two processes creating the same day folder converge on the lexicographically first
 id and may leave one empty extra folder.

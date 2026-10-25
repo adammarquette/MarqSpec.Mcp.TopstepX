@@ -5,6 +5,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
 using MarqSpec.Mcp.TopstepX.Telemetry;
+using MarqSpec.Mcp.TopstepX.Tests;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
@@ -71,24 +72,11 @@ public sealed class TradingDailyCapCoordinatorIntegrationTests(SeriesStoreFixtur
 
     [Fact]
     [Trait("Gate", "ADR-0024")]
-    public async Task SessionLock_DisposeAsync_SwallowsADisposedConnection()
+    public async Task TradingDailyCapCoordinator_Release_SwallowsADisposedConnection_AndCountsIt()
     {
         using HostTelemetry telemetry = new();
-        long faults = 0;
-        using MeterListener listener = new();
-        listener.InstrumentPublished = (instrument, meterListener) =>
-        {
-            // Scope, not the meter name. Every HostTelemetry publishes HostTelemetry.Name, so a name
-            // match collects a measurement another test in this process recorded.
-            if (ReferenceEquals(instrument.Meter.Scope, telemetry)
-                && instrument.Name == HostTelemetry.BookkeepingFaultsInstrument)
-            {
-                meterListener.EnableMeasurementEvents(instrument);
-            }
-        };
-        listener.SetMeasurementEventCallback<long>(
-            (_, measurement, _, _) => Interlocked.Add(ref faults, measurement));
-        listener.Start();
+        BookkeepingFaultCounter faults = new();
+        using MeterListener listener = faults.Listen(telemetry);
 
         TradingDailyCapCoordinator coordinator = new(_database, _clock, telemetry);
         IAsyncDisposable lease = await coordinator.AcquireAccountDayLockAsync(100, CancellationToken.None);
@@ -99,7 +87,7 @@ public sealed class TradingDailyCapCoordinatorIntegrationTests(SeriesStoreFixtur
 
         await release.Should().NotThrowAsync();
         coordinator.LastReleaseFailed.Should().BeTrue();
-        faults.Should().Be(1);
+        faults.Value.Should().Be(1);
     }
 
     private static TradingAuditLogRecord Row(DateTimeOffset at, string outcome, int contractCount) =>

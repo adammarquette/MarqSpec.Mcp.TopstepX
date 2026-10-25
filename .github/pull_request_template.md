@@ -38,7 +38,8 @@ Assisted-by: <model>:<version>
 - [ ] **No secrets** — nothing logged, nothing tracked, no credential-shaped value in a committed file
 - [ ] **PR documentation** — every body section you wrote, and every comment or review you add, carries
       `Assisted-by: <model>:<version>`. A single footer on the PR is not a substitute
-- [ ] **Commits** are Conventional and carry both `Assisted-by:` and `Co-Authored-By:` trailers if AI-authored
+- [ ] **Commits** are Conventional; AI-assisted commits end with an `Assisted-by: <model>:<version>` trailer as
+      CONTRIBUTING describes ([*AI-assisted commits*](../CONTRIBUTING.md#ai-assisted-commits)). `Co-Authored-By` isn't required
 - [ ] History is curated into units of work (this repo rebase-merges; squash is disabled)
 
 ## Order-path questions — answer if this touches transport, resilience, or orders

@@ -357,10 +357,10 @@ Two relationships hang off an issue, using different mechanisms:
   auto-closes the issue on merge and surfaces the PR in the board's *Linked pull requests* field. GitHub binds
   that keyword **only on a PR into the default branch**, so a promotion into `staging` or `main` gets neither
   the field nor the auto-close, and its card is moved and closed by hand (gh#101). `Related to #N` — for a PR
-  that touches but does not complete an issue — never binds on any base, and since gh#824 passes `issue-link`
-  only off `develop` (into `develop` it is `Part of #N` plus `Issue-stays-open: <reason>`): a bare `#N` leaves
-  a cross-reference on the issue's timeline and nothing in *Linked pull requests*, which is how #100 and #106
-  stayed traceable.
+  that touches but does not complete an issue — never binds on any base, and since gh#824 it passes on every
+  base except `develop`: stacked PRs, promotions into `staging` or `main`, and any other base (into `develop`
+  it is `Part of #N` plus `Issue-stays-open: <reason>`): a bare `#N` leaves a cross-reference on the issue's
+  timeline and nothing in *Linked pull requests*, which is how #100 and #106 stayed traceable.
 - **A sub-issue is issue→issue decomposition.** An epic's tasks are its sub-issues. **A PR cannot be a
   sub-issue** — GitHub restricts those to issues — so PR→issue always uses linking.
 

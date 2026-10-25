@@ -20,13 +20,22 @@ advisory, and its logic and cases live in `scripts/check-issue-link.sh` and its 
 **A PR into `develop` carries a closing binding to an issue in this repository** (gh#824). The body says
 `Closes #N` — or close/closed, fix/fixes/fixed, resolve/resolves/resolved, any case, an optional colon — in
 ordinary prose, before `#N` or `adammarquette/MarqSpec.Mcp.TopstepX#N`, and GitHub must actually bind it (the
-check reads `closingIssuesReferences` too). Another repository's issue does not count. `Related to #N` and
-`Towards #N` no longer pass into `develop`. When a PR really does leave its issue open, say so and say why:
+check reads `closingIssuesReferences` too). The body's closing number must be the issue GitHub actually links:
+`Closes #999` in the body with #5 linked only in the sidebar fails. A closing reference may also be written as
+this repository's issue URL (`Fixes https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/N`), which
+counts like `#N`. A link set only in the PR sidebar, with no closing keyword in the body, fails. Another
+repository's issue does not count. Into `develop`, `Related to #N` and `Towards #N` are not enough on their
+own; extra `Related to` lines next to a closing binding are fine. `Related to #N` passes on every base except
+`develop`: stacked PRs, promotions into `staging` or `main`, and any other base. When a PR really does leave
+its issue open, say so and say why:
 
 ```text
 Part of #N
 Issue-stays-open: <why the issue stays open after this merges>
 ```
+
+`Part of #N` without an `Issue-stays-open:` line fails. The opt-out does not check that #N exists, so
+reviewers must verify it.
 
 Four things it will tell you, because they all look like they work and none of them does:
 
@@ -63,7 +72,8 @@ close it by hand. The run says both.
 
 **Stacked PRs onto a feature branch are deliberately not covered.** They cannot bind either, but there
 `Related to #N` (or `Part of` / `Towards #N`) is the *correct* form — the PR really does not close the issue
-when it merges into its parent. The closing-binding rule applies to `develop` only.
+when it merges into its parent. The closing-binding rule applies to `develop` only: `Related to #N` passes on
+every base except `develop`: stacked PRs, promotions into `staging` or `main`, and any other base.
 
 If the check cannot read the PR's closing references, it retries and then **fails**. A check that reports
 success when it did not run is the failure this rule exists to prevent.

@@ -1173,7 +1173,8 @@ span and no counter. That report is
 conservative: reconcile, do not send again. The unlock and the telemetry dispose catch their own failures, log one constant line, and
 count them. The disposal itself does not throw. After the send, the gate raises a failed unlock into the
 post-send handler, which returns structured `OutcomeUnknown` and does not mark the call safe to retry.
-When the broker had already assigned an order id, that result keeps the id and the parsed stage.
+When the broker had already assigned an order id, a post-send cleanup or bookkeeping fault keeps that id
+and the parsed stage. The id is not kept when the send throws, or when the audit write fails after the ack.
 `Live` is only a broker acknowledgment.
 `refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
 for them — they are fields, so the test is key presence. The unclassified catch-all is the exception:

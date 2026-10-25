@@ -622,13 +622,14 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   not replayed over the claim. The result carries
   `retrySafety`: `SafeToRetry`, `NotSafeToRetry`, or `OutcomeUnknown`, matching the gate. `status: Live` is
   only a broker acknowledgment. `OutcomeUnknown` is returned when the send may have happened, including a
-  bookkeeping failure after the send has started. When the broker had already assigned an order id, that
-  result keeps the id and the parsed stage, and it is still not safe to retry. Only a fault the gate classified as before the send is a
+  bookkeeping failure after the send has started. A post-send cleanup or bookkeeping fault keeps the broker
+  order id and the parsed stage, and it is still not safe to retry. The id is not kept when the send throws,
+  or when the audit write fails after the ack. Only a fault the gate classified as before the send is a
   retryable `error` (`PreSendFaultException` only). The tool catch-all is defensive: any other exception is
   `OutcomeUnknown` with no refusal and `resultCode` `-1`, never a retry. The gate is scoped, keeps
   send-started state on the call, and serves one order operation per instance; a second operation throws
-  before any vendor call. A throw before that classification can report a false `OutcomeUnknown`, and it emits no span and no counter. Size, price and
-  partial-close checks refuse before any audit row.
+  before any vendor call. A throw before that classification can report a false `OutcomeUnknown`, and it
+  emits no span and no counter. Size, price and partial-close checks refuse before any audit row.
   Modify charges the full new size against the daily cap.
   Bracket fields, `confirm_trading_action` and the OAuth trade scope are outside this requirement (gh#713,
   gh#717, gh#719). The catalogue section is `R-5`'s contract for the shapes (gh#721).

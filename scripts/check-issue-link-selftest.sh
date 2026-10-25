@@ -120,8 +120,10 @@ else echo "FAIL strip:"; printf '%s\n' "$out"; fail=$((fail+1)); fi
 
 # --- wiring guard: the workflow runs THIS script rather than a drifted inline copy ------------------------------
 wf="$here/../.github/workflows/branch-policy.yml"
-if grep -q 'run: ./scripts/check-issue-link.sh' "$wf" && ! grep -q 'closingIssuesReferences' "$wf"; then
-  echo "ok   guard: branch-policy.yml calls check-issue-link.sh and carries no inline copy"; pass=$((pass+1))
+# gh#827: the job runs the BASE commit's copy, fetched by a step with SCRIPT: scripts/check-issue-link.sh.
+if grep -q 'SCRIPT: scripts/check-issue-link.sh' "$wf" && grep -q 'run: .*RUNNER_TEMP/gate/check-issue-link.sh' "$wf" \
+   && ! grep -q 'run: ./scripts/check-issue-link.sh' "$wf" && ! grep -q 'closingIssuesReferences' "$wf"; then
+  echo "ok   guard: branch-policy.yml runs the base copy of check-issue-link.sh and carries no inline copy"; pass=$((pass+1))
 else echo "FAIL guard: branch-policy.yml does not call the script, or still has inline logic"; fail=$((fail+1)); fi
 
 echo "check-issue-link-selftest: $pass passed, $fail failed"

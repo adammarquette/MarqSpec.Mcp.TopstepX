@@ -534,8 +534,8 @@ exercise the PR's copy. **Fail closed:** a base copy that is missing or cannot b
 never skips and never falls back to the PR's copy, so a PR adding a new gating script gets a one-time manual
 gate. **Limit:** the workflow file and `.github/actions/fetch-base-script` still come from the PR's checkout.
 A PR that edits `branch-policy.yml`, `ci.yml` or that action can delete or alter the fetch step or point
-`run:` back at `./scripts/`, so it is still judged by its own copy of the workflow; a reviewer (Critique) must
-read workflow and action changes in full.
+`run:` back at `./scripts/`, so it is still judged by its own copy of the workflow; a reviewer must read
+workflow and action changes in full.
 
 **Every cell above was read from the rulesets API, never from the settings page** — one call per rung, over
 ids `21182074`, `21182075` and `21182079`:

@@ -265,8 +265,8 @@ only after it merges (the self-tests in `ci.yml` still run your copy). A PR that
 no base copy, so the check fails closed and the PR needs a one-time manual gate by a maintainer. The limit:
 the workflow files and the local action `.github/actions/fetch-base-script` still come from the PR. A PR that
 edits `.github/workflows/branch-policy.yml`, `ci.yml` or that action can remove or alter the fetch step or
-point `run:` back at `./scripts/`, so it is still judged by its own copy of the workflow. A reviewer
-(Critique) must read every workflow and action change in full.
+point `run:` back at `./scripts/`, so it is still judged by its own copy of the workflow. A reviewer must read
+every workflow and action change in full.
 
 ## Pull requests
 

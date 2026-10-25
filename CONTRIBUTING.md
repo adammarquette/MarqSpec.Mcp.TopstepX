@@ -35,7 +35,8 @@ Issue-stays-open: <why the issue stays open after this merges>
 ```
 
 `Part of #N` without an `Issue-stays-open:` line fails. The opt-out does not check that #N exists, so
-reviewers must verify it.
+reviewers must verify it. The opt-out passes only when no issue is linked to the PR (in the sidebar or
+anywhere, in any repository); remove any linked issue first.
 
 Four things it will tell you, because they all look like they work and none of them does:
 
@@ -72,8 +73,7 @@ close it by hand. The run says both.
 
 **Stacked PRs onto a feature branch are deliberately not covered.** They cannot bind either, but there
 `Related to #N` (or `Part of` / `Towards #N`) is the *correct* form — the PR really does not close the issue
-when it merges into its parent. The closing-binding rule applies to `develop` only: `Related to #N` passes on
-every base except `develop`: stacked PRs, promotions into `staging` or `main`, and any other base.
+when it merges into its parent. The closing-binding rule applies to `develop` only.
 
 If the check cannot read the PR's closing references, it retries and then **fails**. A check that reports
 success when it did not run is the failure this rule exists to prevent.

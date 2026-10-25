@@ -301,6 +301,9 @@ An order is **not treated as live** until the **broker acknowledgment** arrives.
   A post-send cleanup or bookkeeping fault is narrower. The gate already holds the broker order id and the
   parsed stage, so that `OutcomeUnknown` carries both and is still not safe to retry. The audit row and a
   replay stay `Live` with that order id. An acknowledged place with no such fault stays `Live`.
+  A throw during the send returns `OutcomeUnknown` with no order id: the gate has none to report. An audit
+  write that fails after the ack is the same shape, even though the broker assigned an id, because the Live
+  row was not stored. Neither result is safe to retry.
   A replay of a bare Unknown claim returns that `Unknown` unless a later
   `Live`, `Failed`, or `Refused` row exists, and it is never rewritten as `Live`.
   **Why an unacknowledged result is stored:** the earlier rule was "do not cache an unacked result as

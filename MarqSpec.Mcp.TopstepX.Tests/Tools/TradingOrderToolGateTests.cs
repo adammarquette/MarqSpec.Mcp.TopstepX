@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
@@ -616,7 +617,7 @@ public sealed class TradingOrderToolGateTests
         _gateway.PlaceOrderCalls.Should().Be(1);
         _daily.LockAcquisitions.Should().Be(1);
         _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
-        faults.LastMeasurement!.Value.Should().Be(1);
+        AssertOneBookkeepingFault(faults);
         AssertWrite(writes, spans, TradingMcpTools.PlaceOrderOperation, ExecutionWriteRefusal.OutcomeUnknown);
     }
 
@@ -674,7 +675,7 @@ public sealed class TradingOrderToolGateTests
         _daily.LastReleaseFailed.Should().BeTrue();
         _audit.Entries.Should().Contain(entry =>
             entry.Outcome == TradingAuditOutcomes.Live && entry.OrderId == 77);
-        faults.LastMeasurement!.Value.Should().Be(1);
+        AssertOneBookkeepingFault(faults);
         AssertWrite(writes, spans, TradingMcpTools.PlaceOrderOperation, ExecutionWriteRefusal.OutcomeUnknown);
     }
 
@@ -738,7 +739,7 @@ public sealed class TradingOrderToolGateTests
         result.ParsedStage.Should().Be(AccountStage.Practice);
         _gateway.PlaceOrderCalls.Should().Be(1);
         _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
-        faults.LastMeasurement!.Value.Should().Be(1);
+        AssertOneBookkeepingFault(faults);
     }
 
     [Theory]
@@ -1078,6 +1079,94 @@ public sealed class TradingOrderToolGateTests
         _gateway.PartialClosePositionCalls.Should().Be(0);
     }
 
+    [Fact]
+    public async Task TradingRiskGate_ConcurrentOperations_LetExactlyOneEnter()
+    {
+        const int trials = 40;
+        const int racers = 8;
+        ExecutionPlaceOrderCommand command = new(
+            PracticeAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            null,
+            null,
+            null);
+
+        for (int trial = 0; trial < trials; trial++)
+        {
+            using HostTelemetry telemetry = new();
+            TradingRiskGate gate = Gate(telemetry, new TradingExecutionOptions());
+            using Barrier barrier = new(racers);
+            int pastGuard = 0;
+            Task[] tasks = new Task[racers];
+            for (int racer = 0; racer < racers; racer++)
+            {
+                tasks[racer] = Task.Run(async () =>
+                {
+                    barrier.SignalAndWait();
+                    try
+                    {
+                        await gate.SubmitPlace(
+                            command,
+                            new TradingRiskAttemptContext(false, "concurrent-key"),
+                            CancellationToken.None).ConfigureAwait(false);
+                        Interlocked.Increment(ref pastGuard);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                    }
+                });
+            }
+
+            await Task.WhenAll(tasks);
+            pastGuard.Should().Be(1);
+        }
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_CleanupFaultAfterSend_KeepsTheDisposeStack()
+    {
+        const string marker = "cleanup-stack-probe";
+        _gateway.Next = Acknowledged(77);
+        _daily.ThrowOnDispose = true;
+        _daily.DisposeException = new InvalidOperationException(marker);
+        List<string> stacks = [];
+        EventHandler<FirstChanceExceptionEventArgs> handler = (_, args) =>
+        {
+            if (args.Exception.Message == marker)
+            {
+                lock (stacks)
+                {
+                    stacks.Add(args.Exception.StackTrace ?? string.Empty);
+                }
+            }
+        };
+        AppDomain.CurrentDomain.FirstChanceException += handler;
+        try
+        {
+            using HostTelemetry telemetry = new();
+            TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+            ToolPayloads.TradingWriteResult result = await tools.SubmitPlace(
+                PracticeAccountId,
+                MesContract,
+                ExecutionOrderType.Market,
+                VenueSide.Buy,
+                1,
+                "cleanup-stack");
+
+            AssertStructuredOutcomeUnknown(result, 77);
+        }
+        finally
+        {
+            AppDomain.CurrentDomain.FirstChanceException -= handler;
+        }
+
+        stacks.Should().NotBeEmpty();
+        stacks.Should().OnlyContain(stack => stack.Contains("DisposeAsync", StringComparison.Ordinal));
+    }
+
     [Theory]
     [InlineData(TradingMcpTools.PlaceOrderOperation)]
     [InlineData(TradingMcpTools.CancelOrderOperation)]
@@ -1177,7 +1266,7 @@ public sealed class TradingOrderToolGateTests
         TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
 
         ToolPayloads.TradingWriteResult result = await call(tools);
-        faults.LastMeasurement!.Value.Should().Be(1);
+        AssertOneBookkeepingFault(faults);
         return result;
     }
 
@@ -1292,6 +1381,9 @@ public sealed class TradingOrderToolGateTests
 
     private static MetricCollector<long> ListenFaults(HostTelemetry telemetry) =>
         new(telemetry, HostTelemetry.Name, HostTelemetry.BookkeepingFaultsInstrument);
+
+    private static void AssertOneBookkeepingFault(MetricCollector<long> faults) =>
+        faults.GetMeasurementSnapshot().Sum(measurement => measurement.Value).Should().Be(1);
 
     private static void AssertWrite(
         MetricCollector<long> writes,

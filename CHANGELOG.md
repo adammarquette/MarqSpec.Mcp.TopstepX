@@ -39,11 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is `idempotency_key_too_long` and writes no row. Modify charges the full new size. When trading is enabled,
   an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel and close; that
   block is pending Adam's decision.
-- **A swallowed daily-cap release follows the same post-send rule** (gh#769). When the coordinator reports
-  `LastReleaseFailed` and no cleanup exception was stored, a send that has already started is
-  `OutcomeUnknown` and is not safe to retry. A release that fails before the send leaves the refusal that
-  was already decided. The order id is dropped after an acknowledged place; that report is a known false
-  unknown.
 
 ### Removed
 
@@ -53,6 +48,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ADR-0023 is superseded.
 
 ### Changed
+
+- **A swallowed daily-cap release follows the same post-send rule** (gh#780). When the coordinator reports
+  `LastReleaseFailed` and no cleanup exception was stored, a send that has already started is
+  `OutcomeUnknown` and is not safe to retry. The result keeps the broker order id and the parsed stage.
+  A release that fails before the send leaves the refusal that was already decided.
 
 - **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
   `postgres` (Timescale pg17, pinned by digest), a public OAuth `server`, and a private single-replica

@@ -611,7 +611,7 @@ public sealed class TradingOrderToolGateTests
             1,
             "unlock-after-ack");
 
-        AssertStructuredOutcomeUnknown(result);
+        AssertStructuredOutcomeUnknown(result, 77);
         result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.SafeToRetry);
         _gateway.PlaceOrderCalls.Should().Be(1);
         _daily.LockAcquisitions.Should().Be(1);
@@ -640,7 +640,7 @@ public sealed class TradingOrderToolGateTests
             1,
             "venue-cleanup-after-send");
 
-        AssertStructuredOutcomeUnknown(result);
+        AssertStructuredOutcomeUnknown(result, 77);
         result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.SafeToRetry);
         _gateway.PlaceOrderCalls.Should().Be(1);
         AssertWrite(writes, spans, TradingMcpTools.PlaceOrderOperation, ExecutionWriteRefusal.OutcomeUnknown);
@@ -652,7 +652,9 @@ public sealed class TradingOrderToolGateTests
         _gateway.Next = Acknowledged(77);
         _daily.SwallowReleaseFailure = true;
         using HostTelemetry telemetry = new();
+        _daily.FaultTelemetry = telemetry;
         using MetricCollector<long> writes = ListenWrites(telemetry);
+        using MetricCollector<long> faults = ListenFaults(telemetry);
         List<Activity> spans = [];
         using ActivityListener listener = Listen(spans, telemetry.Activities);
         TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
@@ -665,14 +667,14 @@ public sealed class TradingOrderToolGateTests
             1,
             "swallowed-release-after-ack");
 
-        AssertStructuredOutcomeUnknown(result);
-        result.ParsedStage.Should().Be(AccountStage.Unknown);
-        result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        AssertStructuredOutcomeUnknown(result, 77);
+        result.ParsedStage.Should().Be(AccountStage.Practice);
         _gateway.PlaceOrderCalls.Should().Be(1);
         _daily.LockAcquisitions.Should().Be(1);
         _daily.LastReleaseFailed.Should().BeTrue();
         _audit.Entries.Should().Contain(entry =>
             entry.Outcome == TradingAuditOutcomes.Live && entry.OrderId == 77);
+        faults.LastMeasurement!.Value.Should().Be(1);
         AssertWrite(writes, spans, TradingMcpTools.PlaceOrderOperation, ExecutionWriteRefusal.OutcomeUnknown);
     }
 
@@ -682,6 +684,9 @@ public sealed class TradingOrderToolGateTests
         _daily.ContractsToday = 10;
         _daily.SwallowReleaseFailure = true;
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = ListenWrites(telemetry);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
         TradingOrderTools tools = Tools(
             telemetry,
             new TradingExecutionOptions { Enabled = true, MaxContractsPerDay = 10 });
@@ -696,11 +701,11 @@ public sealed class TradingOrderToolGateTests
 
         result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
         result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
-        result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
         result.RefusalCode.Should().Be(ExecutionWriteRefusal.DailyContractLimitExceeded);
         _gateway.PlaceOrderCalls.Should().Be(0);
         _daily.LockAcquisitions.Should().Be(1);
         _daily.LastReleaseFailed.Should().BeTrue();
+        AssertWrite(writes, spans, TradingMcpTools.PlaceOrderOperation, ExecutionWriteRefusal.DailyContractLimitExceeded);
     }
 
     [Fact]
@@ -729,7 +734,8 @@ public sealed class TradingOrderToolGateTests
         result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
         result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
         result.RefusalCode.Should().BeNull();
-        result.OrderId.Should().BeNull();
+        result.OrderId.Should().Be(77);
+        result.ParsedStage.Should().Be(AccountStage.Practice);
         _gateway.PlaceOrderCalls.Should().Be(1);
         _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
         faults.LastMeasurement!.Value.Should().Be(1);
@@ -1088,7 +1094,7 @@ public sealed class TradingOrderToolGateTests
 
         ToolPayloads.TradingWriteResult result = await Call(tools, operation, operation + "-cleanup-after-send");
 
-        AssertStructuredOutcomeUnknown(result);
+        AssertStructuredOutcomeUnknown(result, 77);
         result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.SafeToRetry);
         CallsFor(operation).Should().Be(1);
         _daily.LockAcquisitions.Should().Be(operation == TradingMcpTools.PlaceOrderOperation ? 1 : 0);
@@ -1116,7 +1122,7 @@ public sealed class TradingOrderToolGateTests
         ToolPayloads.TradingWriteResult result = await SubmitWithThrowingSpan(
             tools => tools.SubmitCancel(PracticeAccountId, OpenOrderId, "cancel-span-after-ack"));
 
-        AssertStructuredOutcomeUnknown(result);
+        AssertStructuredOutcomeUnknown(result, 77);
         _gateway.CancelOrderCalls.Should().Be(1);
         _daily.LockAcquisitions.Should().Be(0);
         _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
@@ -1128,7 +1134,7 @@ public sealed class TradingOrderToolGateTests
         ToolPayloads.TradingWriteResult result = await SubmitWithThrowingSpan(
             tools => tools.SubmitClose(PracticeAccountId, MesContract, "close-span-after-ack"));
 
-        AssertStructuredOutcomeUnknown(result);
+        AssertStructuredOutcomeUnknown(result, 77);
         _gateway.ClosePositionCalls.Should().Be(1);
         _daily.LockAcquisitions.Should().Be(0);
         _audit.Entries.Should().Contain(entry => entry.Outcome == TradingAuditOutcomes.Live);
@@ -1175,13 +1181,13 @@ public sealed class TradingOrderToolGateTests
         return result;
     }
 
-    private static void AssertStructuredOutcomeUnknown(ToolPayloads.TradingWriteResult result)
+    private static void AssertStructuredOutcomeUnknown(ToolPayloads.TradingWriteResult result, long? orderId = null)
     {
         result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
         result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
         result.RefusalCode.Should().BeNull();
         result.ResultCode.Should().BeNull();
-        result.OrderId.Should().BeNull();
+        result.OrderId.Should().Be(orderId);
     }
 
     private TradingOrderTools Tools(HostTelemetry telemetry, TradingExecutionOptions options) =>
@@ -1456,9 +1462,13 @@ public sealed class TradingOrderToolGateTests
         public Exception? DisposeException { get; set; }
 
         /// <summary>
-        /// The real session lock swallows a release failure and reports <see cref="LastReleaseFailed"/>
-        /// without throwing. Set beside <see cref="ThrowOnDispose"/> when the dispose exception and the flag
-        /// must both be visible to the gate.
+        /// When set, a swallowed release records one bookkeeping fault on this meter and does not throw.
+        /// A throwing dispose leaves the count to the gate.
+        /// </summary>
+        public HostTelemetry? FaultTelemetry { get; set; }
+
+        /// <summary>
+        /// A release failure that sets <see cref="LastReleaseFailed"/> and does not throw.
         /// </summary>
         public bool SwallowReleaseFailure { get; set; }
 
@@ -1481,6 +1491,10 @@ public sealed class TradingOrderToolGateTests
                 if (owner.SwallowReleaseFailure)
                 {
                     owner.LastReleaseFailed = true;
+                    if (!owner.ThrowOnDispose)
+                    {
+                        owner.FaultTelemetry?.RecordBookkeepingFault();
+                    }
                 }
 
                 if (!owner.ThrowOnDispose)

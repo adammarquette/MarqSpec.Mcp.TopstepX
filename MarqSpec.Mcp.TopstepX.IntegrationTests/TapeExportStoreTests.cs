@@ -447,7 +447,18 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         await check.OpenAsync();
         await using NpgsqlCommand command = new("SELECT COUNT(*) FROM pg_stat_activity WHERE pid = @pid", check);
         command.Parameters.AddWithValue("pid", uploader.LockPid);
-        Convert.ToInt64(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture).Should().Be(0);
+
+        // The lock session is unpooled, so dispose ends it, but the backend leaves pg_stat_activity
+        // asynchronously after the client's Terminate. Poll for a bounded time so a real leak still fails (gh#820).
+        long remaining = Convert.ToInt64(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
+        Stopwatch waited = Stopwatch.StartNew();
+        while (remaining != 0 && waited.Elapsed < TimeSpan.FromSeconds(5))
+        {
+            await Task.Delay(50);
+            remaining = Convert.ToInt64(await command.ExecuteScalarAsync(), CultureInfo.InvariantCulture);
+        }
+
+        remaining.Should().Be(0, "the unpooled lock session must end once the export pass returns");
     }
 
     [Fact]

@@ -356,11 +356,11 @@ public sealed class OrderToolSpecQaTests
     }
 
     // ---------------- Spec gaps ----------------
-    [Fact(Skip = "SpecGap #770: #769 pins cancel_order and close_position as refused with kill_switch; whether ADR-0024 s5.1-5.2 intends that, or lets risk-reducing writes through, is Adam's call.")]
+    [Fact(Skip = "SpecGap #770: v1 refuses cancel_order and close_position under the kill switch (ADR-0024 s5.1-5.2, pinned by #769); a carve-out letting a halt still flatten positions is pending Adam.")]
     public void TradingOrderTools_KillSwitch_CancelAndClose_SpecUnconfirmed()
     {
-        // If confirmed as refused: drop this skip, since TradingOrderToolGateTests already pins it. If changed to
-        // transmit: engage the kill switch, call cancel_order and close_position, and assert one send each plus
+        // If the carve-out is rejected: drop this skip, since TradingOrderToolGateTests already pins v1. If it is
+        // adopted: engage the kill switch, call cancel_order and close_position, and assert one send each plus
         // the Live audit row and telemetry.
     }
 

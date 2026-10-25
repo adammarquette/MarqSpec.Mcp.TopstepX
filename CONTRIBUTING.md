@@ -258,15 +258,15 @@ commits that carry an `Assisted-by:` trailer, and it picks the rule by author da
 Merged history stays as it is. To fix a failing commit on an open PR, you have to reword it and force-push,
 and that needs Adam's approval first.
 
-**Gating scripts run from the base commit** (gh#827). `commit-hygiene` and `issue-link` run the base
-commit's copy of `scripts/check-commit-trailers.sh` and `scripts/check-issue-link.sh`, not your PR's copy. A
-PR that changes one of these scripts is still judged by the base branch's copy, so the change takes effect for gating
+**Gating scripts run from the base commit** (gh#827). `commit-hygiene` and `issue-link` run the base commit's
+copy of `scripts/check-commit-trailers.sh` and `scripts/check-issue-link.sh`, not your PR's copy. A PR that
+changes one of these scripts is still judged by the base branch's copy, so the change takes effect for gating
 only after it merges (the self-tests in `ci.yml` still run your copy). A PR that adds a new gating script has
-no base copy, so the check fails closed and the PR needs a one-time manual gate by a maintainer.
-The limit: the workflow files themselves still come from the PR. A PR that edits
-`.github/workflows/branch-policy.yml` or `ci.yml` can remove the fetch step or point `run:` back at
-`./scripts/`, so it is still judged by its own copy of the workflow. A reviewer (Critique) must read every
-workflow change in full.
+no base copy, so the check fails closed and the PR needs a one-time manual gate by a maintainer. The limit:
+the workflow files and the local action `.github/actions/fetch-base-script` still come from the PR. A PR that
+edits `.github/workflows/branch-policy.yml`, `ci.yml` or that action can remove or alter the fetch step or
+point `run:` back at `./scripts/`, so it is still judged by its own copy of the workflow. A reviewer
+(Critique) must read every workflow and action change in full.
 
 ## Pull requests
 

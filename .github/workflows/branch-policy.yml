@@ -272,14 +272,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           MG_BASE: ${{ github.event.merge_group.base_sha }}
           MG_HEAD: ${{ github.event.merge_group.head_sha }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT" = "merge_group" ]; then
-            RANGE="${MG_BASE}..${MG_HEAD}"
-          else
-            RANGE="${BASE_SHA}..${HEAD_SHA}"
-          fi
-          ./scripts/check-commit-trailers.sh "$RANGE"
+        # No argument: the script derives the range from this env (exercised by its self-test, merge_group too).
+        run: ./scripts/check-commit-trailers.sh
 
   # ENFORCING, as of gh#35. It used to be advisory by construction -- continue-on-error, no `set -e`, every
   # branch ending in `exit 0` -- so it reported success on a PR citing no issue at all. The platform contract's

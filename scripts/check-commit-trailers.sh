@@ -2,6 +2,7 @@
 # check-commit-trailers.sh — AI-assistance trailers must come as a well-formed pair (gh#802).
 #
 #   scripts/check-commit-trailers.sh <rev-range>     e.g. base..head
+#   scripts/check-commit-trailers.sh                 range from EVENT + BASE_SHA/HEAD_SHA or MG_BASE/MG_HEAD
 #
 # CONTRIBUTING.md asks for both trailers on an AI-assisted commit:
 #
@@ -11,29 +12,41 @@
 # The rule, for every non-merge commit in the range:
 #   - Skipped if its AUTHOR date is before CUTOFF (2026-10-25T00:00:00-05:00). Author date, not committer
 #     date: a rebase rewrites the committer date, and an old commit rebased onto develop must not start failing.
-#   - Skipped if the message contains no `Assisted-by:` line at all. No bot list is needed; Dependabot carries
-#     none.
-#   - Otherwise the trailers must parse as git trailers (`git interpret-trailers --parse`, the final paragraph),
-#     every line of that paragraph must be a trailer, each `Assisted-by:` must read `<Name> (<tool>)`, and at
-#     least one `Co-Authored-By: <Name> <x@y>` must be present.
+#   - Skipped if `git interpret-trailers --parse` returns no `Assisted-by:` trailer (any key case). Prose or a
+#     quoted commit body mentioning `Assisted-by:` does not count. No bot list is needed; Dependabot carries none.
+#   - Otherwise, judged only on the parsed trailers: each `Assisted-by:` must read `<Name> (<tool>)`, at least
+#     one `Co-Authored-By:` must be present, and EVERY `Co-Authored-By:` must read `<Name> <x@y>`.
 #
-# Exit 0 when all pass, 1 on any finding (each named by sha), 2 on usage or an unreadable range.
+# Exit 0 when all pass, 1 on any finding (each named by sha), 2 on usage, an empty base/head, or an unreadable
+# range.
 set -euo pipefail
 
 CUTOFF_EPOCH=1792904400   # 2026-10-25T00:00:00-05:00 == 2026-10-25T05:00:00Z
 
-if [ "$#" -ne 1 ] || [ -z "$1" ]; then
-  echo "usage: $0 <rev-range>" >&2
+if [ "$#" -eq 0 ]; then
+  # Workflow mode: derive the range from the same env branch-policy.yml sets (pull_request or merge_group).
+  if [ "${EVENT:-}" = "merge_group" ]; then
+    BASE=${MG_BASE:-}; HEAD=${MG_HEAD:-}
+  else
+    BASE=${BASE_SHA:-}; HEAD=${HEAD_SHA:-}
+  fi
+  [ -n "$BASE" ] || { echo "::error::empty base sha for event '${EVENT:-}'; refusing to check an unbounded range." >&2; exit 2; }
+  [ -n "$HEAD" ] || { echo "::error::empty head sha for event '${EVENT:-}'." >&2; exit 2; }
+  range="$BASE..$HEAD"
+elif [ "$#" -eq 1 ] && [ -n "$1" ]; then
+  range=$1
+else
+  echo "usage: $0 <rev-range>   (or no argument, with EVENT/BASE_SHA/HEAD_SHA or MG_BASE/MG_HEAD set)" >&2
   exit 2
 fi
-range=$1
 
 if ! shas=$(git rev-list --no-merges "$range"); then
   echo "::error::git rev-list failed for '$range'; refusing to report on a range it could not read." >&2
   exit 2
 fi
 
-assisted_re='^Assisted-by: [^[:space:](][^(]*[^[:space:](] \([^()[:space:]][^()]*\)$|^Assisted-by: [^[:space:](] \([^()[:space:]][^()]*\)$'
+# <Name> (<tool>): name and tool non-empty, name not starting with '(' or space, tool without parentheses.
+assisted_re='^Assisted-by: [^[:space:](][^(]* \([^()]*[^()[:space:]][^()]*\)$'
 coauthor_re='^Co-authored-by: [^<>[:space:]][^<>]* <[^<>@[:space:]]+@[^<>@[:space:]]+>$'
 
 failed=0
@@ -48,44 +61,36 @@ for sha in $shas; do
     skipped=$((skipped + 1)); continue
   fi
   msg=$(git log -1 --format=%B "$sha")
-  if ! printf '%s\n' "$msg" | grep -qi '^Assisted-by:'; then
+  # Only what git itself parses as trailers counts. `Assisted-by:` in body prose or a quoted commit body is not
+  # a trailer, so a commit with no PARSED Assisted-by is skipped.
+  trailers=$(printf '%s\n' "$msg" | git interpret-trailers --parse)
+  assisted=$(printf '%s\n' "$trailers" | grep -i '^Assisted-by:' || true)
+  if [ -z "$assisted" ]; then
     skipped=$((skipped + 1)); continue
   fi
   checked=$((checked + 1))
   bad=0
 
-  # The last paragraph, as written. Every line must be a trailer (or a folded continuation).
-  last_para=$(printf '%s\n' "$msg" | awk 'BEGIN{p=""} /^[[:space:]]*$/{if(cur!="")p=cur; cur=""; next} {cur=cur $0 "\n"} END{if(cur!="")p=cur; printf "%s", p}')
-  while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    case "$line" in [[:space:]]*) continue ;; esac
-    if ! printf '%s\n' "$line" | grep -qE '^[A-Za-z0-9-]+: '; then
-      fail "$short:" "trailer block has a non-trailer line: '$line'. Trailers must be the final paragraph, nothing else."
+  while IFS= read -r a; do
+    norm=$(printf '%s\n' "$a" | sed 's/^[Aa][Ss][Ss][Ii][Ss][Tt][Ee][Dd]-[Bb][Yy]:/Assisted-by:/')
+    if ! printf '%s\n' "$norm" | grep -qE "$assisted_re"; then
+      fail "$short:" "malformed '$a'; expected 'Assisted-by: <Name> (<tool>)'."
       bad=1
     fi
-  done <<<"$last_para"
-
-  trailers=$(printf '%s\n' "$msg" | git interpret-trailers --parse)
-  assisted=$(printf '%s\n' "$trailers" | grep -i '^Assisted-by:' || true)
-  if [ -z "$assisted" ]; then
-    fail "$short:" "has an 'Assisted-by:' line that git does not parse as a trailer; move it into the final trailer paragraph."
-    bad=1
-  else
-    while IFS= read -r a; do
-      if ! printf '%s\n' "$a" | grep -qiE "$assisted_re"; then
-        fail "$short:" "malformed '$a'; expected 'Assisted-by: <Name> (<tool>)'."
-        bad=1
-      fi
-    done <<<"$assisted"
-  fi
+  done <<<"$assisted"
 
   coauthors=$(printf '%s\n' "$trailers" | grep -i '^Co-authored-by:' || true)
   if [ -z "$coauthors" ]; then
     fail "$short:" "has 'Assisted-by:' but no 'Co-Authored-By: <Name> <email>' trailer."
     bad=1
-  elif ! printf '%s\n' "$coauthors" | sed 's/^[Cc][Oo]-[Aa][Uu][Tt][Hh][Oo][Rr][Ee][Dd]-[Bb][Yy]:/Co-authored-by:/' | grep -qE "$coauthor_re"; then
-    fail "$short:" "malformed '$(printf '%s' "$coauthors" | head -1)'; expected 'Co-Authored-By: <Name> <x@y>'."
-    bad=1
+  else
+    while IFS= read -r c; do
+      norm=$(printf '%s\n' "$c" | sed 's/^[Cc][Oo]-[Aa][Uu][Tt][Hh][Oo][Rr][Ee][Dd]-[Bb][Yy]:/Co-authored-by:/')
+      if ! printf '%s\n' "$norm" | grep -qE "$coauthor_re"; then
+        fail "$short:" "malformed '$c'; expected 'Co-Authored-By: <Name> <x@y>'."
+        bad=1
+      fi
+    done <<<"$coauthors"
   fi
   [ "$bad" -eq 0 ] && echo "ok  $short trailers"
 done

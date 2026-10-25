@@ -151,11 +151,6 @@
     -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.11" />
     <!--
-      The unit tier's tape-cancellation test runs the receipt INSERT. The in-memory provider refuses
-      that statement, and a container belongs to the integration tier.
-    -->
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.11" />
-    <!--
       The in-memory span and metric exporters, for the unit tier only. The telemetry claims worth pinning are
       about what an exported span CARRIES — and, more sharply, what it must never carry (ADR-0019) — so they
       are asserted against real exported activities rather than against the builder that produced them.

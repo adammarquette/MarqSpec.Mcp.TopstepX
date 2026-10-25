@@ -531,7 +531,9 @@ is `pull_request.base.sha` or, on `merge_group`, `merge_group.base_sha` (never t
 A PR that edits a gating script is judged by the base copy; the change gates only after it merges, while the
 `ci.yml` self-tests still exercise the PR's copy. **Fail closed:** a base copy that is missing or cannot be fetched
 fails the step, never skips and never falls back to the PR's copy, so a PR adding a new gating script gets a
-one-time manual gate.
+one-time manual gate. **Limit:** the workflow file still comes from the PR. A PR that edits `branch-policy.yml` or `ci.yml`
+can delete the fetch step or point `run:` back at `./scripts/`, so it is still judged by its own copy of the
+workflow; a reviewer (Critique) must read workflow changes in full.
 
 **Every cell above was read from the rulesets API, never from the settings page** — one call per rung, over
 ids `21182074`, `21182075` and `21182079`:

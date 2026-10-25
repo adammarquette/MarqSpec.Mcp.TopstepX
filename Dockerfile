@@ -35,7 +35,8 @@ WORKDIR /app
 # until gh#767) uses that runuser to drop to uid 64198. The image entrypoint itself stays dotnet.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && test -x /usr/sbin/runuser
 
 # Non-root. This process holds brokerage credentials and reaches the public internet; there is no reason for
 # it to be able to write to its own image.

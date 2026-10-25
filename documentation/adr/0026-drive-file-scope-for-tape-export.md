@@ -35,7 +35,7 @@ response's `Retry-After` when it is present, capped at 30 seconds. The whole upl
 stops at a two-minute deadline, including a wait already in progress. That wait records `Timeout`
 instead of throwing. The Google client's built-in 503 backoff is disabled so it does not stack. Two
 processes serialise one identity with a session `pg_advisory_lock` on one direct connection for the
-pass. The connection is not pooled, sets `lock_timeout` and TCP keepalive, and is reopened if it
+pass. The connection is not pooled, sets `lock_timeout` and TCP socket keepalive, and is reopened if it
 drops. The lock is released in a `finally`. The pending receipt commits before the upload. The file
 id commits after. A day folder stores `appProperties` and is re-listed after create, so two creators
 converge on the first id.

@@ -51,12 +51,21 @@ public sealed class TapeExportTelemetryTests
         using HostTelemetry telemetry = new();
         using MetricCollector<long> uploads = new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
 
-        telemetry.TapeUpload(TapeUploadOutcome.Uploaded, 2);
+        telemetry.TapeUpload(
+            TapeUploadOutcome.Uploaded,
+            2,
+            TapeUploadOperation.Upload,
+            TapeUploadReason.Uploaded);
 
         CollectedMeasurement<long> measurement = uploads.LastMeasurement!;
         measurement.Value.Should().Be(2);
         measurement.Tags[HostTelemetry.OutcomeTag].Should().Be(TapeUploadOutcome.Uploaded);
-        measurement.Tags.Keys.Should().Equal(HostTelemetry.OutcomeTag);
+        measurement.Tags[HostTelemetry.OperationTag].Should().Be(TapeUploadOperation.Upload);
+        measurement.Tags[HostTelemetry.ReasonTag].Should().Be(TapeUploadReason.Uploaded);
+        measurement.Tags.Keys.Should().Equal(
+            HostTelemetry.OutcomeTag,
+            HostTelemetry.OperationTag,
+            HostTelemetry.ReasonTag);
     }
 
     [Fact]
@@ -65,7 +74,11 @@ public sealed class TapeExportTelemetryTests
         using HostTelemetry telemetry = new();
         using MetricCollector<long> uploads = new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
 
-        telemetry.TapeUpload(TapeUploadOutcome.Failed, 0);
+        telemetry.TapeUpload(
+            TapeUploadOutcome.Failed,
+            0,
+            TapeUploadOperation.Upload,
+            TapeUploadReason.Failed);
 
         uploads.GetMeasurementSnapshot().Should().BeEmpty();
     }

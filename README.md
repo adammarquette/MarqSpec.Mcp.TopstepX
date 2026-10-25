@@ -229,9 +229,8 @@ including when it throws. Values outside `1..604800` are refused. `604800` is a 
 on purpose — Npgsql treats it as no timeout. On Railway the image build does not count. The healthcheck
 window starts after the image is built and the container is deployed, and this migration runs before the
 process listens. A missed healthcheck stops the failed container and marks the deploy failed, while the
-previous deployment keeps serving. Set `RAILWAY_HEALTHCHECK_TIMEOUT_SEC` to at least
-`Store__StartupWaitSeconds` plus `Migrations__CommandTimeoutSeconds` plus about 300 seconds (3900 with the
-defaults). A `healthcheckTimeout` in the Railway service config overrides that variable. The server and
+previous deployment keeps serving. Set `RAILWAY_HEALTHCHECK_TIMEOUT_SEC` so that healthcheck timeout ≥
+`Store__StartupWaitSeconds` + `Migrations__CommandTimeoutSeconds` + ~300s (3900 with the defaults). A `healthcheckTimeout` in the Railway service config overrides that variable. The server and
 the recorder share the advisory lock, and their waits overlap. The second service's wait is one `CALL`,
 cancelled at the command timeout with Postgres error `57014`, whatever the healthcheck allows. If the
 first service's index build (migration) runs close to 3600 seconds, the second fails anyway: redeploy it

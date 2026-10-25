@@ -415,7 +415,9 @@ public sealed class OrderToolSpecQaTests
     {
         result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
         result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
-        result.OrderId.Should().BeNull();
+        // A fresh QaGateway acknowledges its first send as 1001. A post-send lease-release fault and a
+        // throwing span listener both keep that id (gh#780). The no-send refusal stays null.
+        result.OrderId.Should().Be(1001);
     }
 
     private static void AssertOneWrite(MetricCollector<long> writes, List<Activity> spans, string op, string reason)

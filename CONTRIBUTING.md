@@ -217,12 +217,13 @@ Assisted-by: grok-bot:<agent-name>
 ```
 
 - The value is `<model>:<version>`, with no spaces. Grok Bot agents sign `grok-bot:<agent-name>` in lowercase
-  kebab-case, e.g. `grok-bot:sgt-squash`. The check rejects the literal `example-model:1.2.3`.
-- `Co-Authored-By` is no longer required. Add one only for a human co-author.
+  kebab-case, e.g. `grok-bot:sgt-squash`.
+- `Co-Authored-By` is optional and not checked.
 - Put trailers in the last paragraph of the message, with no blank lines between them and nothing after them.
   If another paragraph follows, git doesn't read them as trailers and the check skips them without warning.
 
-**Enforcement.** The commit-hygiene job runs `scripts/check-commit-trailers.sh` on every PR. It only checks
+**Enforcement.** The commit-hygiene job runs `scripts/check-commit-trailers.sh` on every pull request and
+merge-queue (`merge_group`) run. It only checks
 commits that carry an `Assisted-by:` trailer, and it picks the rule by author date:
 
 | Author date | Rule |

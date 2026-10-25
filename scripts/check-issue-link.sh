@@ -813,9 +813,12 @@ KW_CITE='(^|[^[:alnum:]_])(related to|part of|towards):?[[:blank:]]+'
 # exact failure this job is being fixed for -- but one transient API blip should not block a merge.
 closes=""
 for attempt in 1 2 3; do
-  if bound=$(gh pr view "$PR" --json closingIssuesReferences --jq \
-      "[.closingIssuesReferences[] | select((.repository.owner.login + \"/\" + .repository.name | ascii_downcase) == (\"$GH_REPO\" | ascii_downcase)) | .number | tostring] | join(\" \")") \
-     && [[ "$bound" =~ ^[0-9\ ]*$ ]]; then
+  # One read, two answers: `<this repo's numbers>|<every bound reference, any repo, as owner/name#N>`.
+  if refs=$(gh pr view "$PR" --json closingIssuesReferences --jq \
+      "([.closingIssuesReferences[] | select((.repository.owner.login + \"/\" + .repository.name | ascii_downcase) == (\"$GH_REPO\" | ascii_downcase)) | .number | tostring] | join(\" \")) + \"|\" + ([.closingIssuesReferences[] | .repository.owner.login + \"/\" + .repository.name + \"#\" + (.number | tostring)] | join(\" \"))") \
+     && [[ "$refs" =~ ^[0-9\ ]*\|[^|]*$ ]]; then
+    bound=${refs%%|*}
+    bound_any=${refs#*|}
     # shellcheck disable=SC2086 # word-splitting the space-separated number list is the point
     closes=$(set -- $bound; echo $#)
     break
@@ -861,10 +864,25 @@ done
 # Checked separately, `Closes #999` plus #5 linked in the sidebar passed; the intersection closes that.
 # The opt-out is explicit and reasoned, never silent: `Part of #N` plus `Issue-stays-open: <reason>`, both in
 # prose (so a template placeholder inside an HTML comment cannot satisfy it).
+# THE OPT-OUT NEEDS AN EMPTY BINDING (gh#824 r3, review critique 2). "Nothing is linked" means
+# closingIssuesReferences is EMPTY: no issue of this repository AND no issue of any other repository, whether
+# bound by a body keyword or by the sidebar. A PR that says its issue stays open while GitHub will close
+# something on merge contradicts itself, so it fails and names what is linked. This runs only after the
+# matched-binding pass above, so `Closes #999` + `Part of #5` + `Issue-stays-open:` with #5 linked lands here
+# (no match, something linked) and fails with the remove-the-link message.
 if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
   if [ -n "$matched" ]; then
     echo "::notice::PR closes #${matched// /, #} in $GH_REPO, and the body says so in prose."
     exit 0
+  fi
+  if grep -qiE "(^|[^[:alnum:]_])part of:?[[:blank:]]+${REF}" <<<"$body_no_code" \
+     && grep -qE '^[[:blank:]]*Issue-stays-open:[[:blank:]]*[^[:blank:]]' <<<"$body_no_code" \
+     && [ -n "$bound_any" ]; then
+    echo "::error::The body opts out (Part of #N + Issue-stays-open:), but GitHub links ${bound_any// /, } to this"
+    echo "::error::PR and would close it on merge. The opt-out passes only when NO issue is linked. Remove the"
+    echo "::error::linked issue(s) from the sidebar (and any closing keyword for them), or drop the opt-out and"
+    echo "::error::use a plain 'Closes #N' for the issue this PR finishes."
+    exit 1
   fi
   if grep -qiE "(^|[^[:alnum:]_])part of:?[[:blank:]]+${REF}" <<<"$body_no_code" \
      && grep -qE '^[[:blank:]]*Issue-stays-open:[[:blank:]]*[^[:blank:]]' <<<"$body_no_code"; then
@@ -992,6 +1010,15 @@ if grep -qiE "$CITATION" <<<"$BODY" && ! grep -qiE "$CITATION" <<<"$body_no_code
   echo "::error::still needs a citation of its own."
   echo "::error::If the citation already IS in prose, an unterminated code fence or HTML comment"
   echo "::error::above it swallowed the rest of the body. Close that marker, or cite above it."
+  exit 1
+fi
+
+# A closing keyword before a PULL REQUEST URL (gh#824 r3). GitHub closes issues, not pull requests, so this
+# binds nothing -- and without this it fell through to a message saying there was no keyword at all.
+if [ "$body_closes" = false ] \
+   && grep -qiE "${KW_CLOSE}https?://github\\.com/[[:alnum:]_.-]+/[[:alnum:]_.-]+/pull/[0-9]+" <<<"$body_no_code"; then
+  echo "::error::The closing keyword points at a PULL REQUEST link (.../pull/N). Only an issue can be closed."
+  echo "::error::Close the issue instead: 'Closes #N' or 'Closes https://github.com/$GH_REPO/issues/N'."
   exit 1
 fi
 

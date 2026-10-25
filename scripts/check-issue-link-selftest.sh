@@ -76,6 +76,13 @@ red   "Related to #5 alone"                      "no longer pass" develop "$NONE
 red   "Towards #5 alone"                         "no longer pass" develop "$NONE" "Towards #5"
 red   "Part of #5 alone"                         "alone no longer passes" develop "$NONE" "Part of #5"
 green "Part of #5 + Issue-stays-open reason"     "$OPTOUT" develop "$NONE" $'Part of #5\n\nIssue-stays-open: phase 2 lands in #6'
+# gh#824 r3: the opt-out needs NOTHING linked, in this repository or any other.
+red   "opt-out with #5 linked"                   "Remove the" develop "$THIS" $'Part of #5\nIssue-stays-open: x'
+red   "Closes #999 + opt-out, #5 linked"         "but GitHub links adammarquette/MarqSpec.Mcp.TopstepX#5" \
+                                                 develop "$THIS" $'Closes #999\nPart of #5\nIssue-stays-open: x'
+red   "opt-out with another repo's issue linked" "someone/elsewhere#5" develop "$OTHER" $'Part of #5\nIssue-stays-open: x'
+red   "Closes a pull request URL"                "PULL REQUEST link" develop "$NONE" \
+                                                 "Closes https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/pull/5"
 red   "Issue-stays-open with an empty reason"    "alone no longer passes" develop "$NONE" $'Part of #5\nIssue-stays-open:   '
 red   "Issue-stays-open without Part of"         "cites no issue" develop "$NONE" $'Issue-stays-open: because'
 red   "Issue-stays-open inside an HTML comment"  "alone no longer passes" develop "$NONE" $'Part of #5\n<!-- Issue-stays-open: x -->'

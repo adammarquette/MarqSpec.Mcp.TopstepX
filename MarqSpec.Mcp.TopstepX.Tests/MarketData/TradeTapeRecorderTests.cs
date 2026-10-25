@@ -648,9 +648,12 @@ public sealed class TradeTapeRecorderTests
                 RecordedAt = leftoverStart,
             });
             await database.SaveChangesAsync();
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+            // The fake hub records the subscription before the recorder persists the open range;
+            // Listening is set only after that write lands, so wait for it before reading rows (gh#819).
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
 
             DateTimeOffset listenStart = clock.GetUtcNow();
             IReadOnlyList<TapeCoverageRecord> rows = CoverageRows(database);

@@ -1595,6 +1595,7 @@ public sealed class SessionConflictTests
         {
         }
 
+        // Counts every timer ever created and never goes down, so a test can wait for "more than before".
         public int Timers => Volatile.Read(ref _timers);
 
         public int Fired => Volatile.Read(ref _fired);

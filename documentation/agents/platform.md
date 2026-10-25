@@ -528,7 +528,7 @@ reports.
 **`commit-hygiene` and `issue-link` run the base commit's copy of their scripts** (gh#827). Each job fetches
 `scripts/check-commit-trailers.sh` or `scripts/check-issue-link.sh` with `git show <base>:<path>`, where `<base>`
 is `pull_request.base.sha` or, on `merge_group`, `merge_group.base_sha` (never the moving tip of `develop`).
-A PR that edits a gating script is judged by the merged copy; the change gates only after it merges, while the
+A PR that edits a gating script is judged by the base copy; the change gates only after it merges, while the
 `ci.yml` self-tests still exercise the PR's copy. **Fail closed:** a base copy that is missing or cannot be fetched
 fails the step, never skips and never falls back to the PR's copy, so a PR adding a new gating script gets a
 one-time manual gate.

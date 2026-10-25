@@ -526,7 +526,8 @@ reports.
 | `Analyze (csharp)`, `CodeQL` | — | — | — | `codeql.yml` — reports only, deliberately |
 
 **`commit-hygiene` and `issue-link` run the base commit's copy of their scripts** (gh#827). Each job fetches
-`scripts/check-commit-trailers.sh` or `scripts/check-issue-link.sh` with `git show <base>:<path>`, where `<base>`
+`scripts/check-commit-trailers.sh` or `scripts/check-issue-link.sh` through the local composite action
+`.github/actions/fetch-base-script` (`git show <base>:<path>`), where `<base>`
 is `pull_request.base.sha` or, on `merge_group`, `merge_group.base_sha` (never the moving tip of `develop`).
 A PR that edits a gating script is judged by the base copy; the change gates only after it merges, while the
 `ci.yml` self-tests still exercise the PR's copy. **Fail closed:** a base copy that is missing or cannot be fetched

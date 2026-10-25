@@ -62,15 +62,25 @@ commit "$POST" "$POST" "$(printf 'feat: x\n\n%s\nco-authored-by: Grok Bot <curso
 expect_green "lowercase co-authored-by key passes" "1 checked"
 
 commit "$POST" "$POST" "$(printf 'feat: x\n\nassisted-by: Grok Bot\n%s' "$GOOD_C")"
-expect_red "lowercase assisted-by key is enforced" "malformed 'assisted-by: Grok Bot'"
+# With the key configured, git reports a lowercase key in its configured spelling; it is still enforced.
+expect_red "lowercase assisted-by key is enforced" "malformed 'Assisted-by: Grok Bot'"
 
-# git accepts a mixed final paragraph when it holds a git-generated trailer (Signed-off-by) and >=25% trailers.
+# git accepts a mixed final paragraph with >=25% trailers when one is git-generated (Signed-off-by) or configured;
+# the gate configures Assisted-by and Co-Authored-By as trailer keys, so either suffices.
 commit "$POST" "$POST" "$(printf 'feat: x\n\nbody\n\nCloses #1\n%s\n%s\nSigned-off-by: s <s@x.y>' "$GOOD_A" "$GOOD_C")"
 expect_green "Closes #1 directly above the trailers (same paragraph, as git parses it) passes" "1 checked, 0 skipped"
 
-# Without a git-generated trailer git does not parse that paragraph at all; the check follows git and skips.
 commit "$POST" "$POST" "$(printf 'feat: x\n\nbody\n\nCloses #1\n%s\n%s' "$GOOD_A" "$GOOD_C")"
-expect_green "Closes #1 in the trailer paragraph without Signed-off-by is not parsed by git (skipped)" "0 checked, 1 skipped"
+expect_green "Closes #1 above a good pair, no Signed-off-by, is checked and passes" "1 checked, 0 skipped"
+
+commit "$POST" "$POST" "$(printf 'feat: x\n\nbody\n\nCloses #1\nAssisted-by: Grok Bot\nCo-Authored-By: Grok Bot <nope>')"
+expect_red "Closes #1 above a bad pair, no Signed-off-by, is checked and fails" "malformed 'Co-Authored-By: Grok Bot <nope>'"
+
+commit "$POST" "$POST" "$(printf 'feat: x\n\nSome prose explaining the change\nover two lines.\nAssisted-by: Grok Bot')"
+expect_red "prose last paragraph ending in Assisted-by is checked" "malformed 'Assisted-by: Grok Bot'"
+
+commit "$POST" "$POST" "$(printf 'feat: x\n\nCloses #1\nassisted-by: Grok Bot (Cursor)\nco-authored-by: Grok Bot <cursoragent@cursor.com>')"
+expect_green "lowercase keys with Closes #1 above are checked and pass" "1 checked, 0 skipped"
 
 commit "$POST" "$POST" "$(printf 'feat: x\n\nThe inner commit said:\nAssisted-by: whatever\nand more prose.\n\nSigned-off-by: s <s@x.y>')"
 expect_green "Assisted-by in body prose but not in parsed trailers is skipped" "0 checked, 1 skipped"

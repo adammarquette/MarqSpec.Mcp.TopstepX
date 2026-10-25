@@ -57,6 +57,17 @@ green "CRLF body"                                "$BOUND" develop "$THIS" $'Summ
 red   "another repo's issue, bound there"        "ANOTHER repository" develop "$OTHER" "Closes someone/elsewhere#5"
 red   "another repo's issue plus a stray this-repo binding is still no prose keyword" \
                                                  "sidebar" develop "$THIS" "Closes someone/elsewhere#5"
+# gh#824 r2: the body's closing number and the bound issue must be the SAME number.
+red   "Closes #999 in the body, #5 bound only in the sidebar" \
+                                                 "Mismatch: the body closes #999" develop "$THIS" "Closes #999"
+green "Closes #999 and Closes #5, #5 bound"      "PR closes #5 in" develop "$THIS" $'Closes #999\nCloses #5'
+green "Closes #5 bound, extra Related to #7"     "$BOUND" develop "$THIS" $'Closes #5\n\nRelated to #7'
+green "URL form, https"                          "$BOUND" develop "$THIS" "Fixes https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/5"
+green "URL form, http with a trailing slash"     "$BOUND" develop "$THIS" "Closes http://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/5/"
+red   "URL form, not bound"                      "GitHub bound nothing" develop "$NONE" "Fixes https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/5"
+red   "URL form, wrong number bound"             "Mismatch" develop "$THIS" "Fixes https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/6"
+red   "URL form for another repository"          "sidebar" develop "$THIS" "Fixes https://github.com/someone/elsewhere/issues/5"
+green "staging, URL form read from the body"     "ladder promotion" staging "$NONE" "Closes https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/5"
 red   "Closes #5 that GitHub did not bind"       "GitHub bound nothing" develop "$NONE" "Closes #5"
 red   "Closes #5 bound only to another repo"     "GitHub bound nothing" develop "$OTHER" "Closes #5"
 red   "binding with no keyword (sidebar link)"   "sidebar" develop "$THIS" "Implements the thing."

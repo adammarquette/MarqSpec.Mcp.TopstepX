@@ -15,8 +15,9 @@
 #   author dependabot[bot]          exempt -- it cannot file an issue first.
 #   base == DEFAULT_BRANCH          a CLOSING BINDING to an issue in this repository. The body, with code
 #                                   removed, carries `close|closes|closed|fix|fixes|fixed|resolve|resolves|
-#                                   resolved` (any case, optional colon) before `#N` or `<this repo>#N`, AND
-#                                   GitHub's closingIssuesReferences holds at least one issue of THIS repository.
+#                                   resolved` (any case, optional colon) before `#N`, `<this repo>#N` or
+#                                   `http(s)://github.com/<this repo>/issues/N[/]`, AND at least one such N is
+#                                   ALSO in GitHub's closingIssuesReferences filtered to THIS repository.
 #                                   Opt-out: `Part of #N` plus a line `Issue-stays-open: <reason>`.
 #                                   `Related to #N` / `Towards #N` / a bare `Part of #N` no longer pass.
 #   base staging or main            a ladder promotion: a binding is impossible there, so a closing keyword
@@ -795,6 +796,10 @@ if [ "$strip_only" = true ]; then printf '%s\n' "$body_no_code"; exit 0; fi
 # bind one, but closing another repo's issue says nothing about this repo's board (gh#824).
 repo_re=$(printf '%s' "$GH_REPO" | sed 's/[].[^$*+?(){}|\\/]/\\&/g')
 REF="(${repo_re})?#[0-9]+"
+# The same issue written as a URL, `https://github.com/<this repo>/issues/N`, which GitHub also binds after a
+# closing keyword (gh#824 r2). http or https, an optional trailing slash; THIS repository only, like REF.
+URL_REF="https?://github\\.com/${repo_re}/issues/[0-9]+/?"
+CLOSE_REF="(${REF}|${URL_REF})"
 # A keyword must start a word: `encloses #5` is not `closes #5`. The colon is optional, as GitHub allows.
 KW_CLOSE='(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:blank:]]+'
 KW_CITE='(^|[^[:alnum:]_])(related to|part of|towards):?[[:blank:]]+'
@@ -808,9 +813,11 @@ KW_CITE='(^|[^[:alnum:]_])(related to|part of|towards):?[[:blank:]]+'
 # exact failure this job is being fixed for -- but one transient API blip should not block a merge.
 closes=""
 for attempt in 1 2 3; do
-  if closes=$(gh pr view "$PR" --json closingIssuesReferences --jq \
-      "[.closingIssuesReferences[] | select((.repository.owner.login + \"/\" + .repository.name | ascii_downcase) == (\"$GH_REPO\" | ascii_downcase))] | length") \
-     && [[ "$closes" =~ ^[0-9]+$ ]]; then
+  if bound=$(gh pr view "$PR" --json closingIssuesReferences --jq \
+      "[.closingIssuesReferences[] | select((.repository.owner.login + \"/\" + .repository.name | ascii_downcase) == (\"$GH_REPO\" | ascii_downcase)) | .number | tostring] | join(\" \")") \
+     && [[ "$bound" =~ ^[0-9\ ]*$ ]]; then
+    # shellcheck disable=SC2086 # word-splitting the space-separated number list is the point
+    closes=$(set -- $bound; echo $#)
     break
   fi
   echo "::warning::Could not read closing references (attempt $attempt). Retrying."
@@ -827,22 +834,36 @@ fi
 # Herestring, not a pipe: `grep -q` exits on its first match, and under `pipefail` a SIGPIPE'd
 # upstream would make the pipeline non-zero on a body that DID match -- reading as no citation.
 body_closes=false
-if grep -qiE "${KW_CLOSE}${REF}" <<<"$body_no_code"; then
+if grep -qiE "${KW_CLOSE}${CLOSE_REF}" <<<"$body_no_code"; then
   body_closes=true
 fi
+# The issue NUMBERS the body closes in prose, and the subset GitHub actually bound (gh#824 r2, review
+# critique 1). Without the intersection `Closes #999` in the body plus #5 linked only in the sidebar passed:
+# each piece of evidence existed, but about different issues.
+body_nums=""
+if [ "$body_closes" = true ]; then
+  body_nums=$(grep -oiE "${KW_CLOSE}${CLOSE_REF}" <<<"$body_no_code" \
+    | sed -E 's#/$##; s#.*[^0-9]([0-9]+)$#\1#' | sort -un | tr '\n' ' ' | sed 's/ $//')
+fi
+matched=""
+for n in $body_nums; do
+  case " $bound " in *" $n "*) matched="${matched:+$matched }$n" ;; esac
+done
 
 # THE CLOSING-BINDING RULE (gh#824, Adam's 2026-10-25 audit decision). On the default branch the binding IS
 # available, so a PR must use it: `Related to #N` merged work while its card stayed open with nothing saying why.
-# Two pieces of evidence, and both are required because each misses something the other sees:
+# Two pieces of evidence, and they must agree on the SAME issue number (gh#824 r2): at least one N that follows a
+# closing keyword in the body must also be in this repository's closingIssuesReferences.
 #   the BODY  -- what the author wrote, in prose. A link made only in the sidebar's Development panel binds
 #                too, but leaves the PR text saying nothing; the rule is about the text reviewers read.
 #   the API   -- what GitHub bound. A body keyword on a number that is a PULL REQUEST, or does not exist,
 #                binds nothing; only closingIssuesReferences can tell. No extra scope: the job already reads it.
+# Checked separately, `Closes #999` plus #5 linked in the sidebar passed; the intersection closes that.
 # The opt-out is explicit and reasoned, never silent: `Part of #N` plus `Issue-stays-open: <reason>`, both in
 # prose (so a template placeholder inside an HTML comment cannot satisfy it).
 if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
-  if [ "$body_closes" = true ] && [ "$closes" -gt 0 ]; then
-    echo "::notice::PR closes $closes issue(s) in $GH_REPO, and the body says so in prose."
+  if [ -n "$matched" ]; then
+    echo "::notice::PR closes #${matched// /, #} in $GH_REPO, and the body says so in prose."
     exit 0
   fi
   if grep -qiE "(^|[^[:alnum:]_])part of:?[[:blank:]]+${REF}" <<<"$body_no_code" \
@@ -977,6 +998,12 @@ fi
 # DEFAULT-BRANCH DIAGNOSTICS (gh#824). Each names the one piece of evidence that is missing. Like every
 # diagnostic here they change only the MESSAGE; terminal, so no false generic message follows them.
 if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
+  if [ "$body_closes" = true ] && [ "$closes" -gt 0 ]; then
+    echo "::error::Mismatch: the body closes #${body_nums// /, #} in prose, but GitHub links #${bound// /, #} to"
+    echo "::error::this PR. The body's closing number must be the issue GitHub actually links. Fix the number"
+    echo "::error::in the body, or the link in the sidebar, so the two name the same issue."
+    exit 1
+  fi
   if [ "$body_closes" = false ] && [ "$closes" -gt 0 ]; then
     echo "::error::GitHub binds $closes issue(s) to this PR - most likely linked in the sidebar - but the"
     echo "::error::body has no closing keyword in prose. Add a plain 'Closes #N' to the body."

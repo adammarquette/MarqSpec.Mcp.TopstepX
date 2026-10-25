@@ -145,9 +145,9 @@ verdict; it is still the same kickback.
 Any unresolved finding wins. `Ready to Merge` requires every reviewer approving
 ([board case 5](../project-board-workflow.md#5-two-reviewers-split-verdict)).
 
-**`BLOCKED` at `Ready to Merge` is the expected end, not a fault.** `develop`'s ruleset sets
-`require_extra_approval_for_unattributed_changes`, and in practice a PR that is approved, green on every
-required check, unconflicted and up to date still reads:
+**`BLOCKED` at `Ready to Merge` is the expected end for now, not a fault.** In practice a PR that is approved,
+green on every required check, unconflicted and up to date still reads `BLOCKED`. The cause isn't established
+yet (see [#818](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/818)). The PR shows:
 
 ```
 mergeStateStatus: BLOCKED    reviewDecision: ""    mergeable: MERGEABLE

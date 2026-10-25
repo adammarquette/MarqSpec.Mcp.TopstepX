@@ -176,6 +176,24 @@ expect_green "boundary: exactly 12:36:00 CDT is window 2" ", window 2"
 commit "2026-10-25T12:35:59-05:00" "2026-10-25T12:35:59-05:00" "$(printf 'feat: x\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
 expect_green "boundary: 12:35:59 CDT is window 1" ", window 1"
 
+commit "2026-10-25T17:36:00Z" "2026-10-25T17:36:00Z" "$(printf 'feat: x\n\n%s' "$GOOD_M")"
+expect_green "boundary: 12:36:00 CDT as +00:00 (2026-10-25T17:36:00Z) is window 2" ", window 2"
+
+commit "2026-10-25T17:35:59Z" "2026-10-25T17:35:59Z" "$(printf 'feat: x\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
+expect_green "boundary: 12:35:59 CDT as +00:00 (2026-10-25T17:35:59Z) is window 1" ", window 1"
+
+commit "2026-10-25T10:36:00-07:00" "2026-10-25T10:36:00-07:00" "$(printf 'feat: x\n\n%s' "$GOOD_M")"
+expect_green "boundary: 12:36:00 CDT as -07:00 (2026-10-25T10:36:00-07:00) is window 2" ", window 2"
+
+commit "2026-10-25T10:35:59-07:00" "2026-10-25T10:35:59-07:00" "$(printf 'feat: x\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
+expect_green "boundary: 12:35:59 CDT as -07:00 (2026-10-25T10:35:59-07:00) is window 1" ", window 1"
+
+commit "2026-10-25T05:00:00Z" "2026-10-25T05:00:00Z" "$(printf 'feat: x\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
+expect_green "boundary: 00:00:00 CDT as +00:00 (05:00:00Z) is window 1" ", window 1"
+
+commit "2026-10-25T04:59:59Z" "2026-10-25T04:59:59Z" "$(printf 'feat: x\n\nAssisted-by: nonsense')"
+expect_green "boundary: 23:59:59 CDT as +00:00 (04:59:59Z) is skipped" "0 checked, 1 skipped"
+
 commit "$POST" "$POST2" "$(printf 'feat: rebased\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
 expect_green "w1 commit rebased in window 2 is judged by author date (window 1)" ", window 1"
 

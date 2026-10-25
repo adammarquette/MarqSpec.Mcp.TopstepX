@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
-# check-commit-trailers.sh — AI-assistance trailers must come as a well-formed pair (gh#802).
+# check-commit-trailers.sh — AI-assistance trailers must be well formed (gh#802).
 #
 #   scripts/check-commit-trailers.sh <rev-range>     e.g. base..head
 #   scripts/check-commit-trailers.sh                 range from EVENT + BASE_SHA/HEAD_SHA or MG_BASE/MG_HEAD
 #
-# CONTRIBUTING.md asks for both trailers on an AI-assisted commit:
-#
-#   Assisted-by: <Name> (<tool>)
-#   Co-Authored-By: <Name> <email>
-#
-# The rule, for every non-merge commit in the range:
-#   - Skipped if its AUTHOR date is before CUTOFF (2026-10-25T00:00:00-05:00). Author date, not committer
-#     date: a rebase rewrites the committer date, and an old commit rebased onto develop must not start failing.
-#   - Trailers are parsed with Assisted-by and Co-Authored-By configured as trailer keys (`git -c trailer.<x>.key=..
-#     interpret-trailers --parse`), so git's 25% rule accepts e.g. `Closes #1` above them without Signed-off-by.
-#   - Skipped if that parse returns no `Assisted-by:` trailer (any key case). Prose or a
-#     quoted commit body mentioning `Assisted-by:` does not count. No bot list is needed; Dependabot carries none.
-#   - Otherwise, judged only on the parsed trailers: each `Assisted-by:` must read `<Name> (<tool>)`, at least
-#     one `Co-Authored-By:` must be present, and EVERY `Co-Authored-By:` must read `<Name> <x@y>`.
+# The rule, for every non-merge commit in the range, by AUTHOR date (not committer date: a rebase rewrites the
+# committer date, and an old commit rebased onto develop must not start failing or change window):
+#   - before CUTOFF (2026-10-25T00:00:00-05:00): skipped.
+#   - window 1, CUTOFF <= author < CUTOFF2 (2026-10-25T12:36:00-05:00), the interim rule: each `Assisted-by:`
+#     must read `<Name> (<tool>)`, at least one `Co-Authored-By:` must be present, and EVERY one must read
+#     `<Name> <x@y>`. Kept so commits pushed in that window never need rewording.
+#   - window 2, author >= CUTOFF2, the current rule: each `Assisted-by:` value, trimmed, must match
+#     ^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$ (`<model>:<version>`). No model allowlist, but the CONTRIBUTING
+#     example `example-model:1.2.3` itself is rejected.
+#     `Co-Authored-By:` is not required and not inspected.
+# In both windows trailers are parsed with Assisted-by and Co-Authored-By configured as trailer keys
+# (`git -c trailer.<x>.key=.. interpret-trailers --parse`), so git's 25% rule accepts e.g. `Closes #1` above
+# them without Signed-off-by. A commit with no PARSED `Assisted-by:` (any key case) is skipped; prose, a quoted
+# commit body, or a trailer followed by another paragraph does not count. Dependabot carries none.
 #
 # Exit 0 when all pass, 1 on any finding (each named by sha), 2 on usage, an empty base/head, or an unreadable
 # range.
 set -euo pipefail
 
-CUTOFF_EPOCH=1792904400   # 2026-10-25T00:00:00-05:00 == 2026-10-25T05:00:00Z
+CUTOFF_EPOCH=1792904400    # 2026-10-25T00:00:00-05:00 == 2026-10-25T05:00:00Z  (window 1 starts)
+CUTOFF2_EPOCH=1792949760   # 2026-10-25T12:36:00-05:00 == 2026-10-25T17:36:00Z  (window 2 starts)
 
 if [ "$#" -eq 0 ]; then
   # Workflow mode: derive the range from the same env branch-policy.yml sets (pull_request or merge_group).
@@ -49,6 +50,8 @@ fi
 
 # <Name> (<tool>): name and tool non-empty, name not starting with '(' or space, tool without parentheses.
 assisted_re='^Assisted-by: [^[:space:](][^(]* \([^()]*[^()[:space:]][^()]*\)$'
+# Window 2: the trimmed value after `Assisted-by:` must be <model>:<version>.
+model_re='^[A-Za-z0-9._-]+:[A-Za-z0-9._-]+$'
 coauthor_re='^Co-authored-by: [^<>[:space:]][^<>]* <[^<>@[:space:]]+@[^<>@[:space:]]+>$'
 
 failed=0
@@ -73,28 +76,45 @@ for sha in $shas; do
   checked=$((checked + 1))
   bad=0
 
+  if [ "$author_epoch" -ge "$CUTOFF2_EPOCH" ]; then
+    win="window 2 (authored >= 2026-10-25 12:36 CDT)"
+    while IFS= read -r a; do
+      val=$(printf '%s\n' "$a" | sed 's/^[^:]*://; s/^[[:space:]]*//; s/[[:space:]]*$//')
+      if printf '%s\n' "$val" | grep -qixF 'example-model:1.2.3'; then
+        fail "$short [$win]:" "'$a' copied the CONTRIBUTING example; use the real model id and version."
+        bad=1
+      elif ! printf '%s\n' "$val" | grep -qE "$model_re"; then
+        fail "$short [$win]:" "malformed '$a'; expected 'Assisted-by: <model>:<version>'."
+        bad=1
+      fi
+    done <<<"$assisted"
+    [ "$bad" -eq 0 ] && echo "ok  $short trailers, $win"
+    continue
+  fi
+
+  win="window 1 (authored 2026-10-25 00:00-12:36 CDT)"
   while IFS= read -r a; do
     norm=$(printf '%s\n' "$a" | sed 's/^[Aa][Ss][Ss][Ii][Ss][Tt][Ee][Dd]-[Bb][Yy]:/Assisted-by:/')
     if ! printf '%s\n' "$norm" | grep -qE "$assisted_re"; then
-      fail "$short:" "malformed '$a'; expected 'Assisted-by: <Name> (<tool>)'."
+      fail "$short [$win]:" "malformed '$a'; expected 'Assisted-by: <Name> (<tool>)'."
       bad=1
     fi
   done <<<"$assisted"
 
   coauthors=$(printf '%s\n' "$trailers" | grep -i '^Co-authored-by:' || true)
   if [ -z "$coauthors" ]; then
-    fail "$short:" "has 'Assisted-by:' but no 'Co-Authored-By: <Name> <email>' trailer."
+    fail "$short [$win]:" "has 'Assisted-by:' but no 'Co-Authored-By: <Name> <email>' trailer."
     bad=1
   else
     while IFS= read -r c; do
       norm=$(printf '%s\n' "$c" | sed 's/^[Cc][Oo]-[Aa][Uu][Tt][Hh][Oo][Rr][Ee][Dd]-[Bb][Yy]:/Co-authored-by:/')
       if ! printf '%s\n' "$norm" | grep -qE "$coauthor_re"; then
-        fail "$short:" "malformed '$c'; expected 'Co-Authored-By: <Name> <x@y>'."
+        fail "$short [$win]:" "malformed '$c'; expected 'Co-Authored-By: <Name> <x@y>'."
         bad=1
       fi
     done <<<"$coauthors"
   fi
-  [ "$bad" -eq 0 ] && echo "ok  $short trailers"
+  [ "$bad" -eq 0 ] && echo "ok  $short trailers, $win"
 done
 
 echo "commit trailers: $checked checked, $skipped skipped (pre-cutoff author date or no Assisted-by)."

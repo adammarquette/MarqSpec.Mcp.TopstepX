@@ -4,7 +4,7 @@
   and issue-link refuses it — backticks, a fenced block, or an HTML comment alike. Fence a pasted git log and
   cite outside it: the log carries the OTHER work's issue, never this PR's.
 
-  Every section you write or edit ends with `Assisted-by: <Model Name> (<tool>)` — the same form as the
+  Every section you write or edit ends with `Assisted-by: <model>:<version>` — the same form as the
   commit trailer. Replace the placeholder on sections you wrote; delete it on sections you did not. A later
   rewrite replaces the line. Comments and reviews are not this file: write the trailer on the comment itself.
   A single footer on the PR is not a substitute — more than one tool can write the same PR.
@@ -16,7 +16,7 @@ Closes #
 
 <!-- The why, not a restatement of the diff. A reviewer reads this to know what question the change answers. -->
 
-Assisted-by: <Model Name> (<tool>)
+Assisted-by: <model>:<version>
 
 ## How it was verified
 
@@ -27,7 +27,7 @@ Assisted-by: <Model Name> (<tool>)
 - [ ] Unit tests green
 - [ ] Integration tests green — Testcontainers Postgres, `--filter "Category!=Live"`, no credentials required
 
-Assisted-by: <Model Name> (<tool>)
+Assisted-by: <model>:<version>
 
 ## Checklist
 
@@ -37,7 +37,7 @@ Assisted-by: <Model Name> (<tool>)
       an ADR of its own
 - [ ] **No secrets** — nothing logged, nothing tracked, no credential-shaped value in a committed file
 - [ ] **PR documentation** — every body section you wrote, and every comment or review you add, carries
-      `Assisted-by: <Model Name> (<tool>)`. A single footer on the PR is not a substitute
+      `Assisted-by: <model>:<version>`. A single footer on the PR is not a substitute
 - [ ] **Commits** are Conventional and carry both `Assisted-by:` and `Co-Authored-By:` trailers if AI-authored
 - [ ] History is curated into units of work (this repo rebase-merges; squash is disabled)
 
@@ -50,4 +50,4 @@ Assisted-by: <Model Name> (<tool>)
       "not placed" for a request that may be live.
 - [ ] New wire enum values are handled exhaustively; no zero-value default is permissive.
 
-Assisted-by: <Model Name> (<tool>)
+Assisted-by: <model>:<version>

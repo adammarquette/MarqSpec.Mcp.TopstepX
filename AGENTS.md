@@ -106,8 +106,9 @@ it before starting, and add dated entries only when nothing formal fits.
   one. Epics decompose into sub-issues. A thin issue is a defect — the next
   agent rebuilds context from these fields.
   Detail: [board workflow](documentation/project-board-workflow.md).
-- **Commits:** Conventional Commits, plus **both** an `Assisted-by:` and a `Co-Authored-By:` trailer on
-  AI-authored changes. **PR documentation** carries the `Assisted-by:` line on every body section, comment
+- **Commits:** Conventional Commits. AI-assisted commits end with an `Assisted-by:` trailer in the form
+  CONTRIBUTING describes (see [*AI-assisted commits*](CONTRIBUTING.md#ai-assisted-commits)). `Co-Authored-By`
+  isn't required. **PR documentation** carries the `Assisted-by:` line on every body section, comment
   and review — more than one tool can write the same PR. Full type list: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - **Branch off `develop` and PR back into it.** `develop` is the sole integration branch, never a workspace.
   Promotion is one-way with one source per step: `staging` ← `develop`, `main` ← `staging`. Never branch off or

@@ -203,29 +203,32 @@ tracker and drifts from it.
 - **[Conventional Commits](https://www.conventionalcommits.org/)**. Accepted types:
   `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`.
   The commit *type* drives SemVer.
-- AI-authored changes carry **both** trailers, in this exact form:
-
-  ```
-  Assisted-by: <Model Name> (<tool>)
-  Co-Authored-By: <Name> <email>
-  ```
-
-  The `Co-Authored-By:` email is whatever the tool or provider uses for its commits; a noreply address is fine.
-
-  `commit-hygiene` enforces this for commits authored on or after 2026-10-25 00:00 CDT: an `Assisted-by:` trailer
-  must have the `<Model Name> (<tool>)` shape (the check verifies the shape, not the name), and every
-  `Co-Authored-By:` trailer must read `<Name> <email>`, and at least one must be present. Only what
-  `git interpret-trailers --parse` reads as trailers counts, with both keys configured so a line such as
-  `Closes #1` may sit above them (`scripts/check-commit-trailers.sh`, gh#802).
-  A commit that fails this check can only be cleared by rewording it and force-pushing, which needs the
-  repository owner's (Adam's) direct approval, the same as any force-push, so get the trailers right the first time.
-
-  Both, every time. The single-trailer and model-id-parenthetical variants that appear in the sibling repos are
-  drift, not alternatives.
 - **Docs move with the code — the same-PR rule:** any change whose behavior, tool surface or configuration a
   doc describes updates **the affected section of that doc, in the same PR** — the PRD's `R-#`, the
   architecture doc, the ADRs, and the [tool catalogue](documentation/mcp-tool-catalog.md). A PR that drifts is
   **not done**.
+
+### AI-assisted commits
+
+If an AI tool helped write a commit, end the message with a trailer naming the model and version you used:
+
+```
+Assisted-by: grok-bot:<agent-name>
+```
+
+- The value is `<model>:<version>`, with no spaces. Grok Bot agents sign `grok-bot:<agent-name>` in lowercase kebab-case, e.g. `grok-bot:sgt-squash`. The check rejects the literal `example-model:1.2.3`.
+- `Co-Authored-By` is no longer required. Add one only for a human co-author.
+- Put trailers in the last paragraph of the message, with no blank lines between them and nothing after them. If another paragraph follows, git doesn't read them as trailers and the check skips them without warning.
+
+**Enforcement.** The commit-hygiene job runs `scripts/check-commit-trailers.sh` on every PR. It only checks commits that carry an `Assisted-by:` trailer, and it picks the rule by author date:
+
+| Author date | Rule |
+| --- | --- |
+| Before 2026-10-25T00:00:00-05:00 | Not checked. |
+| From then until `2026-10-25T12:36:00-05:00` | Interim rule: `Assisted-by: <Model Name> (<tool>)` and at least one `Co-Authored-By: <Name> <email>`. |
+| From `2026-10-25T12:36:00-05:00` on | `Assisted-by:` must match `<model>:<version>`. `Co-Authored-By` isn't required. |
+
+Merged history stays as it is. To fix a failing commit on an open PR, you have to reword it and force-push, and that needs Adam's approval first.
 
 ## Pull requests
 
@@ -234,7 +237,7 @@ tracker and drifts from it.
   comment alike; see the bullets under *Issue-first* above for what the check reads and what it still misses.
 - **Populate every field — maximal metadata.** Assignee, milestone, `work:*` + `Work Estimate` labels.
 - **Attribution is per section, not per PR.** AI-authored body sections, comments and reviews each carry
-  `Assisted-by: <Model Name> (<tool>)` in the same form as the commit trailer. More than one tool can write
+  `Assisted-by: <model>:<version>` in the same form as the commit trailer. More than one tool can write
   the same PR, so a single footer attributes the wrong agent. Replace the template placeholder on a section
   you wrote; a later edit replaces the line. Human-only text omits it. **Dependabot is exempt.**
 - **Reviews submit a verdict.** A reviewer leaves findings as comments and **Approves** or **Requests changes** —

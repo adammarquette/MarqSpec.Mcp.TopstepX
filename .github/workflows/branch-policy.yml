@@ -261,10 +261,11 @@ jobs:
 
           exit "$failed"
 
-      # gh#802. CONTRIBUTING.md asks AI-assisted commits for `Assisted-by: <Name> (<tool>)` AND
-      # `Co-Authored-By: <Name> <email>`. Applies to commits AUTHORED on or after 2026-10-25 00:00 CDT (author
-      # date survives a rebase; committer date does not). Commits without `Assisted-by:` (Dependabot included)
-      # are untouched. The logic and its cases live in the script and its self-test, run by ci.yml.
+      # gh#802. AI-assisted commits carry `Assisted-by: <model>:<version>` (CONTRIBUTING.md, *AI-assisted
+      # commits*). Judged by AUTHOR date (survives a rebase): before 2026-10-25 00:00 CDT skipped; until 12:36 CDT
+      # the interim `<Name> (<tool>)` + Co-Authored-By rule; from 12:36 CDT the `<model>:<version>` rule. Commits
+      # without a parsed `Assisted-by:` (Dependabot included) are untouched. Logic and cases live in the script and
+      # its self-test, run by ci.yml.
       - name: Check AI-assistance trailers
         env:
           EVENT: ${{ github.event_name }}

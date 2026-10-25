@@ -394,9 +394,9 @@ that variable. A deploy that misses the window stops the failed container and is
 previous deployment keeps serving. A restart policy does not run the index build (migration) again by
 itself. The next deploy drops an invalid index and runs the index build (migration) again.
 
-Size the healthcheck timeout to at least the startup wait plus the command timeout plus about 300
-seconds: `Store__StartupWaitSeconds` + `Migrations__CommandTimeoutSeconds` + ~300s. With the defaults
-(startup wait `0`, command timeout `3600`) that is 3900 seconds.
+The healthcheck timeout must satisfy healthcheck timeout ≥ `Store__StartupWaitSeconds` +
+`Migrations__CommandTimeoutSeconds` + ~300s. With the defaults (startup wait `0`, command timeout
+`3600`) that is 3900 seconds.
 
 One replica of each service is not enough on its own. The server and the recorder both migrate, and they
 take the same session advisory lock. The two waits overlap. They do not add. Each service's lock wait is

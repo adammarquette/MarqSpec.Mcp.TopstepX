@@ -2,9 +2,9 @@
   Open against `develop`. Populate every field — assignee, milestone, one work:* label, a Work Estimate label.
   Reference the issue with a PLAIN `Closes #N` below, in ordinary prose. A citation inside code binds nothing
   and issue-link refuses it — backticks, a fenced block, or an HTML comment alike. Fence a pasted git log and
-  cite outside it: the log carries the OTHER work's issue, never this PR's. Into develop, `Related to #N` no
-  longer passes: if this PR leaves its issue open, replace the line below with `Part of #N` plus a line
-  `Issue-stays-open: <why>`.
+  cite outside it: the log carries the OTHER work's issue, never this PR's. Into develop, `Related to #N` is
+  not enough on its own (extra `Related to` lines next to a `Closes #N` are fine): if this PR leaves its issue
+  open, replace the line below with `Part of #N` plus a line `Issue-stays-open: <why>`.
 
   Every section you write or edit ends with `Assisted-by: <model>:<version>` — the same form as the
   commit trailer. Replace the placeholder on sections you wrote; delete it on sections you did not. A later

@@ -12,7 +12,7 @@ two (gh#178).
 |---|---:|---|
 | [Coding — `MarqSpec.Mcp.TopstepX/AGENTS.md`](../../MarqSpec.Mcp.TopstepX/AGENTS.md) | 1.5K | by **directory proximity** — on your first read of a file in the host project |
 | [QA — `MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md`](../../MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md) | 1.7K | by **directory proximity** — on your first read in that project |
-| [Code Reviewer — `code-reviewer.md`](code-reviewer.md) | 1.8K | **never automatically — open it yourself** |
+| [Code Reviewer — `code-reviewer.md`](code-reviewer.md) | 1.9K | **never automatically — open it yourself** |
 | [Platform — `platform.md`](platform.md) | 35.0K | **never automatically — open it yourself** |
 | [Coordinator — `coordinator.md`](coordinator.md) | 2.6K | **never automatically — open it yourself** |
 

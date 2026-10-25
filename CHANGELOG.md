@@ -51,7 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A swallowed daily-cap release follows the same post-send rule** (gh#780). When the coordinator reports
   `LastReleaseFailed` and no cleanup exception was stored, a send that has already started is
-  `OutcomeUnknown` and is not safe to retry. The result keeps the broker order id and the parsed stage.
+  `OutcomeUnknown` and is not safe to retry. The result keeps the acked broker order id and the parsed
+  stage in the outcome-unknown cases, and leaves the id null when nothing was sent. The id is not kept
+  when the send throws, or when the audit write fails after the ack.
   A release that fails before the send leaves the refusal that was already decided.
 
 - **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:

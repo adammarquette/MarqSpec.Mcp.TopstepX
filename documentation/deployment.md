@@ -266,12 +266,16 @@ for path in /data /data/keys /data/tape-exports /data/keys/drive-sa.json; do
 done
 mkdir -p /data/tape-exports /data/keys
 find /data -maxdepth 0 ! -type l ! -user 64198 -exec chown -h 64198:64198 {} +
-find /data -maxdepth 1 \( -type d -o -type f \) ! -user 64198 -exec chown 64198:64198 {} +
+find /data -maxdepth 1 \( -type d -o -type f \) ! -user 64198 -exec chown -h 64198:64198 {} +
 find /data -maxdepth 1 -name keys -type d -exec chmod 0700 {} +
-find /data/keys -maxdepth 1 -name drive-sa.json -type f ! -user 64198 -exec chown 64198:64198 {} +
+find /data/keys -maxdepth 1 -name drive-sa.json -type f ! -user 64198 -exec chown -h 64198:64198 {} +
 find /data/keys -maxdepth 1 -name drive-sa.json -type f -exec chmod 0400 {} +
 exec runuser -u mcp -- dotnet MarqSpec.Mcp.TopstepX.dll'
 ```
+
+That command is also [`scripts/prepare-tape-volume.sh`](../scripts/prepare-tape-volume.sh), which takes the
+volume root as an argument and defaults to `/data`. gh#767 copies that script into the image. The fence
+above is the `/data` form an operator would paste.
 
 A start command replaces the image entrypoint
 ([start command](https://docs.railway.com/deployments/start-command#configure-the-start-command)).
@@ -283,8 +287,8 @@ root-owned. The app's log-and-skip path never runs, because the process never re
 Only `mkdir`, `find`, `chown`, and `chmod` run as root. `exec runuser -u mcp` replaces that shell,
 so no root process remains. `chown -R` of the whole volume is not used: it would include
 `lost+found` and grow with the export tree, and a root `chmod` that follows a symlink can change a
-path outside the volume. `find -type d` and `-type f` do not follow links. `chown -h` on the mount
-root does not follow one either. The command refuses a symlink at `/data`, `/data/keys`,
+path outside the volume. `find -type d` and `-type f` do not follow links. Every `chown` in the
+command is `chown -h`, so a symlink is not followed. The command refuses a symlink at `/data`, `/data/keys`,
 `/data/tape-exports`, or `/data/keys/drive-sa.json`.
 
 Until gh#767, the image's non-root guarantee for this path would depend on a Railway start command
@@ -296,7 +300,7 @@ The key file, once export is unblocked, is `/data/keys/drive-sa.json`, mode `040
 mode `0700`. Both are owned by uid 64198. gh#774 places that key once over `railway ssh` from stdin,
 never through a variable, and rotates it the same way. A key placed **after** the process has started
 is created by root as mode `0644` and stays that way until the next start, because `chown` and
-`chmod` run only then. At placement time run `chown 64198:64198 /data/keys/drive-sa.json` and
+`chmod` run only then. At placement time run `chown -h 64198:64198 /data/keys/drive-sa.json` and
 `chmod 0400 /data/keys/drive-sa.json`, or restart after placing or rotating the key. Do not do either
 until gh#767. Set `TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json` only then.
 Inline `TapeExport__Drive__ServiceAccountJson` stays the one to avoid.

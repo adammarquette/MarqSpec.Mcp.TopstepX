@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
@@ -46,9 +47,7 @@ public sealed class TapeDriveUploadTests
         uploads.GetMeasurementSnapshot().Select(measurement => (
             (string)measurement.Tags[HostTelemetry.OutcomeTag]!,
             measurement.Value))
-            .Should().Equal(
-                (TapeUploadOutcome.Retried, 2L),
-                (TapeUploadOutcome.Uploaded, 1L));
+            .Should().Equal((TapeUploadOutcome.Retried, 2L));
     }
 
     [Fact]
@@ -159,6 +158,9 @@ public sealed class TapeDriveUploadTests
         };
         FakeTapeDriveClient client = new() { FailuresBeforeSuccess = 10, Status = 503 };
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads = new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
         RetryingTapeDriveUploader uploader = new(client, telemetry, new ListLogger(), timing, clock);
 
         TapeDriveUploadResult result = await uploader.UploadAsync(Upload("deadline"), CancellationToken.None);
@@ -167,6 +169,15 @@ public sealed class TapeDriveUploadTests
         result.Attempts.Should().Be(1);
         result.FailureType.Should().Be("Timeout");
         waits.Should().ContainSingle();
+        CollectedMeasurement<long> measurement = uploads.GetMeasurementSnapshot().Should().ContainSingle().Subject;
+        measurement.Tags[HostTelemetry.OutcomeTag].Should().Be(TapeUploadOutcome.Failed);
+        measurement.Tags[HostTelemetry.OperationTag].Should().Be(TapeUploadOperation.Upload);
+        measurement.Tags[HostTelemetry.ReasonTag].Should().Be(TapeUploadReason.Timeout);
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("tape.upload");
+        span.Status.Should().Be(ActivityStatusCode.Error);
+        span.GetTagItem(HostTelemetry.ReasonTag).Should().Be(TapeUploadReason.Timeout);
+        span.GetTagItem(HostTelemetry.OperationTag).Should().Be(TapeUploadOperation.Upload);
     }
 
     [Fact]
@@ -257,6 +268,18 @@ public sealed class TapeDriveUploadTests
 
     private static TapeDriveUpload Upload(string bytes) =>
         new(_identity, null, "trades/test/ES/CON.F.US.EP.Z26/2026-10-01.v1.csv.gz", () => new MemoryStream(System.Text.Encoding.UTF8.GetBytes(bytes)));
+
+    private static ActivityListener Listen(List<Activity> into, ActivitySource source)
+    {
+        ActivityListener listener = new()
+        {
+            ShouldListenTo = candidate => ReferenceEquals(candidate, source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = into.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+        return listener;
+    }
 
     private sealed class ListLogger : ILogger
     {

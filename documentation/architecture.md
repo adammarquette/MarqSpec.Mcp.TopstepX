@@ -820,7 +820,7 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
 | `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`). One measurement per pass for a repeated outcome |
 | `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
-| `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent \| drive_orphan_pending | `TapeExportPass` records `drive_disabled` once when Drive is off, and `drive_orphan_pending` for receipts still pending. The retrying uploader records the others (gh#755, `R-10.6`). `drive_retried` counts the retries, not one event per attempt |
+| `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent \| drive_orphan_pending · `operation` = upload \| lock · `reason` = uploaded \| retried \| upload_timeout \| permanent \| failed \| disabled \| orphan_pending \| identity_busy \| lock_lost | `TapeExportPass` records `drive_disabled` once when Drive is off, `drive_orphan_pending` for receipts still pending, `drive_uploaded` only when the receipt is uploaded, and `drive_failed` with `identity_busy` or `lock_lost` when the lock does not stay held. The retrying uploader records retries, timeouts, and other Drive failures (gh#755, `R-10.6`). `drive_retried` counts the retries, not one event per attempt. A lock lost after the bytes land is `lock_lost`, not `drive_uploaded` |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
 
@@ -1142,7 +1142,7 @@ The image user is uid 64198. Railway allows one volume per service and mounts it
 Export on Railway is deferred until gh#767 (the template, gh#774, keeps `[export-blocked]`). Do not
 set `RAILWAY_RUN_UID=0` or enable the export on Railway now. The start command in
 [deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755) is the shape gh#767 moves into
-the image: it refuses symlinks, chowns only top-level entries that are not already uid 64198, and
+the image: it refuses symlinks, `chown -h` only top-level entries that are not already uid 64198, and
 `exec runuser` drops to `mcp`. Without uid 0 that command exits and the container crash-loops. A
 volume the application cannot write is still a skipped pass, not a crash and not a silent success.
 A key placed after start stays root-owned mode 0644 until the next start, or until it is chowned
@@ -1161,10 +1161,12 @@ folder. A 404 drops the process-wide folder cache. Two uploads of one identity s
 session `pg_advisory_lock` for the pass (not the pooled EF connection, and not transaction-mode
 PgBouncer). The key is `hashtextextended` of the identity (`objsubid` 1), which does not collide with
 the trading coordinator's two-int advisory locks (`objsubid` 2). The connection sets
-`lock_timeout` to 30 seconds and TCP keepalive to 30 seconds, and it is not returned to the pool.
-The lock is released in a `finally`. A drop mid-upload is `LockLost`: that file is failed, any
-returned file id is kept, and the pass opens a new connection for the next file. A lock timeout is
-`IdentityBusy` and the pass continues. `pending` is committed before the upload. The file id is
+`lock_timeout` to 30 seconds and TCP socket keepalive to 30 seconds (not Npgsql's keepalive query),
+and it is not returned to the pool. The lock is released in a `finally` before the next file, not
+only when the connection is disposed. A drop mid-upload is `LockLost`: that file is failed, any
+returned file id is kept, the counter is `lock_lost` rather than `drive_uploaded`, and the pass
+reopens the same connection for the next file. A lock timeout is `IdentityBusy` and the pass
+continues. Both record a `tape.upload` span and a counter tagged with operation and reason. `pending` is committed before the upload. The file id is
 committed after. Rows still `pending` at the start of a pass are logged and counted
 `drive_orphan_pending`, then retried. A `drive_disabled` day is finished only while Drive is off;
 turning Drive on exports it. A transient failure waits with exponential backoff and jitter, or
@@ -1193,7 +1195,10 @@ open listen still overlaps is skipped. An empty database does not rediscover a d
 
 `mcp.tape.exports` counts the outcomes above, once per pass when the count is positive.
 `mcp.tape.uploads` counts `drive_disabled`, `drive_retried`, `drive_uploaded`, `drive_failed`,
-`drive_permanent`, and `drive_orphan_pending`, tagged only with `outcome`. `mcp.tape.export.duration` is the pass, in seconds,
+`drive_permanent`, and `drive_orphan_pending`, each tagged with `outcome`, `operation`, and `reason`.
+`drive_uploaded` is only the receipt state `uploaded`. `upload_timeout`, `identity_busy`, and `lock_lost` are
+reasons on `drive_failed`. The lock reasons use operation `lock`. `upload_timeout` is not the recorder-health
+`timeout` value. `mcp.tape.export.duration` is the pass, in seconds,
 with no tags. A thrown pass is caught, counted `export_failed`, and does not fault the host. Loading
 the files back with DuckDB or pandas is [tape-export-reload.md](tape-export-reload.md).
 

@@ -729,7 +729,7 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
   mounted secret file. Inline JSON is visible to anyone who can inspect the container. The same
   identity updates one Drive file (`appProperties`, or the stored file id). Nothing is trashed. One
   identity is serialised with a session advisory lock on one direct, non-pooled connection for the
-  pass (`lock_timeout` 30s, TCP keepalive). A dropped connection fails that file and the pass
+  pass (`lock_timeout` 30s, TCP socket keepalive). A dropped connection fails that file and the pass
   continues. `pending` is committed before the upload and the file id after it. A `pending` row left
   from an earlier pass is reported and retried. A `drive_disabled` day is exported again once Drive
   is on. A transient failure is retried with backoff, or `Retry-After` when present, inside a

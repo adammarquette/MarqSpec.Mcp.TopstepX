@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO.Compression;
 using System.Text;
@@ -403,6 +404,10 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             },
         };
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
 
         TapeExportReport report = await Pass(
                 telemetry,
@@ -410,6 +415,13 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             .ExportAsync(null, CancellationToken.None);
 
         report.DaysRefused.Should().Be(1);
+        AssertUpload(
+            uploads.GetMeasurementSnapshot(),
+            spans,
+            TapeUploadReason.Timeout,
+            TapeUploadOperation.Upload,
+            TapeUploadOutcome.Failed,
+            ActivityStatusCode.Error);
         _database.ChangeTracker.Clear();
         TapeExportReceipt timedOut = await _database.TapeExportReceipts.SingleAsync(row =>
             row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
@@ -443,11 +455,26 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
     {
         await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
         DroppingUploader uploader = new(_fixture.ConnectionString);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
 
-        TapeExportReport report = await Pass(new HostTelemetry(), uploader)
+        TapeExportReport report = await Pass(telemetry, uploader)
             .ExportAsync(null, CancellationToken.None);
 
         report.DaysRefused.Should().Be(1);
+        AssertUpload(
+            uploads.GetMeasurementSnapshot(),
+            spans,
+            TapeUploadReason.LockLost,
+            TapeUploadOperation.Lock,
+            TapeUploadOutcome.Failed,
+            ActivityStatusCode.Error);
+        uploads.GetMeasurementSnapshot().Count(measurement =>
+            (string)measurement.Tags[HostTelemetry.OutcomeTag]! == TapeUploadOutcome.Uploaded)
+            .Should().Be(await UploadedReceiptsAsync());
         _database.ChangeTracker.Clear();
         TapeExportReceipt dropped = await _database.TapeExportReceipts.SingleAsync(row =>
             row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
@@ -480,11 +507,23 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         try
         {
             CountingUploader uploader = new();
+            using HostTelemetry telemetry = new();
+            using MetricCollector<long> uploads =
+                new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+            List<Activity> spans = [];
+            using ActivityListener listener = Listen(spans, telemetry.Activities);
 
-            TapeExportReport report = await Pass(new HostTelemetry(), uploader)
+            TapeExportReport report = await Pass(telemetry, uploader)
                 .ExportAsync(null, CancellationToken.None);
 
             report.DaysRefused.Should().Be(1);
+            AssertUpload(
+                uploads.GetMeasurementSnapshot(),
+                spans,
+                TapeUploadReason.IdentityBusy,
+                TapeUploadOperation.Lock,
+                TapeUploadOutcome.Failed,
+                ActivityStatusCode.Error);
             _database.ChangeTracker.Clear();
             TapeExportReceipt busy = await _database.TapeExportReceipts.SingleAsync(row =>
                 row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
@@ -578,6 +617,103 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
         receipt.UploadState.Should().Be(TapeExportReceipt.StateUploaded);
         client.Creates.Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task Export_WhenTheLockDropsAfterTheBytesLand_CountsLockLostNotUploaded()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        KillingClient client = new(_fixture.ConnectionString);
+
+        await Pass(
+                telemetry,
+                new RetryingTapeDriveUploader(client, telemetry, NullLogger.Instance, new TapeDriveRetryTiming()))
+            .ExportAsync(null, CancellationToken.None);
+
+        _database.ChangeTracker.Clear();
+        TapeExportReceipt dropped = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
+        dropped.UploadState.Should().Be(TapeExportReceipt.StateFailed);
+        dropped.FailureType.Should().Be("LockLost");
+        dropped.DriveFileId.Should().NotBeNullOrEmpty();
+        AssertUpload(
+            uploads.GetMeasurementSnapshot(),
+            spans,
+            TapeUploadReason.LockLost,
+            TapeUploadOperation.Lock,
+            TapeUploadOutcome.Failed,
+            ActivityStatusCode.Error);
+        uploads.GetMeasurementSnapshot().Count(measurement =>
+            (string)measurement.Tags[HostTelemetry.OutcomeTag]! == TapeUploadOutcome.Uploaded)
+            .Should().Be(await UploadedReceiptsAsync());
+    }
+
+    [Fact]
+    public async Task Export_WhenTwoDaysUpload_UsesOneLockConnection()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        await SeedTradeAsync(On(_keptDay, 11), 2, 5100m);
+        LockPidUploader uploader = new(_fixture.ConnectionString);
+
+        await Pass(new HostTelemetry(), uploader).ExportAsync(null, CancellationToken.None);
+
+        uploader.Pids.Should().NotBeEmpty();
+        uploader.Pids.Distinct().Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Export_WhenTheNextFileStarts_HasReleasedThePreviousLock()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        UnlockProbeUploader uploader = new(_fixture.ConnectionString);
+
+        await Pass(new HostTelemetry(), uploader).ExportAsync(null, CancellationToken.None);
+
+        uploader.FirstKey.Should().NotBeNullOrEmpty();
+        uploader.FirstKeyStillHeld.Should().Be(0);
+    }
+
+    private async Task<int> UploadedReceiptsAsync()
+    {
+        _database.ChangeTracker.Clear();
+        return await _database.TapeExportReceipts.AsNoTracking()
+            .CountAsync(row => row.UploadState == TapeExportReceipt.StateUploaded);
+    }
+
+    private static void AssertUpload(
+        IReadOnlyList<CollectedMeasurement<long>> measurements,
+        IReadOnlyList<Activity> spans,
+        string reason,
+        string operation,
+        string outcome,
+        ActivityStatusCode status)
+    {
+        measurements.Should().Contain(measurement =>
+            (string)measurement.Tags[HostTelemetry.ReasonTag]! == reason
+            && (string)measurement.Tags[HostTelemetry.OperationTag]! == operation
+            && (string)measurement.Tags[HostTelemetry.OutcomeTag]! == outcome);
+        spans.Should().Contain(span =>
+            span.OperationName == "tape.upload"
+            && span.Status == status
+            && (string?)span.GetTagItem(HostTelemetry.ReasonTag) == reason
+            && (string?)span.GetTagItem(HostTelemetry.OperationTag) == operation);
+    }
+
+    private static ActivityListener Listen(List<Activity> into, ActivitySource source)
+    {
+        ActivityListener listener = new()
+        {
+            ShouldListenTo = candidate => ReferenceEquals(candidate, source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = into.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+        return listener;
     }
 
     private TapeExportPass Pass(
@@ -873,6 +1009,8 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
 
         public int LockPid { get; private set; }
 
+        public List<int> Pids { get; } = [];
+
         public async Task<TapeDriveUploadResult> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
         {
             await using NpgsqlConnection connection = new(connectionString);
@@ -888,9 +1026,73 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             if (scalar is not null and not DBNull)
             {
                 LockPid = Convert.ToInt32(scalar, CultureInfo.InvariantCulture);
+                Pids.Add(LockPid);
             }
 
             return new TapeDriveUploadResult(TapeDriveUploadStatus.Uploaded, "locked-file", 1, null, null);
+        }
+    }
+
+    private sealed class UnlockProbeUploader(string connectionString) : ITapeDriveUploader
+    {
+        public bool IsEnabled => true;
+
+        public string? FirstKey { get; private set; }
+
+        public long FirstKeyStillHeld { get; private set; } = -1;
+
+        public async Task<TapeDriveUploadResult> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+        {
+            if (FirstKey is null)
+            {
+                FirstKey = upload.Identity.Canonical();
+            }
+            else if (FirstKeyStillHeld < 0)
+            {
+                await using NpgsqlConnection connection = new(connectionString);
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await using NpgsqlCommand command = new(
+                    """
+                    SELECT COUNT(*)
+                    FROM pg_locks
+                    WHERE locktype = 'advisory'
+                      AND granted
+                      AND objsubid = 1
+                      AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+                      AND classid::bigint = ((hashtextextended(@key, 0) >> 32) & 4294967295)
+                      AND objid::bigint = (hashtextextended(@key, 0) & 4294967295)
+                    """,
+                    connection);
+                command.Parameters.AddWithValue("key", FirstKey);
+                object? scalar = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                FirstKeyStillHeld = Convert.ToInt64(scalar, CultureInfo.InvariantCulture);
+            }
+
+            return new TapeDriveUploadResult(TapeDriveUploadStatus.Uploaded, "unlocked-file", 1, null, null);
+        }
+    }
+
+    private sealed class KillingClient(string connectionString) : ITapeDriveClient
+    {
+        private int _calls;
+
+        public async Task<string> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                await using NpgsqlConnection connection = new(connectionString);
+                await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+                await using NpgsqlCommand command = new(
+                    """
+                    SELECT pg_terminate_backend(pid)
+                    FROM pg_stat_activity
+                    WHERE application_name = 'tape-export-lock' AND pid <> pg_backend_pid()
+                    """,
+                    connection);
+                await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return "killed-" + upload.Identity.Kind + "-" + upload.Identity.Format;
         }
     }
 

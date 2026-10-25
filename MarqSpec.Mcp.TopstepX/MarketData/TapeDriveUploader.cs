@@ -306,10 +306,15 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
                 string fileId = await _client.UploadAsync(upload, token).ConfigureAwait(false);
                 if (retries > 0)
                 {
-                    _telemetry.TapeUpload(TapeUploadOutcome.Retried, retries);
+                    _telemetry.TapeUpload(
+                        TapeUploadOutcome.Retried,
+                        retries,
+                        TapeUploadOperation.Upload,
+                        TapeUploadReason.Retried);
                 }
 
-                _telemetry.TapeUpload(TapeUploadOutcome.Uploaded, 1);
+                // The pass counts drive_uploaded only after the identity lock is still held.
+                // Counting it here would disagree with a receipt the pass then marks failed.
                 return new TapeDriveUploadResult(TapeDriveUploadStatus.Uploaded, fileId, attempt, null, null);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -357,8 +362,7 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
             }
         }
 
-        span?.SetStatus(ActivityStatusCode.Error);
-        _telemetry.TapeUpload(TapeUploadOutcome.Failed, 1);
+        MarkFailure(span, TapeUploadOutcome.Failed, TapeUploadReason.Failed, 1);
         return new TapeDriveUploadResult(TapeDriveUploadStatus.Failed, null, MaxAttempts, "TapeDriveException", null);
     }
 
@@ -367,6 +371,15 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
 
     private bool PastDeadline(DateTimeOffset started) =>
         _clock.GetUtcNow() - started >= TapeDriveRetryTiming.Deadline;
+
+    private void MarkFailure(Activity? span, string outcome, string reason, int count)
+    {
+        span?.SetTag(HostTelemetry.OperationTag, TapeUploadOperation.Upload);
+        span?.SetTag(HostTelemetry.ReasonTag, reason);
+        span?.SetTag(HostTelemetry.OutcomeTag, outcome);
+        span?.SetStatus(ActivityStatusCode.Error);
+        _telemetry.TapeUpload(outcome, count, TapeUploadOperation.Upload, reason);
+    }
 
     private TapeDriveUploadResult Failed(
         Activity? span,
@@ -377,14 +390,20 @@ public sealed class RetryingTapeDriveUploader : ITapeDriveUploader, IDisposable
         int? status,
         bool permanent)
     {
-        span?.SetStatus(ActivityStatusCode.Error);
         string outcome = permanent ? TapeUploadOutcome.Permanent : TapeUploadOutcome.Failed;
+        string reason = type == "Timeout"
+            ? TapeUploadReason.Timeout
+            : permanent ? TapeUploadReason.Permanent : TapeUploadReason.Failed;
         if (retries > 0 && !permanent)
         {
-            _telemetry.TapeUpload(TapeUploadOutcome.Retried, retries);
+            _telemetry.TapeUpload(
+                TapeUploadOutcome.Retried,
+                retries,
+                TapeUploadOperation.Upload,
+                TapeUploadReason.Retried);
         }
 
-        _telemetry.TapeUpload(outcome, 1);
+        MarkFailure(span, outcome, reason, 1);
         _logger.LogError(
             "Drive upload failed for {Kind} {Day}. Type {FailureType}, status {FailureStatus}.",
             upload.Identity.Kind,

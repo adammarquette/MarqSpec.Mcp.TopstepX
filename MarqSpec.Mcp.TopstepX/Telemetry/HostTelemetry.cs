@@ -295,7 +295,7 @@ public sealed class HostTelemetry : IDisposable
         _tapeUploads = _meter.CreateCounter<long>(
             TapeUploadsInstrument,
             unit: "{upload}",
-            description: "Drive uploads of one export file, by whether Drive was disabled, the file landed, retries ran, or the attempt failed.");
+            description: "Drive uploads of one export file, by outcome, operation, and reason.");
     }
 
     /// <summary>
@@ -620,19 +620,27 @@ public sealed class HostTelemetry : IDisposable
 
     /// <summary>Counts one Drive upload outcome.</summary>
     /// <param name="outcome">What happened, from <see cref="TapeUploadOutcome"/>.</param>
-    /// <param name="count">Files. Zero records nothing.</param>
+    /// <param name="count">Files, or retries. Zero records nothing.</param>
+    /// <param name="operation">Which step, from <see cref="TapeUploadOperation"/>.</param>
+    /// <param name="reason">Why, from <see cref="TapeUploadReason"/>. Matches the receipt when there is one.</param>
     /// <remarks>
-    /// Tagged only with <see cref="OutcomeTag"/>. A file id or a contract id would be a new series
-    /// per value. The span <c>tape.upload</c> is the trace; this counter is the aggregate.
+    /// Tagged with <see cref="OutcomeTag"/>, <see cref="OperationTag"/>, and <see cref="ReasonTag"/>.
+    /// A file id or a contract id would be a new series per value. The span <c>tape.upload</c> is the
+    /// trace; this counter is the aggregate. A lock lost after the bytes land is <see cref="TapeUploadReason.LockLost"/>,
+    /// not <see cref="TapeUploadOutcome.Uploaded"/>.
     /// </remarks>
-    public void TapeUpload(string outcome, int count)
+    public void TapeUpload(string outcome, int count, string operation, string reason)
     {
         if (count <= 0)
         {
             return;
         }
 
-        _tapeUploads.Add(count, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+        _tapeUploads.Add(
+            count,
+            new KeyValuePair<string, object?>(OutcomeTag, outcome),
+            new KeyValuePair<string, object?>(OperationTag, operation),
+            new KeyValuePair<string, object?>(ReasonTag, reason));
     }
 
     /// <summary>Counts the values a projection pass wrote for one indicator.</summary>
@@ -1276,4 +1284,56 @@ public static class TapeUploadOutcome
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Disabled, Retried, Uploaded, Failed, Permanent, OrphanPending];
+}
+
+/// <summary>Which step a tape-upload measurement is — the <c>operation</c> tag on <c>mcp.tape.uploads</c>.</summary>
+public static class TapeUploadOperation
+{
+    /// <summary>The Drive attempt, including a pass that never called Drive.</summary>
+    public const string Upload = "upload";
+
+    /// <summary>The identity lock. The receipt is failed and the bytes are not counted as uploaded.</summary>
+    public const string Lock = "lock";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Upload, Lock];
+}
+
+/// <summary>Why a tape-upload measurement has its outcome — the <c>reason</c> tag on <c>mcp.tape.uploads</c>.</summary>
+public static class TapeUploadReason
+{
+    /// <summary>The receipt is <c>uploaded</c>. The lock was still held after the bytes landed.</summary>
+    public const string Uploaded = "uploaded";
+
+    /// <summary>How many transient attempts were repeated before the final outcome.</summary>
+    public const string Retried = "retried";
+
+    /// <summary>The two-minute deadline fired, including during a backoff wait.</summary>
+    /// <remarks>
+    /// Not <c>timeout</c>: that value already belongs to <see cref="RecorderHealthOutcome.Timeout"/>, and
+    /// two vocabularies cannot share a value.
+    /// </remarks>
+    public const string Timeout = "upload_timeout";
+
+    /// <summary>The error will not succeed on another try.</summary>
+    public const string Permanent = "permanent";
+
+    /// <summary>Transient attempts were exhausted, and the reason is not a deadline or a lock.</summary>
+    public const string Failed = "failed";
+
+    /// <summary>The folder or the service account is unset.</summary>
+    public const string Disabled = "disabled";
+
+    /// <summary>Receipts still pending at the start of a pass.</summary>
+    public const string OrphanPending = "orphan_pending";
+
+    /// <summary>The identity lock was still busy after <c>lock_timeout</c>.</summary>
+    public const string IdentityBusy = "identity_busy";
+
+    /// <summary>The lock connection dropped. The receipt is failed even if Drive returned a file id.</summary>
+    public const string LockLost = "lock_lost";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [Uploaded, Retried, Timeout, Permanent, Failed, Disabled, OrphanPending, IdentityBusy, LockLost];
 }

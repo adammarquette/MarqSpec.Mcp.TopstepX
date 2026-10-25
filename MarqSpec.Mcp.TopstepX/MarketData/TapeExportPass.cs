@@ -46,7 +46,8 @@ public interface ITapeExportPass
 /// A UTC day that has not ended is not archived. A day that an open listen still overlaps is not
 /// archived either. The receipt for a failed upload keeps the last Drive file id. One identity is
 /// serialised with a session advisory lock on one direct connection for the pass. That connection
-/// is not pooled, sets <c>lock_timeout</c> and TCP keepalive, and is reopened if it drops. The
+/// is not pooled, sets <c>lock_timeout</c> and TCP keepalive (the socket option, not Npgsql's
+/// keepalive query), and is reopened if it drops. The
 /// pending receipt is committed before the upload, and the file id is committed after it. A
 /// <c>drive_disabled</c> day is exported again once Drive is on.
 /// </para>
@@ -154,76 +155,98 @@ public sealed class TapeExportPass(
         bool notedDriveDisabled = false;
         await ReportPendingAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach (DateOnly day in days)
+        // One session for every identity in the pass. Opened on the first upload and held until the pass
+        // finishes, including across days. A drop reopens that same gate for the next file.
+        IdentityGate? gate = null;
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            if (!TapeExportPolicy.IsExportable(day, now) || await OpenRunCoversAsync(day, cancellationToken).ConfigureAwait(false))
+            foreach (DateOnly day in days)
             {
-                skippedOpen++;
-                continue;
-            }
-
-            using Activity? exportSpan = _telemetry.Activities.StartActivity("tape.export", ActivityKind.Internal);
-            exportSpan?.SetTag("tape.day", day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
-
-            TapeExportVerification written;
-            try
-            {
-                TapeExportVerification existing = await TapeExportArchive.VerifyAsync(_options.Path, day, cancellationToken)
-                    .ConfigureAwait(false);
-                if (existing.Verified)
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!TapeExportPolicy.IsExportable(day, now) || await OpenRunCoversAsync(day, cancellationToken).ConfigureAwait(false))
                 {
-                    written = existing;
+                    skippedOpen++;
+                    continue;
                 }
-                else
+
+                using Activity? exportSpan = _telemetry.Activities.StartActivity("tape.export", ActivityKind.Internal);
+                exportSpan?.SetTag("tape.day", day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+
+                TapeExportVerification written;
+                try
                 {
-                    written = await StreamDayAsync(day, now, cancellationToken).ConfigureAwait(false);
+                    TapeExportVerification existing = await TapeExportArchive.VerifyAsync(_options.Path, day, cancellationToken)
+                        .ConfigureAwait(false);
+                    if (existing.Verified)
+                    {
+                        written = existing;
+                    }
+                    else
+                    {
+                        written = await StreamDayAsync(day, now, cancellationToken).ConfigureAwait(false);
+                    }
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception exception)
-            {
-                exportSpan?.SetStatus(ActivityStatusCode.Error);
-                _telemetry.TapeExport(TapeExportOutcome.ExportFailed, 1);
-                daysRefused++;
-                _logger.LogError(
-                    "Tape export of {Day} failed ({ExceptionType}). Local rows were left in place.",
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    exportSpan?.SetStatus(ActivityStatusCode.Error);
+                    _telemetry.TapeExport(TapeExportOutcome.ExportFailed, 1);
+                    daysRefused++;
+                    _logger.LogError(
+                        "Tape export of {Day} failed ({ExceptionType}). Local rows were left in place.",
+                        day,
+                        exception.GetType().Name);
+                    continue;
+                }
+
+                if (!written.Verified)
+                {
+                    exportSpan?.SetStatus(ActivityStatusCode.Error);
+                    _telemetry.TapeExport(TapeExportOutcome.VerificationFailed, 1);
+                    daysRefused++;
+                    _logger.LogError(
+                        "Tape export of {Day} did not verify ({Reason}). Local rows were left in place.",
+                        day,
+                        written.Reason);
+                    continue;
+                }
+
+                if (gate is null && _drive.IsEnabled)
+                {
+                    gate = await IdentityGate.OpenAsync(_database, _logger, cancellationToken).ConfigureAwait(false);
+                }
+
+                (bool uploadFailed, bool driveDisabled) = await UploadAndRecordAsync(
                     day,
-                    exception.GetType().Name);
-                continue;
-            }
+                    written,
+                    now,
+                    gate,
+                    cancellationToken).ConfigureAwait(false);
+                notedDriveDisabled |= driveDisabled;
+                int rows = written.TradeRows + written.CoverageRows + written.FootprintRows;
+                if (uploadFailed)
+                {
+                    exportSpan?.SetStatus(ActivityStatusCode.Error);
+                    daysRefused++;
+                    _logger.LogError(
+                        "Tape export of {Day} wrote the volume but a Drive upload failed. Local rows were left in place.",
+                        day);
+                    continue;
+                }
 
-            if (!written.Verified)
+                daysExported++;
+                rowsExported += rows;
+            }
+        }
+        finally
+        {
+            if (gate is not null)
             {
-                exportSpan?.SetStatus(ActivityStatusCode.Error);
-                _telemetry.TapeExport(TapeExportOutcome.VerificationFailed, 1);
-                daysRefused++;
-                _logger.LogError(
-                    "Tape export of {Day} did not verify ({Reason}). Local rows were left in place.",
-                    day,
-                    written.Reason);
-                continue;
+                await gate.DisposeAsync().ConfigureAwait(false);
             }
-
-            (bool uploadFailed, bool driveDisabled) = await UploadAndRecordAsync(day, written, now, cancellationToken)
-                .ConfigureAwait(false);
-            notedDriveDisabled |= driveDisabled;
-            int rows = written.TradeRows + written.CoverageRows + written.FootprintRows;
-            if (uploadFailed)
-            {
-                exportSpan?.SetStatus(ActivityStatusCode.Error);
-                daysRefused++;
-                _logger.LogError(
-                    "Tape export of {Day} wrote the volume but a Drive upload failed. Local rows were left in place.",
-                    day);
-                continue;
-            }
-
-            daysExported++;
-            rowsExported += rows;
         }
 
         if (skippedOpen > 0)
@@ -244,7 +267,11 @@ public sealed class TapeExportPass(
 
         if (notedDriveDisabled)
         {
-            _telemetry.TapeUpload(TapeUploadOutcome.Disabled, 1);
+            RecordUpload(
+                TapeUploadOutcome.Disabled,
+                TapeUploadOperation.Upload,
+                TapeUploadReason.Disabled,
+                failed: false);
         }
 
         _logger.LogInformation(
@@ -485,13 +512,11 @@ public sealed class TapeExportPass(
         DateOnly day,
         TapeExportVerification written,
         DateTimeOffset exportedAtUtc,
+        IdentityGate? gate,
         CancellationToken cancellationToken)
     {
         bool failed = false;
         bool driveDisabled = !_drive.IsEnabled;
-        await using IdentityGate? gate = driveDisabled
-            ? null
-            : await IdentityGate.OpenAsync(_database, _logger, cancellationToken).ConfigureAwait(false);
         foreach (TapeExportStoredFile file in written.Files ?? [])
         {
             failed |= await UploadOneAsync(day, file, exportedAtUtc, gate, cancellationToken).ConfigureAwait(false);
@@ -567,6 +592,11 @@ public sealed class TapeExportPass(
                     "IdentityBusy",
                     failureStatus: null,
                     cancellationToken).ConfigureAwait(false);
+                RecordUpload(
+                    TapeUploadOutcome.Failed,
+                    TapeUploadOperation.Lock,
+                    TapeUploadReason.IdentityBusy,
+                    failed: true);
                 await gate.ReopenAsync(cancellationToken).ConfigureAwait(false);
                 return true;
             }
@@ -582,6 +612,11 @@ public sealed class TapeExportPass(
                     "LockLost",
                     failureStatus: null,
                     cancellationToken).ConfigureAwait(false);
+                RecordUpload(
+                    TapeUploadOutcome.Failed,
+                    TapeUploadOperation.Lock,
+                    TapeUploadReason.LockLost,
+                    failed: true);
                 await gate.ReopenAsync(cancellationToken).ConfigureAwait(false);
                 return true;
             }
@@ -608,6 +643,11 @@ public sealed class TapeExportPass(
                     "LockLost",
                     failureStatus: null,
                     cancellationToken).ConfigureAwait(false);
+                RecordUpload(
+                    TapeUploadOutcome.Failed,
+                    TapeUploadOperation.Lock,
+                    TapeUploadReason.LockLost,
+                    failed: true);
                 return true;
             }
 
@@ -632,6 +672,15 @@ public sealed class TapeExportPass(
                 result.FailureType,
                 result.FailureStatus,
                 cancellationToken).ConfigureAwait(false);
+            if (result.Status == TapeDriveUploadStatus.Uploaded)
+            {
+                RecordUpload(
+                    TapeUploadOutcome.Uploaded,
+                    TapeUploadOperation.Upload,
+                    TapeUploadReason.Uploaded,
+                    failed: false);
+            }
+
             return result.Status == TapeDriveUploadStatus.Failed;
         }
         finally
@@ -656,7 +705,21 @@ public sealed class TapeExportPass(
         _logger.LogWarning(
             "Tape export found {PendingReceipts} receipt(s) still pending from an earlier pass.",
             pending);
-        _telemetry.TapeUpload(TapeUploadOutcome.OrphanPending, pending);
+        RecordUpload(
+            TapeUploadOutcome.OrphanPending,
+            TapeUploadOperation.Upload,
+            TapeUploadReason.OrphanPending,
+            failed: false);
+    }
+
+    private void RecordUpload(string outcome, string operation, string reason, bool failed)
+    {
+        using Activity? span = _telemetry.Activities.StartActivity("tape.upload", ActivityKind.Client);
+        span?.SetTag(HostTelemetry.OperationTag, operation);
+        span?.SetTag(HostTelemetry.ReasonTag, reason);
+        span?.SetTag(HostTelemetry.OutcomeTag, outcome);
+        span?.SetStatus(failed ? ActivityStatusCode.Error : ActivityStatusCode.Ok);
+        _telemetry.TapeUpload(outcome, 1, operation, reason);
     }
 
     private static async Task AdvisoryAsync(
@@ -1073,9 +1136,35 @@ public sealed class TapeExportPass(
     private static TapeExportReport Empty() => new(0, 0, 0, 0);
 
     /// <summary>
+    /// The session string for the identity lock. Pooling is off. Keepalive is the TCP socket option.
+    /// </summary>
+    /// <param name="source">The store connection string, including the password.</param>
+    /// <returns>The string passed to <c>CloneWith</c>.</returns>
+    internal static string IdentityLockConnectionString(string source)
+    {
+        NpgsqlConnectionStringBuilder builder = new(source)
+        {
+            Pooling = false,
+            ApplicationName = IdentityGate.ApplicationName,
+            KeepAlive = 0,
+            TcpKeepAlive = true,
+            TcpKeepAliveTime = 30,
+            TcpKeepAliveInterval = 30,
+        };
+        return builder.ConnectionString;
+    }
+
+    /// <summary>Whether a lost-lock catch should treat this as the connection dying.</summary>
+    /// <param name="exception">The exception from the lock, the probe, or the unlock.</param>
+    /// <returns>True for a dropped session. False for a programming error or an ordinary SQL error.</returns>
+    internal static bool IsIdentityConnectionFailure(Exception exception) =>
+        IdentityGate.IsConnectionFailure(exception);
+
+    /// <summary>
     /// One direct session for every identity in a pass. Pooling stays off so the advisory lock cannot
-    /// go back to the pool still held. <c>lock_timeout</c> bounds a waiter. Keepalive notices a half-open TCP
-    /// session. A drop is a lost lock, not a second owner.
+    /// go back to the pool still held. <c>lock_timeout</c> bounds a waiter. TCP keepalive (the socket
+    /// option, not Npgsql's keepalive query) notices a half-open session. A drop is a lost lock, not a
+    /// second owner.
     /// </summary>
     private sealed class IdentityGate : IAsyncDisposable
     {
@@ -1150,7 +1239,7 @@ public sealed class TapeExportPass(
                 await command.ExecuteScalarAsync(CancellationToken.None).ConfigureAwait(false);
                 return true;
             }
-            catch (Exception exception)
+            catch (Exception exception) when (IsConnectionFailure(exception))
             {
                 _logger.LogWarning(
                     "Tape export lost its identity lock ({ExceptionType}).",
@@ -1170,7 +1259,7 @@ public sealed class TapeExportPass(
             {
                 await AdvisoryAsync(_connection, "pg_advisory_unlock", key, CancellationToken.None).ConfigureAwait(false);
             }
-            catch (Exception exception)
+            catch (Exception exception) when (IsConnectionFailure(exception))
             {
                 _logger.LogWarning(
                     "Tape export could not release its identity lock ({ExceptionType}).",
@@ -1209,18 +1298,8 @@ public sealed class TapeExportPass(
             // The password is stripped from ConnectionString after open. CloneWith keeps it and turns pooling off,
             // so this session lock cannot return to the pool still held. A direct connection is required:
             // transaction-mode pooling would drop the session lock at the end of the statement.
-            NpgsqlConnectionStringBuilder builder = new(source.ConnectionString)
-            {
-                Pooling = false,
-                ApplicationName = ApplicationName,
-                KeepAlive = 30,
-            };
-            if (builder.Pooling)
-            {
-                throw new InvalidOperationException("Tape export identity lock refuses a pooled connection.");
-            }
-
-            NpgsqlConnection connection = source.CloneWith(builder.ConnectionString);
+            NpgsqlConnection connection = source.CloneWith(
+                TapeExportPass.IdentityLockConnectionString(source.ConnectionString));
             try
             {
                 await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
@@ -1248,11 +1327,28 @@ public sealed class TapeExportPass(
             return false;
         }
 
-        private static bool IsConnectionFailure(Exception exception)
+        internal static bool IsConnectionFailure(Exception exception)
         {
             for (Exception? current = exception; current is not null; current = current.InnerException)
             {
-                if (current is NpgsqlException or IOException or TimeoutException or InvalidOperationException)
+                if (current is TimeoutException or IOException)
+                {
+                    return true;
+                }
+
+                if (current is PostgresException postgres)
+                {
+                    return postgres.SqlState is PostgresErrorCodes.ConnectionException
+                        or PostgresErrorCodes.ConnectionDoesNotExist
+                        or PostgresErrorCodes.ConnectionFailure
+                        or PostgresErrorCodes.SqlClientUnableToEstablishSqlConnection
+                        or PostgresErrorCodes.SqlServerRejectedEstablishmentOfSqlConnection
+                        or PostgresErrorCodes.AdminShutdown
+                        or PostgresErrorCodes.CrashShutdown
+                        or PostgresErrorCodes.CannotConnectNow;
+                }
+
+                if (current is NpgsqlException)
                 {
                     return true;
                 }

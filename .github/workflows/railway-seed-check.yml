@@ -1,10 +1,10 @@
 # railway-seed-check.yml -- the staging seed still fits the schema, and is idempotent (gh#758).
 #
-# Applies every EF migration the way the app does at startup (`dotnet ef database update`, which runs EF's
-# Migrate on one connection with TopstepXDbContext's TradeInstrumentIndexBuildInterceptor) to the same pinned
-# Timescale image, runs the synthetic
-# seed TWICE, and requires identical counts. A migration that renames a seeded column fails here, on the PR,
-# instead of on the next staging deploy. Touches no Railway, holds no secret.
+# Applies every EF migration with the same migrator and interceptor as startup (`dotnet ef database update`:
+# EF's Migrate on one connection, with TopstepXDbContext's TradeInstrumentIndexBuildInterceptor; it does not
+# apply MigrationCommandTimeout) to the same pinned Timescale image, requires Trades to be a hypertable, runs
+# the synthetic seed TWICE, and requires identical counts. A migration that renames a seeded column fails
+# here, on the PR, instead of on the next staging deploy. Touches no Railway, holds no secret.
 name: railway-seed-check
 
 on:
@@ -45,8 +45,9 @@ jobs:
       # NOT `migrations script --idempotent` | psql: that wraps each migration in a DO block, and
       # AddTradeInstrumentTimeIndex needs a top-level CALL (with an inner COMMIT) and a Timescale
       # transaction_per_chunk build, which cannot run inside DO or a transaction. The interceptor that makes
-      # the build conditional is also invisible to a script. `database update` runs the same migrator, on one
-      # connection, with the same interceptor as MigrateAsync.
+      # the build conditional is also invisible to a script. `database update` uses the same migrator and
+      # interceptor as startup, on one connection. It skips MigrationCommandTimeout (EF's default applies).
+      # Trades must be a hypertable here, so the transaction_per_chunk build ran, not the plain fallback.
       - name: Apply migrations (EF migrator, as at startup)
         env:
           ConnectionStrings__Default: Host=localhost;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=ci-only-not-a-secret
@@ -57,6 +58,8 @@ jobs:
             --project MarqSpec.Mcp.TopstepX.Data --startup-project MarqSpec.Mcp.TopstepX \
             --connection "$ConnectionStrings__Default"
           psql -v ON_ERROR_STOP=1 -tAc 'SELECT count(*) FROM "__EFMigrationsHistory"'
+          psql -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM timescaledb_information.hypertables WHERE hypertable_schema = 'public' AND hypertable_name = 'Trades'" | grep -qx 1 \
+            || { echo "::error::Trades is not a Timescale hypertable; the per-chunk index build did not run"; exit 1; }
           psql -v ON_ERROR_STOP=1 -tAc "SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.\"IX_Trades_Instrument_TradeTimeUtc\"'::regclass" | grep -qx t \
             || { echo "::error::IX_Trades_Instrument_TradeTimeUtc is missing or invalid"; exit 1; }
       - name: Seed twice, compare

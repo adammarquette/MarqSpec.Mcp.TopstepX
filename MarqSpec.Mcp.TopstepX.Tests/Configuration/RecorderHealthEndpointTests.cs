@@ -226,15 +226,17 @@ public sealed class RecorderHealthEndpointTests
         McpOptions mcp = builder.Configuration.GetSection(McpOptions.SectionName).Get<McpOptions>()!;
         Program.ConfigureServices(builder, mcp);
 
-        // The recorder writes the tape holder from its own lifecycle. Left running, that write lands after
-        // the test publishes a connection and the report reads the recorder's answer instead.
-        foreach (ServiceDescriptor descriptor in builder.Services
+        // The recorder writes the tape holder from its own lifecycle. Left running, its background write can
+        // land after the test publishes a connection, and the report reads NeverStarted instead (gh#809).
+        // Program registers it as a factory over the singleton, so ImplementationType is null and only the
+        // factory's return type identifies it. Exactly one must go, so this can't silently match nothing.
+        List<ServiceDescriptor> recorders = builder.Services
             .Where(candidate => candidate.ServiceType == typeof(IHostedService)
-                && candidate.ImplementationType == typeof(TradeTapeRecorder))
-            .ToList())
-        {
-            builder.Services.Remove(descriptor);
-        }
+                && (candidate.ImplementationType == typeof(TradeTapeRecorder)
+                    || candidate.ImplementationFactory?.Method.ReturnType == typeof(TradeTapeRecorder)))
+            .ToList();
+        recorders.Should().ContainSingle("the recorder's hosted registration must be found to be removed");
+        builder.Services.Remove(recorders[0]);
 
         builder.Services.RemoveAll<TimeProvider>();
         builder.Services.AddSingleton<TimeProvider>(new FakeTimeProvider(_tuesday));
@@ -247,8 +249,6 @@ public sealed class RecorderHealthEndpointTests
         Program.MapHttpTransport(app, mcp);
         await app.StartAsync();
 
-        // The recorder's startup writes NeverStarted when RecordTape is off, and that write lands during
-        // StartAsync. Publishing the test's answer first would be overwritten before the request.
         TapeAvailabilityHolder tape = app.Services.GetRequiredService<TapeAvailabilityHolder>();
         if (feedDown)
         {

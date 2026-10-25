@@ -264,6 +264,46 @@ public sealed class TapeDriveUploadTests
         uploads.GetMeasurementSnapshot().Should().BeEmpty();
     }
 
+    [Fact]
+    public void RequireTerminalOutcome_WhenTheUploaderOmitsIt_Throws()
+    {
+        TapeDriveUploadResult missing = new(TapeDriveUploadStatus.Failed, null, 1, "TapeDriveException", null);
+        TapeDriveUploadResult empty = new(
+            TapeDriveUploadStatus.Failed,
+            null,
+            1,
+            "TapeDriveException",
+            null,
+            string.Empty,
+            string.Empty);
+
+        Action missingAct = () => TapeExportPass.RequireTerminalOutcome(missing);
+        Action emptyAct = () => TapeExportPass.RequireTerminalOutcome(empty);
+
+        missingAct.Should().Throw<InvalidOperationException>()
+            .WithMessage("A failed Drive upload returned no terminal outcome.");
+        emptyAct.Should().Throw<InvalidOperationException>()
+            .WithMessage("A failed Drive upload returned no terminal outcome.");
+    }
+
+    [Fact]
+    public void RequireTerminalOutcome_WhenTheUploaderNamesIt_ReturnsThatPair()
+    {
+        TapeDriveUploadResult named = new(
+            TapeDriveUploadStatus.Failed,
+            null,
+            1,
+            "GoogleApiException",
+            403,
+            TapeUploadOutcome.Permanent,
+            TapeUploadReason.Permanent);
+
+        (string outcome, string reason) = TapeExportPass.RequireTerminalOutcome(named);
+
+        outcome.Should().Be(TapeUploadOutcome.Permanent);
+        reason.Should().Be(TapeUploadReason.Permanent);
+    }
+
     private static TapeDriveUpload Upload(string bytes) =>
         new(_identity, null, "trades/test/ES/CON.F.US.EP.Z26/2026-10-01.v1.csv.gz", () => new MemoryStream(System.Text.Encoding.UTF8.GetBytes(bytes)));
 

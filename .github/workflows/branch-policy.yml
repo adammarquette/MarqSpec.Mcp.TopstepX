@@ -5,21 +5,17 @@ on:
     types: [opened, reopened, synchronize, edited, labeled, unlabeled]
   merge_group:
 
-concurrency:
-  group: branch-policy-${{ github.ref }}
-  # cancel-in-progress is FALSE deliberately (gh#26).
-  #
-  # A cancelled run leaves its check-runs in CANCELLED on the commit, and a cancelled REQUIRED check blocks the
-  # merge -- while `gh pr checks` reports the latest run per name and shows green, so the block is invisible
-  # from the tool anyone reaches for first.
-  #
-  # It fires easily: this workflow triggers on `labeled`, so opening a PR with a label in the same call
-  # produces `opened` and `labeled` together, two pull_request events on the same ref, and one cancels the
-  # other. Which one survives is a race.
-  #
-  # Grouping on the PR number instead does NOT fix it -- that still cancels, and the cancelled run still leaves
-  # cancelled checks. Letting a superseded run finish is the cheap half of this trade.
-  cancel-in-progress: false
+# NO concurrency block, deliberately (gh#26, then gh#798).
+#
+# gh#26 set cancel-in-progress: false, believing that stopped cancellation. It does not: a concurrency group
+# holds ONE running and ONE pending run, and a newer pending run REPLACES (cancels) the older pending one even
+# with cancel-in-progress false. Dependabot opens a PR with two labels, so `opened`, `labeled`, `labeled`
+# arrive within a second: run 1 starts, run 2 queues, run 3 cancels run 2. The cancelled suite has no check
+# runs, and when it is the newest suite the ruleset reports commit-hygiene and issue-link as "expected" (merge
+# API 405) although both are green elsewhere. Seen on runs 40157262214 and 40157054142 (attempt 1 cancelled).
+#
+# Every job here is a read-only check that finishes in seconds, so letting each event's run complete costs
+# nothing and leaves every suite on the head sha complete. Do not re-add a group keyed on ref or PR number.
 
 permissions:
   contents: read

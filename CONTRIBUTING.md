@@ -14,8 +14,19 @@ image on GHCR** built from it.
 
 ## Issue-first, its one exemption, and the promotion carve-out
 
-Every pull request cites an issue opened before it — `Closes #N` when it completes one, `Related to #N` when it
-touches one without finishing it. **The `issue-link` check enforces this**; it is not advisory.
+Every pull request cites an issue opened before it. **The `issue-link` check enforces this**; it is not
+advisory, and its logic and cases live in `scripts/check-issue-link.sh` and its self-test.
+
+**A PR into `develop` carries a closing binding to an issue in this repository** (gh#824). The body says
+`Closes #N` — or close/closed, fix/fixes/fixed, resolve/resolves/resolved, any case, an optional colon — in
+ordinary prose, before `#N` or `adammarquette/MarqSpec.Mcp.TopstepX#N`, and GitHub must actually bind it (the
+check reads `closingIssuesReferences` too). Another repository's issue does not count. `Related to #N` and
+`Towards #N` no longer pass into `develop`. When a PR really does leave its issue open, say so and say why:
+
+```text
+Part of #N
+Issue-stays-open: <why the issue stays open after this merges>
+```
 
 Four things it will tell you, because they all look like they work and none of them does:
 
@@ -51,7 +62,8 @@ promote: the closing keyword is the right form to write, and **the issue will no
 close it by hand. The run says both.
 
 **Stacked PRs onto a feature branch are deliberately not covered.** They cannot bind either, but there
-`Related to #N` is the *correct* form — the PR really does not close the issue when it merges into its parent.
+`Related to #N` (or `Part of` / `Towards #N`) is the *correct* form — the PR really does not close the issue
+when it merges into its parent. The closing-binding rule applies to `develop` only.
 
 If the check cannot read the PR's closing references, it retries and then **fails**. A check that reports
 success when it did not run is the failure this rule exists to prevent.
@@ -191,9 +203,10 @@ actively claimed indefinitely, and the late commit is orphaned onto no PR. This 
 
 ## Issue-first — no orphaned PRs
 
-Every change starts from a **tracking issue** opened *before* the branch/PR; the PR references it (`Closes #N` /
-`Related to #N`). Populate every field — assignee, milestone, `work:*` and `Work Estimate` labels. Issues are the
-cards; the board auto-adds pull requests too, but a PR item is **not** a card — never move one.
+Every change starts from a **tracking issue** opened *before* the branch/PR; the PR references it (`Closes #N`
+into `develop`; see *Issue-first* above for the `Issue-stays-open:` opt-out and stacked PRs). Populate every
+field — assignee, milestone, `work:*` and `Work Estimate` labels. Issues are the cards; the board auto-adds
+pull requests too, but a PR item is **not** a card — never move one.
 
 **The spec belongs in the issue**, never as a file under `documentation/` — a parallel spec duplicates the
 tracker and drifts from it.

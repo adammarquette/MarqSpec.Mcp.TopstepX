@@ -19,7 +19,9 @@ git -C "$work" config user.email selftest@example.invalid
 git -C "$work" commit -q --allow-empty -m "chore: root"
 root=$(git -C "$work" rev-parse HEAD)
 
-POST=2026-10-26T12:00:00-05:00
+POST=2026-10-25T06:00:00-05:00   # window 1 (interim rule)
+POST2=2026-10-26T12:00:00-05:00  # window 2 (current rule)
+GOOD_M='Assisted-by: grok-bot:4.2'
 PRE=2026-10-20T12:00:00-05:00
 GOOD_A='Assisted-by: Grok Bot (Cursor)'
 GOOD_C='Co-Authored-By: Grok Bot <cursoragent@cursor.com>'
@@ -54,6 +56,10 @@ want=$(date -d 2026-10-25T00:00:00-05:00 +%s)
 have=$(sed -n 's/^CUTOFF_EPOCH=\([0-9]*\).*/\1/p' "$gate")
 if [ "$have" = "$want" ]; then echo "ok   guard: CUTOFF_EPOCH == 2026-10-25T00:00:00-05:00 ($want)"; pass=$((pass+1))
 else echo "FAIL guard: CUTOFF_EPOCH '$have' != $want"; fail=$((fail+1)); fi
+want2=$(date -d 2026-10-25T12:36:00-05:00 +%s)
+have2=$(sed -n 's/^CUTOFF2_EPOCH=\([0-9]*\).*/\1/p' "$gate")
+if [ "$have2" = "$want2" ]; then echo "ok   guard: CUTOFF2_EPOCH == 2026-10-25T12:36:00-05:00 ($want2)"; pass=$((pass+1))
+else echo "FAIL guard: CUTOFF2_EPOCH '$have2' != $want2"; fail=$((fail+1)); fi
 
 commit "$POST" "$POST" "$(printf 'feat: x\n\n%s\nCo-Authored-By: A <a@example.org>' "$GOOD_A")"
 expect_green "any email domain passes" "1 checked"
@@ -120,6 +126,64 @@ expect_red "new author date with an old committer date is still checked" "malfor
 
 (cd "$work" && "$gate" "nope..HEAD") >/dev/null 2>&1 && rc=0 || rc=$?
 if [ "$rc" -eq 2 ]; then echo "ok   red:   unreadable range exits 2"; pass=$((pass+1)); else echo "FAIL unreadable range (exit $rc)"; fail=$((fail+1)); fi
+
+# ---- window 2: Assisted-by: <model>:<version>, Co-Authored-By optional ----
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nbody\n\n%s' "$GOOD_M")"
+expect_green "w2: valid model:version without Co-Authored-By passes" ", window 2"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nCloses #1\nAssisted-by: model-x:2026-05-01\n%s' "$GOOD_C")"
+expect_green "w2: valid model:version with Co-Authored-By passes" "1 checked, 0 skipped"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\n%s\nCo-Authored-By: not even an email' "$GOOD_M")"
+expect_green "w2: a malformed Co-Authored-By is not inspected" "1 checked, 0 skipped"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
+expect_red "w2: interim 'Grok Bot (Cursor)' form fails" "[window 2 (authored >= 2026-10-25 12:36 CDT)]: malformed 'Assisted-by: Grok Bot (Cursor)'"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: grok-bot')"
+expect_red "w2: missing version fails" "malformed 'Assisted-by: grok-bot'"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: grok-bot:')"
+expect_red "w2: empty version fails" "malformed 'Assisted-by: grok-bot:'"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: :4.2')"
+expect_red "w2: empty name fails" "malformed 'Assisted-by: :4.2'"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: grok-bot:4 2')"
+expect_red "w2: version with a space fails" "malformed 'Assisted-by: grok-bot:4 2'"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by:\nSigned-off-by: s <s@x.y>')"
+expect_red "w2: empty value fails" "malformed 'Assisted-by:"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nbody\n\nAssisted-by: grok-bot:sgt-squash')"
+expect_green "w2: Assisted-by: grok-bot:sgt-squash passes" ", window 2"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: grok-bot:sgt-squash')"
+expect_green "w2: grok-bot:sgt-squash with no Co-Authored-By passes" "1 checked, 0 skipped"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: Example-Model:1.2.3')"
+expect_red "w2: the CONTRIBUTING example (any case) is rejected" "copied the CONTRIBUTING example"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nassisted-by: Grok Bot (Cursor)')"
+expect_red "w2: lowercase key is enforced" "malformed 'Assisted-by: Grok Bot (Cursor)'"
+
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nassisted-by: grok-bot:4.2')"
+expect_green "w2: lowercase key with a valid value passes" "1 checked, 0 skipped"
+
+commit "2026-10-25T12:36:00-05:00" "2026-10-25T12:36:00-05:00" "$(printf 'feat: x\n\n%s' "$GOOD_M")"
+expect_green "boundary: exactly 12:36:00 CDT is window 2" ", window 2"
+
+commit "2026-10-25T12:35:59-05:00" "2026-10-25T12:35:59-05:00" "$(printf 'feat: x\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
+expect_green "boundary: 12:35:59 CDT is window 1" ", window 1"
+
+commit "$POST" "$POST2" "$(printf 'feat: rebased\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
+expect_green "w1 commit rebased in window 2 is judged by author date (window 1)" ", window 1"
+
+commit "$PRE" "$POST2" "$(printf 'feat: rebased\n\nAssisted-by: nonsense')"
+expect_green "pre-cutoff commit rebased in window 2 is skipped" "0 checked, 1 skipped"
+
+commit "$POST2" "$POST" "$(printf 'feat: x\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
+expect_red "w2 author date with a window-1 committer date is judged as window 2" "[window 2"
 
 # Workflow mode (no argument): the env branch-policy.yml sets, for pull_request and merge_group.
 commit "$POST" "$POST" "$(printf 'feat: x\n\nAssisted-by: Grok Bot\n%s' "$GOOD_C")"

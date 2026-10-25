@@ -263,6 +263,10 @@ commit's copy of `scripts/check-commit-trailers.sh` and `scripts/check-issue-lin
 PR that changes one of these scripts is still judged by the base branch's copy, so the change takes effect for gating
 only after it merges (the self-tests in `ci.yml` still run your copy). A PR that adds a new gating script has
 no base copy, so the check fails closed and the PR needs a one-time manual gate by a maintainer.
+The limit: the workflow files themselves still come from the PR. A PR that edits
+`.github/workflows/branch-policy.yml` or `ci.yml` can remove the fetch step or point `run:` back at
+`./scripts/`, so it is still judged by its own copy of the workflow. A reviewer (Critique) must read every
+workflow change in full.
 
 ## Pull requests
 

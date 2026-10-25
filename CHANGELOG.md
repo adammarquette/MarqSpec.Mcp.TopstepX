@@ -217,8 +217,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the window starts after deploy. Size it as the startup wait plus the command timeout plus about 300
   seconds. A Railway `healthcheckTimeout` overrides `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`. The server and the
   recorder both migrate against the same advisory lock. Their waits overlap. The second service's wait is
-  one call, cancelled at the command timeout with `57014`. If the first index build (migration) runs close
-  to that timeout, redeploy the second once the first is healthy. A plain-Postgres index build (migration)
+  one call, cancelled at the command timeout with `57014`. If the first index-build migration runs close
+  to that timeout, redeploy the second once the first is healthy. A plain-Postgres index-build migration
   on `Trades` blocks writes for its duration. The seven-day ceiling stays a typo guard.
 
 ## [0.5.0] - 2026-09-11

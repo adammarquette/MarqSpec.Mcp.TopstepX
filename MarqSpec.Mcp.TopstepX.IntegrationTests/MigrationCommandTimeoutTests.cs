@@ -172,6 +172,7 @@ public sealed class MigrationCommandTimeoutTests
 
     private static string MigrationBeforeTheInstrumentTimeIndex()
     {
+        // The order relies on EF's timestamp-prefixed migration ids.
         List<string> ids = typeof(AddTradeInstrumentTimeIndex).Assembly
             .GetTypes()
             .Select(type => type.GetCustomAttribute<MigrationAttribute>())

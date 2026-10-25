@@ -287,6 +287,73 @@ public sealed class TradeInstrumentIndexBuildInterceptorTests
         await act.Should().ThrowAsync<OutOfMemoryException>();
     }
 
+    [Fact]
+    public void CommandFailed_WhenWritingTheUnlockWarningHitsAnAccessViolation_PropagatesIt()
+    {
+        using ScriptedConnection connection = new() { ScalarFailure = new UnlockFailure("the server is gone") };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
+        };
+        using ILoggerFactory factory = LoggerFactory.Create(builder =>
+            builder.AddProvider(new ThrowingLoggerProvider(new AccessViolationException("log"))));
+        using TopstepXDbContext context = new(new DbContextOptionsBuilder<TopstepXDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .UseLoggerFactory(factory)
+            .Options);
+
+        Action act = () => new TradeInstrumentIndexBuildInterceptor().CommandFailed(
+            command,
+            Error(command, context, new InvalidOperationException("the build failed")));
+
+        act.Should().Throw<AccessViolationException>();
+    }
+
+    [Fact]
+    public void CommandFailed_WhenWritingTheUnlockWarningExhaustsTheStack_PropagatesIt()
+    {
+        using ScriptedConnection connection = new() { ScalarFailure = new UnlockFailure("the server is gone") };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
+        };
+        using ILoggerFactory factory = LoggerFactory.Create(builder =>
+            builder.AddProvider(new ThrowingLoggerProvider(new InsufficientExecutionStackException("log"))));
+        using TopstepXDbContext context = new(new DbContextOptionsBuilder<TopstepXDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .UseLoggerFactory(factory)
+            .Options);
+
+        Action act = () => new TradeInstrumentIndexBuildInterceptor().CommandFailed(
+            command,
+            Error(command, context, new InvalidOperationException("the build failed")));
+
+        act.Should().Throw<InsufficientExecutionStackException>();
+    }
+
+    [Fact]
+    public void CommandFailed_WhenWritingTheUnlockWarningWrapsAFatalException_PropagatesIt()
+    {
+        using ScriptedConnection connection = new() { ScalarFailure = new UnlockFailure("the server is gone") };
+        using ScriptedCommand command = new(connection)
+        {
+            CommandText = TradeInstrumentIndexBuildInterceptor.PerChunkMarker,
+        };
+        using ILoggerFactory factory = LoggerFactory.Create(builder =>
+            builder.AddProvider(new ThrowingLoggerProvider(
+                new InvalidOperationException("wrap", new OutOfMemoryException("log")))));
+        using TopstepXDbContext context = new(new DbContextOptionsBuilder<TopstepXDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .UseLoggerFactory(factory)
+            .Options);
+
+        Action act = () => new TradeInstrumentIndexBuildInterceptor().CommandFailed(
+            command,
+            Error(command, context, new InvalidOperationException("the build failed")));
+
+        act.Should().Throw<OutOfMemoryException>();
+    }
+
     private static CommandErrorEventData Error(DbCommand command, DbContext? context, Exception? original = null) =>
         new(
             new StubEventDefinition(),

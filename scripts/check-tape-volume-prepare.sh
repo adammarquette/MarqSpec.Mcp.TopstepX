@@ -74,15 +74,22 @@ if [ "$owner" != "64198" ] || [ "$keys_owner" != "64198" ] || [ "$keys_mode" != 
   exit 1
 fi
 
-# Without uid 0 the command exits before it prepares anything. The absolute path does not depend on
-# sudo's PATH, which on a hosted runner need not include /usr/sbin.
-if /usr/sbin/runuser -u nobody -- env PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" "$work/unprepared" >"$work/out" 2>"$work/err"; then
+# Without uid 0 the command exits before it prepares anything. The checkout is not traversable by
+# nobody (the runner work directory is mode 700), so the command is copied onto this temp dir first.
+# /usr/sbin/runuser does not depend on sudo's PATH.
+cp "$prepare" "$work/prepare-tape-volume.sh"
+chmod 755 "$work" "$work/prepare-tape-volume.sh"
+if /usr/sbin/runuser -u nobody -- env PREPARE_TAPE_VOLUME_ONLY=1 "$work/prepare-tape-volume.sh" "$work/unprepared" >"$work/out" 2>"$work/err"; then
   echo "a non-root caller was accepted" >&2
   exit 1
 fi
 if ! grep -q 'requires uid 0' "$work/err"; then
   echo "a non-root caller did not report uid 0:" >&2
   cat "$work/err" >&2
+  exit 1
+fi
+if [ -e "$work/unprepared" ]; then
+  echo "a non-root caller prepared a tree" >&2
   exit 1
 fi
 

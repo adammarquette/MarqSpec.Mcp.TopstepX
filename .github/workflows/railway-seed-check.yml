@@ -1,6 +1,8 @@
 # railway-seed-check.yml -- the staging seed still fits the schema, and is idempotent (gh#758).
 #
-# Applies every EF migration (idempotent script) to the same pinned Timescale image, runs the synthetic
+# Applies every EF migration the way the app does at startup (`dotnet ef database update`, which runs EF's
+# Migrate on one connection with TopstepXDbContext's TradeInstrumentIndexBuildInterceptor) to the same pinned
+# Timescale image, runs the synthetic
 # seed TWICE, and requires identical counts. A migration that renames a seeded column fails here, on the PR,
 # instead of on the next staging deploy. Touches no Railway, holds no secret.
 name: railway-seed-check
@@ -40,15 +42,25 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
-      - name: Migrations -> SQL
+      # NOT `migrations script --idempotent` | psql: that wraps each migration in a DO block, and
+      # AddTradeInstrumentTimeIndex needs a top-level CALL (with an inner COMMIT) and a Timescale
+      # transaction_per_chunk build, which cannot run inside DO or a transaction. The interceptor that makes
+      # the build conditional is also invisible to a script. `database update` runs the same migrator, on one
+      # connection, with the same interceptor as MigrateAsync.
+      - name: Apply migrations (EF migrator, as at startup)
+        env:
+          ConnectionStrings__Default: Host=localhost;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=ci-only-not-a-secret
         run: |
           dotnet tool install --global dotnet-ef --version 10.0.11
           dotnet restore MarqSpec.Mcp.TopstepX.slnx
-          dotnet ef migrations script --idempotent \
-            --project MarqSpec.Mcp.TopstepX.Data --startup-project MarqSpec.Mcp.TopstepX -o migrations.sql
-      - name: Apply migrations, seed twice, compare
+          dotnet ef database update \
+            --project MarqSpec.Mcp.TopstepX.Data --startup-project MarqSpec.Mcp.TopstepX \
+            --connection "$ConnectionStrings__Default"
+          psql -v ON_ERROR_STOP=1 -tAc 'SELECT count(*) FROM "__EFMigrationsHistory"'
+          psql -v ON_ERROR_STOP=1 -tAc "SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.\"IX_Trades_Instrument_TradeTimeUtc\"'::regclass" | grep -qx t \
+            || { echo "::error::IX_Trades_Instrument_TradeTimeUtc is missing or invalid"; exit 1; }
+      - name: Seed twice, compare
         run: |
-          psql -v ON_ERROR_STOP=1 -q -f migrations.sql
           q='SELECT (SELECT count(*) FROM "Trades")||'"'"'/'"'"'||(SELECT count(*) FROM "Bars")||'"'"'/'"'"'||(SELECT count(*) FROM "TapeCoverage")'
           psql -v ON_ERROR_STOP=1 -q -f scripts/railway/seed/staging-seed.sql
           first="$(psql -tAc "$q")"

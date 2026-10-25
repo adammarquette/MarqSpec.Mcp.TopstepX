@@ -28,8 +28,8 @@
       downgrade here is a rewrite, not a bump. .AspNetCore carries the streamable-HTTP transport (ADR-0007);
       the stdio transport lives in the core package.
     -->
-    <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
-    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
+    <PackageVersion Include="ModelContextProtocol" Version="2.3.0" />
+    <PackageVersion Include="ModelContextProtocol.AspNetCore" Version="2.3.0" />
     <!--
       The OAuth 2.1 resource-server half of the HTTP transport (ADR-0007, ADR-0021, gh#512): validates a
       Cognito-issued JWT against the issuer's published keys, discovered from its OpenID configuration. Host

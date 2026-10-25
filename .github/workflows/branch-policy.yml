@@ -16,6 +16,9 @@ on:
 #
 # Every job here is a read-only check that finishes in seconds, so letting each event's run complete costs
 # nothing and leaves every suite on the head sha complete. Do not re-add a group keyed on ref or PR number.
+#
+# Debugging an empty or 'expected' required check: `gh pr checks` reports the latest run per name and shows
+# green, so it HIDES a cancelled required check (gh#26). List the commit's check-suites via `gh api` instead.
 
 permissions:
   contents: read

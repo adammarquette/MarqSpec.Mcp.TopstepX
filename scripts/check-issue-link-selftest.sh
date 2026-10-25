@@ -120,11 +120,15 @@ else echo "FAIL strip:"; printf '%s\n' "$out"; fail=$((fail+1)); fi
 
 # --- wiring guard: the workflow runs THIS script rather than a drifted inline copy ------------------------------
 wf="$here/../.github/workflows/branch-policy.yml"
-# gh#827: the job runs the BASE commit's copy, fetched by a step with SCRIPT: scripts/check-issue-link.sh.
-if grep -q 'SCRIPT: scripts/check-issue-link.sh' "$wf" && grep -q 'run: .*RUNNER_TEMP/gate/check-issue-link.sh' "$wf" \
-   && ! grep -q 'run: ./scripts/check-issue-link.sh' "$wf" && ! grep -q 'closingIssuesReferences' "$wf"; then
+# gh#827 wiring guard: branch-policy.yml runs the BASE copy of check-issue-link.sh via the fetch-base-script action
+# (step id issuelink), passes its output as GATE, and never calls ./scripts/check-issue-link.sh directly.
+act="$here/../.github/actions/fetch-base-script/action.yml"
+if grep -q 'uses: ./.github/actions/fetch-base-script' "$wf" && grep -q 'script: scripts/check-issue-link.sh' "$wf" \
+   && grep -q 'GATE: ${{ steps.issuelink.outputs.path }}' "$wf" \
+   && grep -qF 'base-sha: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}' "$wf" \
+   && ! grep -q 'run: ./scripts/check-issue-link.sh' "$wf" && ! grep -q 'closingIssuesReferences' "$wf" && [ -f "$act" ] && grep -q 'git show "${BASE}:${SCRIPT}"' "$act"; then
   echo "ok   guard: branch-policy.yml runs the base copy of check-issue-link.sh and carries no inline copy"; pass=$((pass+1))
-else echo "FAIL guard: branch-policy.yml does not call the script, or still has inline logic"; fail=$((fail+1)); fi
+else echo "FAIL guard: branch-policy.yml does not run the base copy of check-issue-link.sh"; fail=$((fail+1)); fi
 
 echo "check-issue-link-selftest: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -98,9 +98,10 @@ it before starting, and add dated entries only when nothing formal fits.
   describes updates **the affected section of that document, in the same PR** — the PRD (`R-#`), the
   architecture doc, the data dictionary, the [tool catalogue](documentation/mcp-tool-catalog.md), the ADRs,
   this file. Update the section, not the whole file. A stale doc is a build break in the top layer.
-- **Issue-first — no orphaned PRs.** Every PR cites an issue opened before it (`Closes #N` / `Related to #N`);
-  cite issues as `gh#N`. **Task specs and acceptance criteria belong in the issue**, never as files under
-  `documentation/` — a parallel spec duplicates the tracker and drifts from it.
+- **Issue-first — no orphaned PRs.** Every PR cites an issue opened before it; into `develop` that is
+  `Closes #N` (or `Part of #N` plus `Issue-stays-open: <reason>`, CONTRIBUTING.md); cite issues as `gh#N`.
+  **Task specs and acceptance criteria belong in the issue**, never as files under `documentation/` — a
+  parallel spec duplicates the tracker and drifts from it.
 - **Maximal metadata on every issue and PR:** assignee, milestone, `work:*` and `Work Estimate` labels. Issues
   are the board cards; the board auto-adds pull requests too, but a PR item is **not** a card — never move
   one. Epics decompose into sub-issues. A thin issue is a defect — the next

@@ -48,11 +48,11 @@ rather than reword it.
 | Document | ~tok | Read it when |
 |---|---:|---|
 | [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 14.8K | **Before starting any work.** It grows by *append, don't overwrite* and shrinks by the retirement rule in its own header (gh#254), so this row moves in both directions — correct it in the pull request that moves the file. |
-| [`project-board-workflow.md`](project-board-workflow.md) | 7.1K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
+| [`project-board-workflow.md`](project-board-workflow.md) | 7.2K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
 | [`deployment.md`](deployment.md#railway-gh758) | 7.7K | Release is GHCR publish only (`release.yml`); running an instance — Docker pull/compose, **Railway** (`.railway/railway.ts`: services, shared variables, volume permissions, two-recorder window, dashboard-only steps, proposed retention keys; gh#758, ADR-0025 draft), env vars, `check-deployment.sh`, operator rollback, the migration command timeout against a healthcheck that cannot see a process that is not listening yet (gh#756), vendor DNS on a custom compose network (gh#697). |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all five in its own gated `~tok` column (gh#178). Reviewer, Platform and Coordinator contracts **never auto-load**; open them yourself. |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 5.7K | Branching, claiming, commits, PRs, and the Definition of Done. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 5.9K | Branching, claiming, commits, PRs, and the Definition of Done. |
 | [`../AGENTS.md`](../AGENTS.md) | 3.2K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)

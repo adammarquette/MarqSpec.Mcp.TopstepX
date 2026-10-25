@@ -4,9 +4,9 @@
 #   scripts/check-issue-link-selftest.sh
 #
 # Same rule as the other self-tests here (gh#98, gh#160, gh#802): a gate that parses text it does not own has to
-# be shown to fail on known faults, BY NAME, and to pass each exemption while saying which arm passed it. This
-# pins the behaviour moved verbatim from branch-policy.yml. `gh` is replaced on PATH by a stub that answers
-# `gh pr view --json closingIssuesReferences --jq <filter>` from $FAKE_REFS through the real jq.
+# be shown to fail on known faults, BY NAME, and to pass each exemption while saying which arm passed it. `gh` is
+# replaced on PATH by a stub that answers `gh pr view --json closingIssuesReferences --jq <filter>` from
+# $FAKE_REFS through the real jq, so the gate's own repository filter is exercised, not bypassed.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -43,23 +43,35 @@ check() { # want-rc name needle
 green() { local n=$1 needle=$2; shift 2; run "$@"; check 0 "$n" "$needle"; }
 red()   { local n=$1 needle=$2; shift 2; run "$@"; check 1 "$n" "$needle"; }
 
+BOUND="and the body says so in prose"
+OPTOUT="Issue-stays-open:)"
 
-BOUND="PR closes"
-# --- a binding passes on any base (the current rule; gh#824 narrows it later) ----------------------------------
+# --- the default branch: a closing binding to THIS repository -------------------------------------------------
 green "Closes #5, bound"                         "$BOUND" develop "$THIS" "Closes #5"
-green "bound to another repo"                    "$BOUND" develop "$OTHER" "Closes someone/elsewhere#5"
-green "sidebar binding, no keyword"              "$BOUND" develop "$THIS" "Implements the thing."
-green "bound, stacked base"                      "$BOUND" feature/1_x "$THIS" "x"
-
-# --- no binding, default branch --------------------------------------------------------------------------------
-green "Related to #5"                            "without closing it" develop "$NONE" "Related to #5"
-green "Part of #5"                               "without closing it" develop "$NONE" "Part of #5"
-green "Towards #5"                               "without closing it" develop "$NONE" "Towards #5"
-red   "Closes #5 that GitHub did not bind"       "binding was available" develop "$NONE" "Closes #5"
+green "lowercase closes with a colon"            "$BOUND" develop "$THIS" "closes: #5"
+green "Fixed #5"                                 "$BOUND" develop "$THIS" "Fixed #5"
+green "RESOLVES #5"                              "$BOUND" develop "$THIS" "RESOLVES #5"
+green "fix #5 mid-sentence"                      "$BOUND" develop "$THIS" "This change will fix #5 for good."
+green "qualified this-repo reference"            "$BOUND" develop "$THIS" "Closes adammarquette/MarqSpec.Mcp.TopstepX#5"
+green "CRLF body"                                "$BOUND" develop "$THIS" $'Summary\r\n\r\nCloses #5\r\n'
+red   "another repo's issue, bound there"        "ANOTHER repository" develop "$OTHER" "Closes someone/elsewhere#5"
+red   "another repo's issue plus a stray this-repo binding is still no prose keyword" \
+                                                 "sidebar" develop "$THIS" "Closes someone/elsewhere#5"
+red   "Closes #5 that GitHub did not bind"       "GitHub bound nothing" develop "$NONE" "Closes #5"
+red   "Closes #5 bound only to another repo"     "GitHub bound nothing" develop "$OTHER" "Closes #5"
+red   "binding with no keyword (sidebar link)"   "sidebar" develop "$THIS" "Implements the thing."
+red   "encloses #5 is not a keyword"             "sidebar" develop "$THIS" "This encloses #5 nicely."
+red   "Related to #5 alone"                      "no longer pass" develop "$NONE" "Related to #5"
+red   "Towards #5 alone"                         "no longer pass" develop "$NONE" "Towards #5"
+red   "Part of #5 alone"                         "alone no longer passes" develop "$NONE" "Part of #5"
+green "Part of #5 + Issue-stays-open reason"     "$OPTOUT" develop "$NONE" $'Part of #5\n\nIssue-stays-open: phase 2 lands in #6'
+red   "Issue-stays-open with an empty reason"    "alone no longer passes" develop "$NONE" $'Part of #5\nIssue-stays-open:   '
+red   "Issue-stays-open without Part of"         "cites no issue" develop "$NONE" $'Issue-stays-open: because'
+red   "Issue-stays-open inside an HTML comment"  "alone no longer passes" develop "$NONE" $'Part of #5\n<!-- Issue-stays-open: x -->'
+red   "Part of another repo + opt-out"           "cites no issue" develop "$NONE" $'Part of someone/elsewhere#5\nIssue-stays-open: x'
 red   "Closes #5 in backticks"                   "as CODE" develop "$NONE" 'See `Closes #5`.'
 red   "Closes #5 in a fenced block"              "as CODE" develop "$NONE" $'```\nCloses #5\n```'
 red   "Closes #5 in a span that wraps"           "as CODE" develop "$NONE" $'Prose `about a long\nCloses #5` here.'
-red   "Related to #5 in an HTML comment"         "as CODE" develop "$NONE" $'<!-- Related to #5 -->'
 red   "keyword in the TITLE only"                "TITLE contains a closing keyword" develop "$NONE" "nothing" someone "fix: Closes #5"
 red   "near-miss verb"                           "Near-miss verb" develop "$NONE" "Implements #5"
 red   "no citation at all"                       "cites no issue" develop "$NONE" "Just some prose."
@@ -67,20 +79,26 @@ red   "API unreadable three times"               "after three attempts" develop 
 green "dependabot is exempt"                     "dependabot[bot]" develop "$NONE" "Bumps x." "dependabot[bot]"
 green "dependabot is exempt even with no API"    "dependabot[bot]" develop error "" "dependabot[bot]"
 
-# --- ladder promotions (gh#101) --------------------------------------------------------------------------------
+# --- ladder promotions (gh#101): no binding is possible, the body is the evidence ----------------------------
 green "staging, Closes #5 read from the body"    "ladder promotion" staging "$NONE" "Closes #5"
-green "main, Fixes #5 read from the body"        "ladder promotion" main "$NONE" "Fixes #5"
+green "main, Fixes: #5 read from the body"       "ladder promotion" main "$NONE" "Fixes: #5"
 green "main, Related to #5"                      "without closing it" main "$NONE" "Related to #5"
 red   "staging, citation only in a pasted log"   "as CODE" staging "$NONE" $'Promote.\n\n    Closes #5'
 red   "staging, nothing"                         "cites no issue" staging "$NONE" "Promote."
 red   "staging as DEFAULT gets no carve-out"     "binding was available" staging "$NONE" "Closes #5" someone "x" staging
 
-# --- stacked PRs (gh#57) ---------------------------------------------------------------------------------------
+# --- stacked PRs (gh#57): base is a feature branch -------------------------------------------------------------
 green "stacked, Related to #5"                   "without closing it" feature/1_x "$NONE" "Related to #5"
 green "stacked, Part of #5"                      "without closing it" feature/1_x "$NONE" "Part of #5"
 green "stacked, Towards #5"                      "without closing it" feature/1_x "$NONE" "Towards #5"
 red   "stacked, Closes #5 cannot bind"           "Use 'Related to #N'" feature/1_x "$NONE" "Closes #5"
-red   "stacked, nothing"                         "cites no issue" feature/1_x "$NONE" "x"
+red   "stacked, nothing"                         "Closes #N' or 'Related to #N'" feature/1_x "$NONE" "x"
+
+# --- the stripper, directly -------------------------------------------------------------------------------------
+out=$(printf 'keep\n```\nCloses #5\n```\n<!-- Closes #6 -->\nalso `Closes #7` kept\n' | "$gate" --strip)
+if ! grep -q '#5\|#6\|#7' <<<"$out" && grep -q '^keep$' <<<"$out" && grep -q 'kept' <<<"$out"; then
+  echo "ok   strip: fence, comment and span removed, prose kept"; pass=$((pass+1))
+else echo "FAIL strip:"; printf '%s\n' "$out"; fail=$((fail+1)); fi
 
 # --- wiring guard: the workflow runs THIS script rather than a drifted inline copy ------------------------------
 wf="$here/../.github/workflows/branch-policy.yml"

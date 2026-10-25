@@ -1,52 +1,47 @@
 #!/usr/bin/env bash
 # check-issue-link.sh — the `issue-link` gate: a pull request cites the issue it works on (gh#35, gh#824).
 #
-#   scripts/check-issue-link.sh        # reads the PR from the environment (branch-policy.yml)
+#   scripts/check-issue-link.sh                       # reads the PR from the environment (branch-policy.yml)
+#   scripts/check-issue-link.sh --strip < body.md     # print the body with code removed, decide nothing
 #
-# Environment (set by the workflow step; the self-test sets them per case):
-#   PR, GH_REPO, GH_TOKEN, AUTHOR, TITLE, BODY, BASE, DEFAULT_BRANCH
+# Environment (all set by the workflow step; the self-test sets them per case):
+#   PR              pull request number              GH_REPO         owner/name of THIS repository
+#   AUTHOR          PR author login                  GH_TOKEN        token for `gh` (the workflow's GITHUB_TOKEN)
+#   TITLE, BODY     PR title and body                BASE            base branch
+#   DEFAULT_BRANCH  the repository default branch (`develop`)
 #   ISSUE_LINK_RETRY_SLEEP  seconds between API attempts (default 5; the self-test sets 0)
+#
+# THE RULE, by base (gh#824 for the default branch; every other arm is unchanged from the inline step):
+#   author dependabot[bot]          exempt -- it cannot file an issue first.
+#   base == DEFAULT_BRANCH          a CLOSING BINDING to an issue in this repository. The body, with code
+#                                   removed, carries `close|closes|closed|fix|fixes|fixed|resolve|resolves|
+#                                   resolved` (any case, optional colon) before `#N` or `<this repo>#N`, AND
+#                                   GitHub's closingIssuesReferences holds at least one issue of THIS repository.
+#                                   Opt-out: `Part of #N` plus a line `Issue-stays-open: <reason>`.
+#                                   `Related to #N` / `Towards #N` / a bare `Part of #N` no longer pass.
+#   base staging or main            a ladder promotion: a binding is impossible there, so a closing keyword
+#   (and not the default)           read from the body passes (gh#101), as does a binding or Related/Part/Towards.
+#   any other base (stacked PR)     a binding, or `Related to|Part of|Towards #N` in prose (gh#57).
 #
 # Logic moved here verbatim from `.github/workflows/branch-policy.yml` by gh#824 so it can carry a self-test
 # (scripts/check-issue-link-selftest.sh, run by ci.yml). The comment history below travelled with it.
-: "${BODY:=}" "${TITLE:=}" "${AUTHOR:=}" "${BASE:=}" "${DEFAULT_BRANCH:=develop}" "${PR:=}"
-: "${ISSUE_LINK_RETRY_SLEEP:=5}"
-
 set -euo pipefail
 
-# Dependabot opens its own PRs and cannot file an issue first, so issue-first is UNSATISFIABLE for
-# them -- not merely inconvenient. Exempting them explicitly is honest; the alternative was a gate
-# that had to stay toothless for everyone so that one author could pass it.
-if [ "$AUTHOR" = "dependabot[bot]" ]; then
-  echo "::notice::Author is dependabot[bot]; issue-first does not apply to an automated bump."
-  exit 0
-fi
+: "${BODY:=}" "${TITLE:=}" "${AUTHOR:=}" "${BASE:=}" "${DEFAULT_BRANCH:=develop}" "${PR:=}"
+: "${GH_REPO:=adammarquette/MarqSpec.Mcp.TopstepX}"
+: "${ISSUE_LINK_RETRY_SLEEP:=5}"
 
-# closingIssuesReferences is ground truth: it reflects what GitHub actually BOUND, which is not the
-# same as what the body appears to say. A backticked `Closes #N` does not bind, and a closing keyword
-# in the TITLE is ignored entirely.
-#
-# Retried rather than defaulted. A check that cannot evaluate must not report success -- that is the
-# exact failure this job is being fixed for -- but one transient API blip should not block a merge.
-closes=""
-for attempt in 1 2 3; do
-  if closes=$(gh pr view "$PR" --json closingIssuesReferences --jq '.closingIssuesReferences | length'); then
-    break
+strip_only=false
+if [ "${1:-}" = "--strip" ]; then strip_only=true; BODY=$(cat); fi
+
+if [ "$strip_only" = false ]; then
+  # Dependabot opens its own PRs and cannot file an issue first, so issue-first is UNSATISFIABLE for
+  # them -- not merely inconvenient. Exempting them explicitly is honest; the alternative was a gate
+  # that had to stay toothless for everyone so that one author could pass it.
+  if [ "$AUTHOR" = "dependabot[bot]" ]; then
+    echo "::notice::Author is dependabot[bot]; issue-first does not apply to an automated bump."
+    exit 0
   fi
-  echo "::warning::Could not read closing references (attempt $attempt). Retrying."
-  closes=""
-  sleep "$ISSUE_LINK_RETRY_SLEEP"
-done
-
-if [ -z "$closes" ]; then
-  echo "::error::Could not read this PR's closing references after three attempts. Failing rather"
-  echo "::error::than passing a check that did not run."
-  exit 1
-fi
-
-if [ "$closes" -gt 0 ]; then
-  echo "::notice::PR closes $closes issue(s)."
-  exit 0
 fi
 
 # EVERY citation this job reads comes from here: a body with CODE REMOVED -- HTML comments,
@@ -794,11 +789,76 @@ body_no_code="$(printf '%s' "$BODY" \
       }
     ')"
 
+if [ "$strip_only" = true ]; then printf '%s\n' "$body_no_code"; exit 0; fi
+
+# THIS repository, escaped for an ERE. A qualified reference to ANY other repository does not count: GitHub can
+# bind one, but closing another repo's issue says nothing about this repo's board (gh#824).
+repo_re=$(printf '%s' "$GH_REPO" | sed 's/[].[^$*+?(){}|\\/]/\\&/g')
+REF="(${repo_re})?#[0-9]+"
+# A keyword must start a word: `encloses #5` is not `closes #5`. The colon is optional, as GitHub allows.
+KW_CLOSE='(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:blank:]]+'
+KW_CITE='(^|[^[:alnum:]_])(related to|part of|towards):?[[:blank:]]+'
+
+# closingIssuesReferences is ground truth: it reflects what GitHub actually BOUND, which is not the
+# same as what the body appears to say. A backticked `Closes #N` does not bind, and a closing keyword
+# in the TITLE is ignored entirely. Counted for THIS repository only (gh#824): a binding to another repo
+# is real to GitHub and meaningless to this repo's board.
+#
+# Retried rather than defaulted. A check that cannot evaluate must not report success -- that is the
+# exact failure this job is being fixed for -- but one transient API blip should not block a merge.
+closes=""
+for attempt in 1 2 3; do
+  if closes=$(gh pr view "$PR" --json closingIssuesReferences --jq \
+      "[.closingIssuesReferences[] | select((.repository.owner.login + \"/\" + .repository.name | ascii_downcase) == (\"$GH_REPO\" | ascii_downcase))] | length") \
+     && [[ "$closes" =~ ^[0-9]+$ ]]; then
+    break
+  fi
+  echo "::warning::Could not read closing references (attempt $attempt). Retrying."
+  closes=""
+  sleep "$ISSUE_LINK_RETRY_SLEEP"
+done
+
+if [ -z "$closes" ]; then
+  echo "::error::Could not read this PR's closing references after three attempts. Failing rather"
+  echo "::error::than passing a check that did not run."
+  exit 1
+fi
+
 # Herestring, not a pipe: `grep -q` exits on its first match, and under `pipefail` a SIGPIPE'd
 # upstream would make the pipeline non-zero on a body that DID match -- reading as no citation.
 body_closes=false
-if grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+' <<<"$body_no_code"; then
+if grep -qiE "${KW_CLOSE}${REF}" <<<"$body_no_code"; then
   body_closes=true
+fi
+
+# THE CLOSING-BINDING RULE (gh#824, Adam's 2026-10-25 audit decision). On the default branch the binding IS
+# available, so a PR must use it: `Related to #N` merged work while its card stayed open with nothing saying why.
+# Two pieces of evidence, and both are required because each misses something the other sees:
+#   the BODY  -- what the author wrote, in prose. A link made only in the sidebar's Development panel binds
+#                too, but leaves the PR text saying nothing; the rule is about the text reviewers read.
+#   the API   -- what GitHub bound. A body keyword on a number that is a PULL REQUEST, or does not exist,
+#                binds nothing; only closingIssuesReferences can tell. No extra scope: the job already reads it.
+# The opt-out is explicit and reasoned, never silent: `Part of #N` plus `Issue-stays-open: <reason>`, both in
+# prose (so a template placeholder inside an HTML comment cannot satisfy it).
+if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
+  if [ "$body_closes" = true ] && [ "$closes" -gt 0 ]; then
+    echo "::notice::PR closes $closes issue(s) in $GH_REPO, and the body says so in prose."
+    exit 0
+  fi
+  if grep -qiE "(^|[^[:alnum:]_])part of:?[[:blank:]]+${REF}" <<<"$body_no_code" \
+     && grep -qE '^[[:blank:]]*Issue-stays-open:[[:blank:]]*[^[:blank:]]' <<<"$body_no_code"; then
+    echo "::notice::PR is Part of an issue that stays open, with a stated reason (Issue-stays-open:)."
+    echo "::notice::That satisfies issue-first; the issue will NOT auto-close on merge."
+    exit 0
+  fi
+fi
+
+# THE PROMOTION CARVE-OUT (gh#101) and the stacked-PR path, both on a base that is NOT the default.
+if [ "$BASE" != "$DEFAULT_BRANCH" ]; then
+  if [ "$closes" -gt 0 ]; then
+    echo "::notice::PR closes $closes issue(s)."
+    exit 0
+  fi
 fi
 
 # THE PROMOTION CARVE-OUT (gh#101). GitHub BINDS a closing keyword only on a PR into the DEFAULT
@@ -832,9 +892,9 @@ if [ "$BASE" = "staging" ] || [ "$BASE" = "main" ]; then
   fi
 fi
 
-# AGENTS.md admits BOTH forms: `Closes #N` for a PR that completes an issue, `Related to #N` for one
-# that touches it without finishing it. Only the first binds in GitHub, so the second has to be read
-# out of the body.
+# OFF THE DEFAULT BRANCH ONLY since gh#824. AGENTS.md admitted BOTH forms everywhere: `Closes #N` for a PR
+# that completes an issue, `Related to #N` for one that touches it without finishing it. On `develop` the
+# second now needs the `Issue-stays-open:` opt-out above; on a stacked base it is still the CORRECT form.
 #
 # Reads $body_no_code, NOT $BODY (gh#123). From gh#35 until now this arm read the raw body, so a
 # `Related to #N` quoted inside a pasted commit log satisfied it -- reopening by the WEAKER form the
@@ -848,7 +908,7 @@ fi
 # in this repository's history still passes.
 #
 # Herestring for the same reason as $body_closes above: no SIGPIPE under `pipefail`.
-if grep -qiE '(related to|part of|towards) +#[0-9]+' <<<"$body_no_code"; then
+if [ "$BASE" != "$DEFAULT_BRANCH" ] && grep -qiE "${KW_CITE}${REF}" <<<"$body_no_code"; then
   echo "::notice::PR cites an issue without closing it (Related to #N). That satisfies issue-first."
   exit 0
 fi
@@ -899,7 +959,7 @@ fi
 # merely stopped early sends them to stare at a citation that is already fine, instead of at
 # the marker above it that is not. (A `<!--` inside backticks used to land here; it no longer
 # does.)
-CITATION='(close[sd]?|fix(e[sd])?|resolve[sd]?|related to|part of|towards) +#[0-9]+'
+CITATION='(close[sd]?|fix(e[sd])?|resolve[sd]?|related to|part of|towards):? +([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+'
 if grep -qiE "$CITATION" <<<"$BODY" && ! grep -qiE "$CITATION" <<<"$body_no_code"; then
   echo "::error::This check read every issue reference in this body as CODE - a fenced block, a"
   echo "::error::four-space indented block, an HTML comment, or backticks - and a backtick span"
@@ -912,6 +972,34 @@ if grep -qiE "$CITATION" <<<"$BODY" && ! grep -qiE "$CITATION" <<<"$body_no_code
   echo "::error::If the citation already IS in prose, an unterminated code fence or HTML comment"
   echo "::error::above it swallowed the rest of the body. Close that marker, or cite above it."
   exit 1
+fi
+
+# DEFAULT-BRANCH DIAGNOSTICS (gh#824). Each names the one piece of evidence that is missing. Like every
+# diagnostic here they change only the MESSAGE; terminal, so no false generic message follows them.
+if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
+  if [ "$body_closes" = false ] && [ "$closes" -gt 0 ]; then
+    echo "::error::GitHub binds $closes issue(s) to this PR - most likely linked in the sidebar - but the"
+    echo "::error::body has no closing keyword in prose. Add a plain 'Closes #N' to the body."
+    exit 1
+  fi
+  if grep -qiE "(^|[^[:alnum:]_])part of:?[[:blank:]]+${REF}" <<<"$body_no_code"; then
+    echo "::error::'Part of #N' alone no longer passes into '$DEFAULT_BRANCH'. Use 'Closes #N', or keep"
+    echo "::error::'Part of #N' and add a line 'Issue-stays-open: <why the issue stays open>'."
+    exit 1
+  fi
+  if grep -qiE "${KW_CITE}${REF}" <<<"$body_no_code"; then
+    echo "::error::'Related to #N' and 'Towards #N' no longer pass into '$DEFAULT_BRANCH' (gh#824): a PR"
+    echo "::error::into the default branch closes its issue. Use 'Closes #N', or 'Part of #N' plus a line"
+    echo "::error::'Issue-stays-open: <why the issue stays open>'."
+    exit 1
+  fi
+  if [ "$body_closes" = false ] \
+     && grep -qiE "(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:blank:]]+[[:alnum:]_.-]+/[[:alnum:]_.-]+#[0-9]+" \
+        <<<"$body_no_code"; then
+    echo "::error::The closing keyword references an issue in ANOTHER repository. Only an issue in"
+    echo "::error::$GH_REPO counts. Add a plain 'Closes #N' for this repository's issue."
+    exit 1
+  fi
 fi
 
 # FOURTH DIAGNOSTIC (gh#101, merged from gh#102). Without it, a body whose first line is
@@ -933,6 +1021,11 @@ if [ "$body_closes" = true ]; then
   exit 1
 fi
 
-echo "::error::This PR cites no issue. Issue-first: add a plain 'Closes #N' or 'Related to #N' to"
-echo "::error::the body. Task specs and acceptance criteria belong in the issue, not in the PR."
+if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
+  echo "::error::This PR cites no issue. Issue-first: add a plain 'Closes #N' to the body (or 'Part of #N'"
+  echo "::error::plus 'Issue-stays-open: <reason>'). Task specs and acceptance criteria belong in the issue."
+else
+  echo "::error::This PR cites no issue. Issue-first: add a plain 'Closes #N' or 'Related to #N' to"
+  echo "::error::the body. Task specs and acceptance criteria belong in the issue, not in the PR."
+fi
 exit 1

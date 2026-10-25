@@ -95,9 +95,9 @@ jobs:
       - name: Prove the commit-trailer gate can still fail
         run: ./scripts/check-commit-trailers-selftest.sh
 
-      # gh#824. issue-link (branch-policy.yml) runs check-issue-link.sh; this pins its verdicts by name (bindings,
-      # code-only citations, the title and near-miss faults) and each exemption (Dependabot, ladder promotions,
-      # stacked PRs).
+      # gh#824. issue-link (branch-policy.yml) runs check-issue-link.sh; this proves it still rejects each known
+      # citation fault by name (no closing binding into develop, another repo, code-only citations) and passes
+      # each exemption (Dependabot, ladder promotions, stacked PRs, the Issue-stays-open opt-out).
       - name: Prove the issue-link gate can still fail
         run: ./scripts/check-issue-link-selftest.sh
 

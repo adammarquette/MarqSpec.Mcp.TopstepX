@@ -384,7 +384,10 @@ public sealed class RecorderHealthToolTests
     {
         await using Fixture fixture = Fixture.Open();
         using MetricCollector<long> reads = Collect(fixture.Telemetry);
-        fixture.Service.ProbeTimeout.Should().Be(TimeSpan.FromSeconds(2));
+        // Five minutes on the fake clock. The two-second default is pinned by ProbeTimeout_WhenUnset_IsTwoSeconds.
+        // Advancing this duration is what expires the deadline, so a timer on the wall clock that uses the same
+        // ProbeTimeout cannot elapse inside the fact timeout.
+        fixture.Service.ProbeTimeout = TimeSpan.FromMinutes(5);
         fixture.Store.HoldProbe = true;
 
         Task<RecorderHealthReport.Report> pending = fixture.Tools.GetRecorderHealth(CancellationToken.None);
@@ -392,10 +395,6 @@ public sealed class RecorderHealthToolTests
 
         fixture.Store.Probes.Should().Be(1);
         fixture.Clock.Advance(fixture.Service.ProbeTimeout);
-        // Wall clock on purpose. The deadline above is the fake clock, and the continuation is queued.
-        // 500ms lost that race on a loaded runner. 1500ms still ends before a real two-second timer.
-        Task finished = await Task.WhenAny(pending, Task.Delay(TimeSpan.FromMilliseconds(1500)));
-        finished.Should().BeSameAs(pending);
 
         RecorderHealthReport.Report report = await pending;
         report.Database.Should().Be(RecorderHealthReport.StoreConnectivity.Unavailable);

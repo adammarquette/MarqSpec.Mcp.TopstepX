@@ -292,7 +292,7 @@ public sealed class OrderToolSpecQaTests
         ToolPayloads.TradingWriteResult first = await CallerFollowingRetrySafety(telemetry, op);
 
         _gateway.Total.Should().Be(1, "an acked write followed by a lease fault must not be SafeToRetry");
-        AssertOutcomeUnknown(first);
+        AssertOutcomeUnknown(first, _gateway.LastIssuedId);
         AssertCapLock(op, sends: 1);
         _audit.Snapshot().Should().Contain(r => r.Outcome == TradingAuditOutcomes.Live);
     }
@@ -309,7 +309,7 @@ public sealed class OrderToolSpecQaTests
         ToolPayloads.TradingWriteResult first = await CallerFollowingRetrySafety(telemetry, op);
 
         _gateway.Total.Should().Be(1);
-        AssertOutcomeUnknown(first);
+        AssertOutcomeUnknown(first, _gateway.LastIssuedId);
         _audit.Snapshot().Should().Contain(r => r.Outcome == TradingAuditOutcomes.Live);
     }
 
@@ -411,13 +411,13 @@ public sealed class OrderToolSpecQaTests
         row.OrderId.Should().BeNull();
     }
 
-    private static void AssertOutcomeUnknown(ToolPayloads.TradingWriteResult result)
+    private static void AssertOutcomeUnknown(ToolPayloads.TradingWriteResult result, long ackedOrderId)
     {
         result.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
         result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
-        // A fresh QaGateway acknowledges its first send as 1001. A post-send lease-release fault and a
-        // throwing span listener both keep that id (gh#780). The no-send refusal stays null.
-        result.OrderId.Should().Be(1001);
+        // A post-send lease-release fault and a throwing span listener both keep the id the gateway
+        // acknowledged (gh#780). The no-send refusal stays null.
+        result.OrderId.Should().Be(ackedOrderId);
     }
 
     private static void AssertOneWrite(MetricCollector<long> writes, List<Activity> spans, string op, string reason)
@@ -519,6 +519,9 @@ public sealed class OrderToolSpecQaTests
 
         /// <summary>Sends that ran while an account-day lease was held.</summary>
         public int SendsInsideCapLock => _insideCapLock;
+
+        /// <summary>The order id assigned to the most recent acknowledgement. The seed until the first send.</summary>
+        public long LastIssuedId => Volatile.Read(ref _nextId);
 
         public ExecutionWriteResult? Next { get; set; }
 

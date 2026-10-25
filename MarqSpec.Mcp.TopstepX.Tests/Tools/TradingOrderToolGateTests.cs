@@ -1128,7 +1128,7 @@ public sealed class TradingOrderToolGateTests
     [Fact]
     public async Task TradingRiskGate_CleanupFaultAfterSend_KeepsTheDisposeStack()
     {
-        const string marker = "cleanup-stack-probe";
+        string marker = "cleanup-stack-probe-" + Guid.NewGuid().ToString("N");
         _gateway.Next = Acknowledged(77);
         _daily.ThrowOnDispose = true;
         _daily.DisposeException = new InvalidOperationException(marker);

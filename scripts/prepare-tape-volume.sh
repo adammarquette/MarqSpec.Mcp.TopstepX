@@ -27,4 +27,4 @@ find "$root/keys" -maxdepth 1 -name drive-sa.json -type f -exec chmod 0400 {} +
 if [ "${PREPARE_TAPE_VOLUME_ONLY:-}" = "1" ]; then
   exit 0
 fi
-exec runuser -u mcp -- dotnet MarqSpec.Mcp.TopstepX.dll
+exec /usr/sbin/runuser -u mcp -- dotnet MarqSpec.Mcp.TopstepX.dll

@@ -34,7 +34,11 @@ if PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" "$work/linked-root" >"$work/out" 2>"$wo
   echo "a symlink at the volume root was accepted" >&2
   exit 1
 fi
-grep -q 'refusing a symlink' "$work/err"
+if ! grep -q 'refusing a symlink' "$work/err"; then
+  echo "symlink refusal did not say why:" >&2
+  cat "$work/err" >&2
+  exit 1
+fi
 
 # A symlink where the key directory should be.
 mkdir -p "$work/vol/elsewhere"
@@ -43,7 +47,11 @@ if PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" "$work/vol" >"$work/out" 2>"$work/err";
   echo "a symlink at the keys directory was accepted" >&2
   exit 1
 fi
-grep -q 'refusing a symlink' "$work/err"
+if ! grep -q 'refusing a symlink' "$work/err"; then
+  echo "keys symlink refusal did not say why:" >&2
+  cat "$work/err" >&2
+  exit 1
+fi
 rm -rf "$work/vol"
 
 # A normal tree. The key file and an outside file reached only by a leftover symlink.
@@ -60,18 +68,22 @@ keys_mode=$(stat -c %a "$work/vol/keys")
 key_owner=$(stat -c %u "$work/vol/keys/drive-sa.json")
 key_mode=$(stat -c %a "$work/vol/keys/drive-sa.json")
 outside_owner=$(stat -c %u "$work/outside")
-[ "$owner" = "64198" ]
-[ "$keys_owner" = "64198" ]
-[ "$keys_mode" = "700" ]
-[ "$key_owner" = "64198" ]
-[ "$key_mode" = "400" ]
-[ "$outside_owner" = "0" ]
+if [ "$owner" != "64198" ] || [ "$keys_owner" != "64198" ] || [ "$keys_mode" != "700" ] \
+  || [ "$key_owner" != "64198" ] || [ "$key_mode" != "400" ] || [ "$outside_owner" != "0" ]; then
+  echo "ownership mismatch: vol=$owner keys=$keys_owner mode=$keys_mode key=$key_owner mode=$key_mode outside=$outside_owner" >&2
+  exit 1
+fi
 
-# Without uid 0 the command exits before it prepares anything.
-if runuser -u nobody -- env PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" "$work/unprepared" >"$work/out" 2>"$work/err"; then
+# Without uid 0 the command exits before it prepares anything. The absolute path does not depend on
+# sudo's PATH, which on a hosted runner need not include /usr/sbin.
+if /usr/sbin/runuser -u nobody -- env PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" "$work/unprepared" >"$work/out" 2>"$work/err"; then
   echo "a non-root caller was accepted" >&2
   exit 1
 fi
-grep -q 'requires uid 0' "$work/err"
+if ! grep -q 'requires uid 0' "$work/err"; then
+  echo "a non-root caller did not report uid 0:" >&2
+  cat "$work/err" >&2
+  exit 1
+fi
 
 echo "ok  tape volume prepare refuses a symlink and chowns with -h"

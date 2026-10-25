@@ -643,6 +643,11 @@ public sealed class TapeExportPass(
                     "LockLost",
                     failureStatus: null,
                     cancellationToken).ConfigureAwait(false);
+                // One file, one terminal measurement. A lost lock wins over a Drive failure
+                // on the same file: the receipt just written is LockLost, so this counter is
+                // lock_lost and not also failed, permanent, or upload_timeout. The uploader
+                // records retries only and does not record the Drive failure. drive_retried,
+                // when any retries happened, counts attempts. It is not a second file outcome.
                 RecordUpload(
                     TapeUploadOutcome.Failed,
                     TapeUploadOperation.Lock,
@@ -679,6 +684,15 @@ public sealed class TapeExportPass(
                     TapeUploadOperation.Upload,
                     TapeUploadReason.Uploaded,
                     failed: false);
+            }
+            else
+            {
+                // The lock is still held, so the Drive result is the file's one outcome.
+                RecordUpload(
+                    result.TerminalOutcome ?? TapeUploadOutcome.Failed,
+                    TapeUploadOperation.Upload,
+                    result.TerminalReason ?? TapeUploadReason.Failed,
+                    failed: true);
             }
 
             return result.Status == TapeDriveUploadStatus.Failed;
@@ -1156,7 +1170,10 @@ public sealed class TapeExportPass(
 
     /// <summary>Whether a lost-lock catch should treat this as the connection dying.</summary>
     /// <param name="exception">The exception from the lock, the probe, or the unlock.</param>
-    /// <returns>True for a dropped session. False for a programming error or an ordinary SQL error.</returns>
+    /// <returns>
+    /// True for a dropped session. False for a programming error, an ordinary SQL error, or a
+    /// non-transient <see cref="NpgsqlException"/>. A false result is not caught, so it propagates.
+    /// </returns>
     internal static bool IsIdentityConnectionFailure(Exception exception) =>
         IdentityGate.IsConnectionFailure(exception);
 
@@ -1331,13 +1348,16 @@ public sealed class TapeExportPass(
         {
             for (Exception? current = exception; current is not null; current = current.InnerException)
             {
-                if (current is TimeoutException or IOException)
+                // SocketException does not extend IOException. A reset socket is a dropped session.
+                if (current is TimeoutException or IOException or System.Net.Sockets.SocketException)
                 {
                     return true;
                 }
 
                 if (current is PostgresException postgres)
                 {
+                    // A server error is a lost lock only for these connection and shutdown states.
+                    // Serialization failure is transient and is not this. 55P03 is IdentityBusy.
                     return postgres.SqlState is PostgresErrorCodes.ConnectionException
                         or PostgresErrorCodes.ConnectionDoesNotExist
                         or PostgresErrorCodes.ConnectionFailure
@@ -1348,7 +1368,13 @@ public sealed class TapeExportPass(
                         or PostgresErrorCodes.CannotConnectNow;
                 }
 
-                if (current is NpgsqlException)
+                // A non-Postgres NpgsqlException is a broken stream only when Npgsql marks it
+                // transient: the inner exception is an IOException, a SocketException, a
+                // TimeoutException, or another transient NpgsqlException. A bare NpgsqlException
+                // (protocol, auth, or a command already in progress) is not a lost lock. Leave
+                // it uncaught so it propagates. Keep walking when it is not transient, so an
+                // IOException further in still counts.
+                if (current is NpgsqlException npgsql && npgsql.IsTransient)
                 {
                     return true;
                 }

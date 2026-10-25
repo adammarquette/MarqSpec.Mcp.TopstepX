@@ -75,6 +75,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keepalive query), and a drop fails that file without aborting the rest. `IdentityBusy` and `LockLost`
   record a span and a counter. A lock lost after the bytes land is not counted as uploaded. A deadline
   during backoff records `Timeout` with reason `upload_timeout` and continues.
+  A file whose Drive upload fails and whose lock probe then fails is counted once, as
+  `lock_lost`, which is the receipt. The uploader records retries only. The pass records the
+  one terminal outcome after the probe. A non-Postgres `NpgsqlException` is a lost lock only
+  when Npgsql marks it transient (a broken stream). Any other provider exception propagates
+  and is not classified as `lock_lost`.
   Transient retries honour `Retry-After` up to 30 seconds. The Google client's own 503 backoff is off.
   Railway allows one volume per service, mounted at `/data`. Export there is deferred until gh#767;
   the template (gh#774) blocks it. The start command that gh#767 will move into the image refuses

@@ -1074,7 +1074,8 @@ public sealed class SessionConflictTests
         await renewer.StartAsync(CancellationToken.None);
         await WaitFor(() => clock.Timers >= 1);
         clock.Advance(TimeSpan.FromMinutes(30));
-        await WaitFor(() => handler.Calls == 1 && gate.LoginPermitted && !held.TryRead(out _));
+        await WaitFor(() => handler.Calls == 1 && gate.LoginPermitted && !held.TryRead(out _)
+            && Recorded(reopens, SessionRenewalReopen.Expired));
 
         gate.StopLatched.Should().BeFalse();
         gate.RenewalBackingOff.Should().BeFalse();
@@ -1142,7 +1143,9 @@ public sealed class SessionConflictTests
         inner.GetCalls.Should().Be(0);
 
         clock.Advance(TimeSpan.FromMinutes(24));
-        await WaitFor(() => gate.LoginPermitted && !gate.RenewalBackingOff);
+        // The backoff ends before the reopen is recorded, so wait for the measurement too.
+        await WaitFor(() => gate.LoginPermitted && !gate.RenewalBackingOff
+            && Recorded(reopens, SessionRenewalReopen.Exhausted));
 
         gate.StopLatched.Should().BeFalse();
         gate.RecoveryArmed.Should().BeTrue();
@@ -1195,7 +1198,9 @@ public sealed class SessionConflictTests
             });
 
         await renewer.StartAsync(CancellationToken.None);
-        await WaitFor(() => gate.RenewalBackingOff || renewer.ExecuteTask!.IsFaulted);
+        // The renewer opens the backoff before it records the refusal, so wait for the measurement too.
+        await WaitFor(() => renewer.ExecuteTask!.IsFaulted
+            || (gate.RenewalBackingOff && Recorded(refusals, SessionRenewalRefusal.Outage)));
 
         renewer.ExecuteTask!.IsFaulted.Should().BeFalse();
         gate.RenewalBackingOff.Should().BeTrue();
@@ -1327,6 +1332,10 @@ public sealed class SessionConflictTests
 
     private static MetricCollector<long> Collect(HostTelemetry telemetry, string? instrument = null) =>
         new(telemetry, HostTelemetry.Name, instrument ?? HostTelemetry.SessionRenewalRefusalsInstrument);
+
+    private static bool Recorded(MetricCollector<long> collector, string reason) =>
+        collector.GetMeasurementSnapshot().Any(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], reason));
 
     private static async Task WaitFor(Func<bool> ready)
     {

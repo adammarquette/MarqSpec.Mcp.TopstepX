@@ -1166,12 +1166,14 @@ or a telemetry listener that fails after the send has started, or a broker succe
 The tool catch-all is defensive. Any other exception that reaches the tool is `OutcomeUnknown`, the refusal
 is omitted, and `resultCode` is `-1` (`UnclassifiedFaultResultCode`). That code is not a venue error and is
 never `SafeToRetry`. A structured `OutcomeUnknown` from the gate omits both the refusal and the result code.
-The gate is registered scoped and serves one order operation per instance; the send-started flags are
+The gate is registered scoped and serves one order operation per instance; send-started state is
 per call, and a second operation on that instance throws before any vendor call. A throw before the gate's
-telemetry try can report a false `OutcomeUnknown` when the vendor was not called. That report is
+telemetry try can report a false `OutcomeUnknown` when the vendor was not called, and that throw emits no
+span and no counter. That report is
 conservative: reconcile, do not send again. The unlock and the telemetry dispose catch their own failures, log one constant line, and
 count them. The disposal itself does not throw. After the send, the gate raises a failed unlock into the
 post-send handler, which returns structured `OutcomeUnknown` and does not mark the call safe to retry.
+When the broker had already assigned an order id, that result keeps the id and the parsed stage.
 `Live` is only a broker acknowledgment.
 `refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
 for them — they are fields, so the test is key presence. The unclassified catch-all is the exception:

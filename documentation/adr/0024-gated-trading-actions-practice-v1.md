@@ -288,16 +288,19 @@ An order is **not treated as live** until the **broker acknowledgment** arrives.
   not mark the call safe to retry. A failure before the send — a venue read, an
   HTTP fault, or a store fault that happens before the gateway is called — is a retryable `error` with no
   side effects, not `OutcomeUnknown`. The risk gate is registered scoped and serves one order operation
-  per instance. The send-started and lease-release flags travel on a per-call object through the send,
-  not on the instance. A second operation on that instance throws before any vendor call, so those flags
-  cannot be cleared and a live send reported as safe to retry. Only `PreSendFaultException` is
+  per instance. Send-started state travels on a per-call object through the send, not on the instance.
+  A second operation on that instance throws before any vendor call, so that state cannot be cleared and a
+  live send reported as safe to retry. Only `PreSendFaultException` is
   `SafeToRetry`. The tool catch-all is defensive: any other exception is `OutcomeUnknown`, the refusal is
   omitted, and `resultCode` is `-1` (`UnclassifiedFaultResultCode`), which is not a venue code and is not
   a retry. A structured `OutcomeUnknown` from the gate has neither a refusal nor a result code.
   **Known conservative cases,** each a false unknown. The caller reconciles instead of sending again.
   A throw before the gate's telemetry try — constructing the span, or the one-shot guard — is outside the
   classification that wraps a pre-send fault as `PreSendFaultException`. The tool then reports
-  `OutcomeUnknown` even though the vendor was not called. The order id is dropped after an acknowledged place.
+  `OutcomeUnknown` even though the vendor was not called, and that throw emits no span and no counter.
+  A post-send cleanup or bookkeeping fault is narrower. The gate already holds the broker order id and the
+  parsed stage, so that `OutcomeUnknown` carries both and is still not safe to retry. The audit row and a
+  replay stay `Live` with that order id. An acknowledged place with no such fault stays `Live`.
   A replay of a bare Unknown claim returns that `Unknown` unless a later
   `Live`, `Failed`, or `Refused` row exists, and it is never rewritten as `Live`.
   **Why an unacknowledged result is stored:** the earlier rule was "do not cache an unacked result as

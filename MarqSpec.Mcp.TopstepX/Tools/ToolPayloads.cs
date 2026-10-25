@@ -818,7 +818,8 @@ public static class ToolPayloads
     /// not classify. Omitted when neither applies.
     /// </param>
     /// <param name="OrderId">
-    /// The broker-assigned order id after an acknowledged place. Omitted when the venue assigned none.
+    /// The broker-assigned order id after an acknowledged place, including when a later post-send fault
+    /// makes the outcome <see cref="TradingRetrySafety.OutcomeUnknown"/>. Omitted when the venue assigned none.
     /// </param>
     public sealed record TradingWriteResult(
         string Status,

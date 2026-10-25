@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
 
@@ -23,10 +24,10 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// never a retry. Only
 /// <see cref="PreSendFaultException"/> leaves this type for a fault from before the send.
 /// One instance serves one order operation. The type is registered scoped so each request gets a
-/// fresh gate. The send-started and lease-release flags live on a per-call <see cref="SendAttempt"/>
+/// fresh gate. Send-started state lives on a per-call <see cref="SendAttempt"/>
 /// passed into <see cref="SendAndFinalizeAsync"/>, not on the instance. A second operation throws
 /// <see cref="InvalidOperationException"/> before any vendor call, so a shared instance cannot clear
-/// those flags and report a live send as safe to retry.
+/// that state and report a live send as safe to retry.
 /// </remarks>
 public sealed class TradingRiskGate
 {
@@ -42,29 +43,23 @@ public sealed class TradingRiskGate
     private readonly HostTelemetry _telemetry;
 
     /// <summary>
-    /// One order operation per instance. Set at entry, before the per-call <see cref="SendAttempt"/>
-    /// exists. The gate is registered scoped and each request builds a new instance. A second operation
-    /// on this instance throws rather than reuse the send-started state.
+    /// One order operation per instance. Exchanged to one at entry, before the per-call attempt exists.
+    /// A second operation on this instance throws before any vendor call.
     /// </summary>
-    private bool _operationStarted;
+    private int _operationStarted;
 
     /// <summary>
-    /// Cleanup fault planted by a test and copied onto the per-call attempt. Production passes null through
-    /// the public constructor. Cancel and close take no daily-cap lease, so a test passes the fault to the
-    /// internal constructor and the gate copies it onto the per-call attempt. The hook is not a settable
-    /// property on this type.
+    /// Optional cleanup fault copied onto each attempt. Null in production.
     /// </summary>
     private readonly Exception? _cleanupFault;
 
     /// <summary>
-    /// Send-started and lease-release state for one order operation. Passed through
+    /// Send-started state for one order operation. Passed through
     /// <see cref="SendAndFinalizeAsync"/> so it cannot survive onto the next call.
     /// </summary>
     private sealed class SendAttempt
     {
         public bool SendStarted { get; set; }
-
-        public bool LeaseReleaseFailed { get; set; }
 
         /// <summary>
         /// Raised after the send, inside the telemetry try, when cleanup failed. The daily-cap release
@@ -195,32 +190,34 @@ public sealed class TradingRiskGate
         string operation,
         Func<SendAttempt, Task<TradingRiskGateResult>> body)
     {
-        if (_operationStarted)
+        if (Interlocked.Exchange(ref _operationStarted, 1) != 0)
         {
             throw new InvalidOperationException(
                 "TradingRiskGate serves one order operation. A second call on the same instance is refused.");
         }
 
-        _operationStarted = true;
         SendAttempt attempt = new() { CleanupFault = _cleanupFault };
         _accountCache.Clear();
         HostTelemetry.ExecutionWriteScope write = _telemetry.ExecutionWrite(operation);
         TradingRiskGateResult result;
+        TradingRiskGateResult? settled = null;
         try
         {
             try
             {
                 result = await body(attempt).ConfigureAwait(false);
+                settled = result;
                 if (attempt.SendStarted && _dailyCap.LastReleaseFailed && attempt.CleanupFault is null)
                 {
+                    // The coordinator already counted this swallowed release. Do not count it again.
                     attempt.CleanupFault = new InvalidOperationException("Trading bookkeeping failed.");
                 }
 
-                if (attempt.SendStarted && attempt.CleanupFault is not null)
+                if (attempt.SendStarted && attempt.CleanupFault is Exception cleanupFault)
                 {
                     // Cleanup runs after the send. Raising it here is what the post-send handler classifies.
                     // Returning a result instead would never enter that handler.
-                    throw attempt.CleanupFault;
+                    ExceptionDispatchInfo.Capture(cleanupFault).Throw();
                 }
 
                 if (result.IsReplay)
@@ -241,7 +238,7 @@ public sealed class TradingRiskGate
             {
                 // The send has started. Do not wrap this as PreSendFaultException: that type is SafeToRetry.
                 write.Outcome(ExecutionWriteRefusal.OutcomeUnknown);
-                result = UnknownTransmit(AccountStage.Unknown);
+                result = UnknownFrom(settled);
             }
             catch (Exception exception) when (!attempt.SendStarted)
             {
@@ -253,7 +250,7 @@ public sealed class TradingRiskGate
                 // The send has started. Do not rethrow, and do not wrap as PreSendFaultException.
                 // SafeToRetry would place a second live order.
                 write.Outcome(ExecutionWriteRefusal.OutcomeUnknown);
-                result = UnknownTransmit(AccountStage.Unknown);
+                result = UnknownFrom(settled);
             }
         }
         finally
@@ -264,7 +261,7 @@ public sealed class TradingRiskGate
 
         if (attempt.SendStarted && write.BookkeepingFailed)
         {
-            return UnknownTransmit(result.ParsedStage);
+            return UnknownFrom(result);
         }
 
         return result;
@@ -1589,7 +1586,6 @@ public sealed class TradingRiskGate
         {
             // Counted here. RunWithTelemetry raises CleanupFault after the send so the post-send handler
             // returns OutcomeUnknown. Returning a result from this catch would never enter that handler.
-            attempt.LeaseReleaseFailed = true;
             attempt.CleanupFault = exception;
             _telemetry.RecordBookkeepingFault();
         }
@@ -1606,6 +1602,24 @@ public sealed class TradingRiskGate
                 HttpStatusCode: null,
                 VendorErrorCode: null,
                 OrderId: null),
+            Preview: null);
+
+    /// <summary>
+    /// OutcomeUnknown for a post-send fault. Keeps the order id and parsed stage already on
+    /// <paramref name="settled"/> when the body returned them. Still not safe to retry. A fault from
+    /// inside the body, before a result exists, stays stage <see cref="AccountStage.Unknown"/> with no id.
+    /// </summary>
+    private static TradingRiskGateResult UnknownFrom(TradingRiskGateResult? settled) =>
+        new(
+            TradingAttemptOutcome.Unknown,
+            settled?.ParsedStage ?? AccountStage.Unknown,
+            Refusal: null,
+            new ExecutionWriteResult(
+                ExecutionWriteOutcome.TransmittedOutcomeUnknown,
+                GateRefusal: null,
+                HttpStatusCode: null,
+                VendorErrorCode: null,
+                OrderId: settled?.WriteResult?.OrderId),
             Preview: null);
 
     private async Task<TradingRiskGateResult?> RefuseWhileHaltedAsync(

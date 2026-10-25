@@ -930,8 +930,12 @@ public sealed class SessionConflictTests
         await renewer.StartAsync(CancellationToken.None);
         await WaitFor(() => clock.Timers >= 1);
         handler.Calls.Should().Be(0);
+        int timers = clock.Timers;
         clock.Advance(TimeSpan.FromMinutes(30));
-        await WaitFor(() => handler.Calls == 1);
+
+        // The request is counted when it is sent; the token is stored after the response. The next timer
+        // is armed only after that, so wait for it before reading the held token.
+        await WaitFor(() => handler.Calls == 1 && clock.Timers > timers);
 
         handler.Requests.Should().ContainSingle(request =>
             request.RequestUri!.AbsolutePath == "/api/Auth/validate"
@@ -956,8 +960,11 @@ public sealed class SessionConflictTests
 
         await renewer.StartAsync(CancellationToken.None);
         await WaitFor(() => clock.Timers >= 1);
+        int timers = clock.Timers;
         clock.Advance(TimeSpan.FromMinutes(30));
-        await WaitFor(() => handler.Calls == 1);
+
+        // Wait for the next timer, which is armed after the validate result is applied, before moving the clock on.
+        await WaitFor(() => handler.Calls == 1 && clock.Timers > timers);
         clock.Advance(TimeSpan.FromMinutes(24));
 
         held.TryReadFresh(clock, out string token).Should().BeTrue();
@@ -1003,8 +1010,9 @@ public sealed class SessionConflictTests
 
         handler.Status = HttpStatusCode.OK;
         handler.Body = """{"success":true,"errorCode":0,"newToken":"after-backoff"}""";
+        timers = clock.Timers;
         clock.Advance(TimeSpan.FromSeconds(1));
-        await WaitFor(() => handler.Calls == 2);
+        await WaitFor(() => handler.Calls == 2 && clock.Timers > timers);
 
         gate.StopLatched.Should().BeFalse();
         gate.RenewalBackingOff.Should().BeFalse();

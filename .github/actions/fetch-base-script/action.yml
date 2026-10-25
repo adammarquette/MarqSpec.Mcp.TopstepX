@@ -1,0 +1,46 @@
+# gh#827. Fetches a gating script from the BASE commit so the gate never runs the PR's copy. FAIL CLOSED: no base
+# sha, no fetch, or no file at base is a failed step, never a skip and never a fall back to the PR's copy. Needs a
+# prior actions/checkout of this repository (it reads the PR's git history, which contains the base commit).
+# Like the workflow that calls it, this file comes from the PR, so edits to it need a full review.
+name: Fetch gating script from the base commit
+description: Writes the base commit's copy of a gating script to $RUNNER_TEMP/gate and outputs its path.
+inputs:
+  script:
+    description: Repository path of the script, e.g. scripts/check-issue-link.sh.
+    required: true
+  base-sha:
+    description: pull_request.base.sha, or merge_group.base_sha on merge_group runs. Never a branch tip.
+    required: true
+outputs:
+  path:
+    description: Absolute path of the fetched base copy.
+    value: ${{ steps.fetch.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - id: fetch
+      shell: bash
+      env:
+        SCRIPT: ${{ inputs.script }}
+        BASE: ${{ inputs.base-sha }}
+      run: |
+        set -euo pipefail
+        if [ -z "$BASE" ]; then
+          echo "::error::No base sha for event '$GITHUB_EVENT_NAME'; cannot fetch the base copy of $SCRIPT."
+          echo "::error::Failing closed."
+          exit 1
+        fi
+        if ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+          git fetch --no-tags --depth=1 origin "$BASE" || true
+        fi
+        mkdir -p "$RUNNER_TEMP/gate"
+        out="$RUNNER_TEMP/gate/$(basename "$SCRIPT")"
+        if ! git show "${BASE}:${SCRIPT}" >"$out" 2>/dev/null || [ ! -s "$out" ]; then
+          echo "::error::Could not read $SCRIPT at base commit $BASE. The gate runs the BASE copy only and never"
+          echo "::error::falls back to this PR's copy. A PR that ADDS a new gating script has no base copy and"
+          echo "::error::needs a one-time manual gate by a maintainer (CONTRIBUTING.md, 'Gating scripts')."
+          exit 1
+        fi
+        chmod +x "$out"
+        echo "path=$out" >>"$GITHUB_OUTPUT"
+        echo "ok  $SCRIPT from base $BASE ($(git rev-parse --short "$BASE"))."

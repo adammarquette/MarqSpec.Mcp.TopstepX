@@ -392,9 +392,9 @@ public sealed class RecorderHealthToolTests
 
         fixture.Store.Probes.Should().Be(1);
         fixture.Clock.Advance(fixture.Service.ProbeTimeout);
-        // Wall clock on purpose. The deadline above is the fake clock. A mutant that waits on a real
-        // two-second timer does not finish inside this bound.
-        Task finished = await Task.WhenAny(pending, Task.Delay(TimeSpan.FromMilliseconds(500)));
+        // Wall clock on purpose. The deadline above is the fake clock, and the continuation is queued.
+        // 500ms lost that race on a loaded runner. 1500ms still ends before a real two-second timer.
+        Task finished = await Task.WhenAny(pending, Task.Delay(TimeSpan.FromMilliseconds(1500)));
         finished.Should().BeSameAs(pending);
 
         RecorderHealthReport.Report report = await pending;

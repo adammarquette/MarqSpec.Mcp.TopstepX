@@ -17,10 +17,10 @@ contract; QA test creation is performed blind to the implementation per the
 
 **Traceability to verify on every PR:** an explicit, **plain** `Closes #N` **in ordinary prose** into
 `develop`, naming the issue GitHub actually links (`Part of #N` plus `Issue-stays-open: <reason>` when the
-issue stays open; `Related to #N` on any base except `develop`) — a citation inside code binds nothing and
-`issue-link` reads none of it, whether the code is backticks, a fenced block or an HTML comment (gh#123; a
-four-space-indented block is the form it still reads, gh#142) — and the affected `R-#`, ADR, architecture,
-data-dictionary or tool-catalogue section updated in the same PR.
+issue stays open, valid only with no issue linked; `Related to #N` on any base except `develop`) — a citation
+inside code binds nothing and `issue-link` reads none of it, whether the code is backticks, a fenced block or
+an HTML comment (gh#123; a four-space-indented block is the form it still reads, gh#142) — and the affected
+`R-#`, ADR, architecture, data-dictionary or tool-catalogue section updated in the same PR.
 
 ## What to look for
 

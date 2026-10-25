@@ -120,9 +120,10 @@ The recurring defect shape is a permissive default.
 ## Traceability
 
 Every PR cites its issue **in ordinary prose** — a plain `Closes #N` into `develop`, or `Part of #N` plus a
-line `Issue-stays-open: <reason>` when the issue stays open (`Related to #N` passes on every base except
-`develop`: stacked PRs, promotions into `staging` or `main`, and any other base). **A citation inside code
-binds nothing and `issue-link` refuses it**: backticks, a fenced block, or an HTML comment alike (gh#123). A
-four-space-indented block is the one form the check still reads as prose, so a pasted `git log` needs fencing
-(gh#142). Behavior, API or configuration changes update the matching `R-#`, the architecture doc, the relevant
-ADR, and the MCP tool catalogue, **in the same PR**. Stale documentation is a finding.
+line `Issue-stays-open: <reason>` when the issue stays open and no issue is linked (`Related to #N` passes on
+every base except `develop`: stacked PRs, promotions into `staging` or `main`, and any other base). **A
+citation inside code binds nothing and `issue-link` refuses it**: backticks, a fenced block, or an HTML
+comment alike (gh#123). A four-space-indented block is the one form the check still reads as prose, so a
+pasted `git log` needs fencing (gh#142). Behavior, API or configuration changes update the matching `R-#`,
+the architecture doc, the relevant ADR, and the MCP tool catalogue, **in the same PR**. Stale documentation
+is a finding.

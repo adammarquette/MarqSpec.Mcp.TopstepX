@@ -1211,8 +1211,9 @@ lock only when its chain contains an `IOException`, a `SocketException`, or a `T
 That error fails the one file. The receipt is `failed` and is not left `pending`. The measurement is
 `lock_fault`. The pass counts `export_failed`, marks the day's `tape.export` span Error, and continues
 with the remaining files. The unlock in `finally` cannot replace the original exception.
-`mcp.tape.export.duration` is the pass, in seconds, with no tags. A thrown pass is logged by the worker and does not fault the host. Loading
-the files back with DuckDB or pandas is [tape-export-reload.md](tape-export-reload.md).
+`mcp.tape.export.duration` is the pass, in seconds, with no tags. A thrown pass is logged by the worker
+and does not fault the host. Loading the files back with DuckDB or pandas is
+[tape-export-reload.md](tape-export-reload.md).
 
 ## What is deliberately absent
 

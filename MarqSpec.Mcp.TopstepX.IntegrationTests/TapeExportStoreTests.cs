@@ -769,6 +769,49 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Export_WhenTryLockIsCanceled_PropagatesAndWritesNoFailedReceipt()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        TapeExportPass pass = Pass(telemetry, new CountingUploader());
+        pass.IdentitySession = new CancelingSession { CancelTake = true };
+
+        Func<Task> act = () => pass.ExportAsync(null, CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        _database.ChangeTracker.Clear();
+        (await _database.TapeExportReceipts.AsNoTracking().ToListAsync()).Should().BeEmpty();
+        AssertNoLockFault(uploads, spans);
+    }
+
+    [Fact]
+    public async Task Export_WhenTheLockProbeIsCanceled_PropagatesAndWritesNoFailedReceipt()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        TapeExportPass pass = Pass(telemetry, new CountingUploader());
+        pass.IdentitySession = new CancelingSession { CancelProbe = true };
+
+        Func<Task> act = () => pass.ExportAsync(null, CancellationToken.None);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        _database.ChangeTracker.Clear();
+        TapeExportReceipt pending = await _database.TapeExportReceipts.AsNoTracking().SingleAsync(row =>
+            row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
+        pending.UploadState.Should().Be(TapeExportReceipt.StatePending);
+        (await _database.TapeExportReceipts.AsNoTracking().CountAsync()).Should().Be(1);
+        AssertNoLockFault(uploads, spans);
+    }
+
+    [Fact]
     public async Task Export_WhenDriveFailsPermanentlyAndTheLockIsHeld_CountsPermanentOnce()
     {
         await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
@@ -924,6 +967,15 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         };
         ActivitySource.AddActivityListener(listener);
         return listener;
+    }
+
+    private static void AssertNoLockFault(MetricCollector<long> uploads, IReadOnlyList<Activity> spans)
+    {
+        uploads.GetMeasurementSnapshot().Should().NotContain(measurement =>
+            (string?)measurement.Tags.GetValueOrDefault(HostTelemetry.ReasonTag) == TapeUploadReason.LockFault);
+        spans.Should().NotContain(span =>
+            span.OperationName == "tape.upload"
+            && (string?)span.GetTagItem(HostTelemetry.ReasonTag) == TapeUploadReason.LockFault);
     }
 
     private TapeExportPass Pass(
@@ -1420,6 +1472,43 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             string id = await client.UploadAsync(upload, cancellationToken).ConfigureAwait(false);
             return new TapeDriveUploadResult(TapeDriveUploadStatus.Uploaded, id, 1, null, null);
         }
+    }
+
+    /// <summary>
+    /// Cancellation from the take or the probe. Unlock, reopen, and dispose complete so they cannot
+    /// replace that cancellation.
+    /// </summary>
+    private sealed class CancelingSession : ITapeIdentitySession
+    {
+        public bool CancelTake { get; init; }
+
+        public bool CancelProbe { get; init; }
+
+        public Task<TapeIdentityLockTake> TryLockAsync(string key, CancellationToken cancellationToken)
+        {
+            if (CancelTake)
+            {
+                throw new OperationCanceledException();
+            }
+
+            return Task.FromResult(TapeIdentityLockTake.Held);
+        }
+
+        public Task<bool> ProbeAsync()
+        {
+            if (CancelProbe)
+            {
+                throw new OperationCanceledException();
+            }
+
+            return Task.FromResult(true);
+        }
+
+        public Task UnlockAsync(string key) => Task.CompletedTask;
+
+        public Task ReopenAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
     /// <summary>

@@ -648,6 +648,10 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             TapeUploadOperation.Lock,
             TapeUploadOutcome.Failed,
             ActivityStatusCode.Error);
+        spans.Should().Contain(span =>
+            span.OperationName == "tape.upload"
+            && (string?)span.GetTagItem(HostTelemetry.ReasonTag) == TapeUploadReason.LockLost
+            && span.GetTagItem(TapeExportPass.DriveFailureSpanTag) == null);
         uploads.GetMeasurementSnapshot().Count(measurement =>
             (string)measurement.Tags[HostTelemetry.OutcomeTag]! == TapeUploadOutcome.Uploaded)
             .Should().Be(await UploadedReceiptsAsync());
@@ -702,10 +706,161 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         span.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(TapeUploadOutcome.Failed);
         span.GetTagItem(HostTelemetry.OperationTag).Should().Be(TapeUploadOperation.Lock);
         span.GetTagItem(HostTelemetry.ReasonTag).Should().Be(TapeUploadReason.LockLost);
+        span.GetTagItem(TapeExportPass.DriveFailureSpanTag).Should().Be("GoogleApiException");
 
         uploads.GetMeasurementSnapshot().Count(row =>
             (string)row.Tags[HostTelemetry.OutcomeTag]! == TapeUploadOutcome.Uploaded)
             .Should().Be(await UploadedReceiptsAsync());
+    }
+
+    [Fact]
+    public async Task Export_WhenTheLockProbeThrows_FailsThatFileAndContinues()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        FaultingSession session = new();
+        FaultingUploader uploader = new();
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+        using MetricCollector<long> exports =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeExportsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        TapeExportPass pass = Pass(telemetry, uploader);
+        pass.IdentitySession = session;
+
+        TapeExportReport report = await pass.ExportAsync(null, CancellationToken.None);
+
+        report.DaysExported.Should().Be(0);
+        report.DaysRefused.Should().Be(1);
+        session.Unlocks.Should().BeGreaterThan(1);
+        _database.ChangeTracker.Clear();
+        TapeExportReceipt faulted = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
+        faulted.UploadState.Should().Be(TapeExportReceipt.StateFailed);
+        faulted.UploadState.Should().NotBe(TapeExportReceipt.StatePending);
+        faulted.FailureType.Should().Be("PostgresException");
+        faulted.FailureType.Should().NotBe("NpgsqlOperationInProgressException");
+        faulted.DriveFileId.Should().Be("landed-trades-" + TapeExportArchive.CsvGzFormat);
+        TapeExportReceipt next = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Kind == "trades" && row.Format == TapeExportArchive.ParquetFormat);
+        next.UploadState.Should().Be(TapeExportReceipt.StateUploaded);
+        exports.GetMeasurementSnapshot().Should().ContainSingle(measurement =>
+            (string)measurement.Tags[HostTelemetry.OutcomeTag]! == TapeExportOutcome.ExportFailed
+            && measurement.Value == 1);
+        uploads.GetMeasurementSnapshot().Should().ContainSingle(measurement =>
+            (string)measurement.Tags[HostTelemetry.ReasonTag]! == TapeUploadReason.LockFault
+            && (string)measurement.Tags[HostTelemetry.OperationTag]! == TapeUploadOperation.Lock
+            && (string)measurement.Tags[HostTelemetry.OutcomeTag]! == TapeUploadOutcome.Failed
+            && measurement.Value == 1);
+        Activity fault = spans.Should().ContainSingle(span =>
+            span.OperationName == "tape.upload"
+            && (string?)span.GetTagItem(HostTelemetry.ReasonTag) == TapeUploadReason.LockFault).Subject;
+        fault.Status.Should().Be(ActivityStatusCode.Error);
+        fault.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(TapeUploadOutcome.Failed);
+        fault.GetTagItem(HostTelemetry.OperationTag).Should().Be(TapeUploadOperation.Lock);
+        fault.SpanId.Should().Be(uploader.Parents[0]);
+        fault.Duration.Should().BeGreaterThan(TimeSpan.FromMilliseconds(15));
+        spans.Should().Contain(span =>
+            span.OperationName == "tape.export" && span.Status == ActivityStatusCode.Error);
+        uploads.GetMeasurementSnapshot().Count(measurement =>
+            (string)measurement.Tags[HostTelemetry.OutcomeTag]! == TapeUploadOutcome.Uploaded)
+            .Should().Be(await UploadedReceiptsAsync());
+    }
+
+    [Fact]
+    public async Task Export_WhenDriveFailsPermanentlyAndTheLockIsHeld_CountsPermanentOnce()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        TapeExportReport report = await Pass(
+                telemetry,
+                new RetryingTapeDriveUploader(
+                    new PermanentThenOkClient(),
+                    telemetry,
+                    NullLogger.Instance,
+                    new TapeDriveRetryTiming()))
+            .ExportAsync(null, CancellationToken.None);
+
+        report.DaysRefused.Should().Be(1);
+        _database.ChangeTracker.Clear();
+        TapeExportReceipt failed = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
+        failed.UploadState.Should().Be(TapeExportReceipt.StateFailed);
+        failed.UploadState.Should().NotBe(TapeExportReceipt.StatePending);
+        failed.FailureType.Should().Be("GoogleApiException");
+        failed.FailureStatus.Should().Be(403);
+        uploads.GetMeasurementSnapshot().Should().ContainSingle(measurement =>
+            (string)measurement.Tags[HostTelemetry.ReasonTag]! == TapeUploadReason.Permanent
+            && (string)measurement.Tags[HostTelemetry.OperationTag]! == TapeUploadOperation.Upload
+            && (string)measurement.Tags[HostTelemetry.OutcomeTag]! == TapeUploadOutcome.Permanent
+            && measurement.Value == 1);
+        Activity span = spans.Should().ContainSingle(candidate =>
+            candidate.OperationName == "tape.upload"
+            && (string?)candidate.GetTagItem(HostTelemetry.ReasonTag) == TapeUploadReason.Permanent).Subject;
+        span.Status.Should().Be(ActivityStatusCode.Error);
+        span.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(TapeUploadOutcome.Permanent);
+        span.GetTagItem(HostTelemetry.OperationTag).Should().Be(TapeUploadOperation.Upload);
+        TapeExportReceipt parquet = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Kind == "trades" && row.Format == TapeExportArchive.ParquetFormat);
+        parquet.UploadState.Should().Be(TapeExportReceipt.StateUploaded);
+    }
+
+    [Fact]
+    public async Task Export_WhenAFailedUploadNamesNoTerminalOutcome_Throws()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> uploads =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeUploadsInstrument);
+
+        Func<Task> act = () => Pass(telemetry, new OutcomeFreeUploader())
+            .ExportAsync(null, CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("A failed Drive upload returned no terminal outcome.");
+        uploads.GetMeasurementSnapshot().Should().NotContain(measurement =>
+            (string)measurement.Tags[HostTelemetry.ReasonTag]! == TapeUploadReason.Failed
+            || (string)measurement.Tags[HostTelemetry.ReasonTag]! == TapeUploadReason.Permanent
+            || (string)measurement.Tags[HostTelemetry.ReasonTag]! == TapeUploadReason.Timeout);
+    }
+
+    [Fact]
+    public async Task Export_WhenDriveRetries_KeepsOneUploadSpanAcrossTheAttempts()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 5123.25m);
+        ParentingClient client = new();
+        TapeDriveRetryTiming timing = new()
+        {
+            Wait = (_, _) => Task.CompletedTask,
+        };
+        using HostTelemetry telemetry = new();
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        await Pass(
+                telemetry,
+                new RetryingTapeDriveUploader(client, telemetry, NullLogger.Instance, timing))
+            .ExportAsync(null, CancellationToken.None);
+
+        client.Formats[0].Should().Be("trades:" + TapeExportArchive.CsvGzFormat);
+        client.Parents.Should().HaveCountGreaterThan(2);
+        client.Parents[0].Should().Be(client.Parents[1]);
+        client.Parents.Skip(2).Should().NotContain(client.Parents[0]);
+        Activity span = spans.Should().ContainSingle(candidate =>
+            candidate.OperationName == "tape.upload" && candidate.SpanId == client.Parents[0]).Subject;
+        span.Duration.Should().BeGreaterThan(TimeSpan.FromMilliseconds(40));
+        span.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(TapeUploadOutcome.Uploaded);
+        span.GetTagItem(HostTelemetry.ReasonTag).Should().Be(TapeUploadReason.Uploaded);
+        span.Status.Should().Be(ActivityStatusCode.Ok);
+        spans.Where(candidate => candidate.OperationName == "tape.upload")
+            .Should().OnlyContain(candidate => candidate.GetTagItem(HostTelemetry.OutcomeTag) != null)
+            .And.HaveCount(await _database.TapeExportReceipts.CountAsync());
     }
 
     [Fact]
@@ -1264,6 +1419,125 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         {
             string id = await client.UploadAsync(upload, cancellationToken).ConfigureAwait(false);
             return new TapeDriveUploadResult(TapeDriveUploadStatus.Uploaded, id, 1, null, null);
+        }
+    }
+
+    /// <summary>
+    /// The first probe throws a non-connection Postgres error. Every unlock throws a different
+    /// provider error, so a finally that rethrows would replace the probe failure or abort the pass.
+    /// </summary>
+    private sealed class FaultingSession : ITapeIdentitySession
+    {
+        private int _probes;
+
+        public int Unlocks { get; private set; }
+
+        public Task<TapeIdentityLockTake> TryLockAsync(string key, CancellationToken cancellationToken) =>
+            Task.FromResult(TapeIdentityLockTake.Held);
+
+        public Task<bool> ProbeAsync()
+        {
+            if (Interlocked.Increment(ref _probes) == 1)
+            {
+                throw new PostgresException("syntax", "ERROR", "ERROR", PostgresErrorCodes.SyntaxError);
+            }
+
+            return Task.FromResult(true);
+        }
+
+        public Task UnlockAsync(string key)
+        {
+            Unlocks++;
+            throw new NpgsqlOperationInProgressException(
+                new NpgsqlCommand("SELECT pg_advisory_unlock(hashtextextended(@key, 0))"));
+        }
+
+        public Task ReopenAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private sealed class FaultingUploader : ITapeDriveUploader
+    {
+        public bool IsEnabled => true;
+
+        public List<ActivitySpanId> Parents { get; } = [];
+
+        public async Task<TapeDriveUploadResult> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+        {
+            using Activity http = new("drive.http");
+            http.Start();
+            Parents.Add(http.ParentSpanId);
+            await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken).ConfigureAwait(false);
+            return new TapeDriveUploadResult(
+                TapeDriveUploadStatus.Uploaded,
+                "landed-" + upload.Identity.Kind + "-" + upload.Identity.Format,
+                1,
+                null,
+                null);
+        }
+    }
+
+    private sealed class PermanentThenOkClient : ITapeDriveClient
+    {
+        private int _calls;
+
+        public Task<string> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref _calls) == 1)
+            {
+                throw new TapeDriveException(
+                    "Drive request failed.",
+                    403,
+                    permanent: true,
+                    failureType: "GoogleApiException");
+            }
+
+            return Task.FromResult("kept-" + upload.Identity.Kind + "-" + upload.Identity.Format);
+        }
+    }
+
+    private sealed class OutcomeFreeUploader : ITapeDriveUploader
+    {
+        public bool IsEnabled => true;
+
+        public Task<TapeDriveUploadResult> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken) =>
+            Task.FromResult(new TapeDriveUploadResult(
+                TapeDriveUploadStatus.Failed,
+                null,
+                1,
+                "TapeDriveException",
+                null));
+    }
+
+    private sealed class ParentingClient : ITapeDriveClient
+    {
+        private int _csvAttempts;
+
+        public List<string> Formats { get; } = [];
+
+        public List<ActivitySpanId> Parents { get; } = [];
+
+        public async Task<string> UploadAsync(TapeDriveUpload upload, CancellationToken cancellationToken)
+        {
+            string format = upload.Identity.Kind + ":" + upload.Identity.Format;
+            Formats.Add(format);
+            using Activity http = new("drive.http");
+            http.Start();
+            Parents.Add(http.ParentSpanId);
+            await Task.Delay(TimeSpan.FromMilliseconds(30), cancellationToken).ConfigureAwait(false);
+            if (upload.Identity.Kind == "trades"
+                && upload.Identity.Format == TapeExportArchive.CsvGzFormat
+                && Interlocked.Increment(ref _csvAttempts) == 1)
+            {
+                throw new TapeDriveException(
+                    "Drive request failed.",
+                    503,
+                    permanent: false,
+                    failureType: "IOException");
+            }
+
+            return "parented-" + format;
         }
     }
 

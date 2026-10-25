@@ -27,8 +27,8 @@ public sealed class TapeExportLockSettingsTests
     public void IsIdentityConnectionFailure_WhenTheErrorIsNotADroppedSession_IsFalse()
     {
         TapeExportPass.IsIdentityConnectionFailure(new InvalidOperationException("closed")).Should().BeFalse();
-        // A bare NpgsqlException is not transient. Protocol, auth, and a command already in progress
-        // propagate; they are not a lost lock.
+        // A bare NpgsqlException is not a lost lock. Protocol, auth, and a command already in progress
+        // are not a dropped session.
         TapeExportPass.IsIdentityConnectionFailure(new NpgsqlException("broken stream")).Should().BeFalse();
         TapeExportPass.IsIdentityConnectionFailure(
             new NpgsqlOperationInProgressException(new NpgsqlCommand("SELECT 1"))).Should().BeFalse();

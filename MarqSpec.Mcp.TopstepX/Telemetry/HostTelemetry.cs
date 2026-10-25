@@ -626,10 +626,13 @@ public sealed class HostTelemetry : IDisposable
     /// <remarks>
     /// Tagged with <see cref="OutcomeTag"/>, <see cref="OperationTag"/>, and <see cref="ReasonTag"/>.
     /// A file id or a contract id would be a new series per value. The span <c>tape.upload</c> is the
-    /// trace; this counter is the aggregate. One file has one terminal measurement, recorded by the
-    /// pass after the lock probe. A lock lost after the bytes land, or after a Drive failure, is
+    /// trace; this counter is the aggregate. The pass opens that span before the upload, so it covers
+    /// the retries and parents the Drive HTTP spans, and sets the terminal tags when the span ends.
+    /// One file has one terminal measurement. A lock lost after the bytes land, or after a Drive failure, is
     /// <see cref="TapeUploadReason.LockLost"/>, not <see cref="TapeUploadOutcome.Uploaded"/> and not a
-    /// second <see cref="TapeUploadOutcome.Failed"/> for the Drive error. The uploader records retries only.
+    /// second <see cref="TapeUploadOutcome.Failed"/> for the Drive error. The span carries
+    /// <c>drive.failure_type</c> for the Drive error that receipt replaced. That name is not a counter
+    /// tag. The uploader records retries only.
     /// </remarks>
     public void TapeUpload(string outcome, int count, string operation, string reason)
     {
@@ -1335,7 +1338,13 @@ public static class TapeUploadReason
     /// <summary>The lock connection dropped. The receipt is failed even if Drive returned a file id.</summary>
     public const string LockLost = "lock_lost";
 
+    /// <summary>
+    /// The lock session threw something that is not a dropped connection. The receipt is failed,
+    /// the pass counts <see cref="TapeExportOutcome.ExportFailed"/>, and the remaining files continue.
+    /// </summary>
+    public const string LockFault = "lock_fault";
+
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
-        [Uploaded, Retried, Timeout, Permanent, Failed, Disabled, OrphanPending, IdentityBusy, LockLost];
+        [Uploaded, Retried, Timeout, Permanent, Failed, Disabled, OrphanPending, IdentityBusy, LockLost, LockFault];
 }

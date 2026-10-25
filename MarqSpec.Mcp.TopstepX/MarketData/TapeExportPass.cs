@@ -13,6 +13,46 @@ using Npgsql;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
+/// <summary>What <see cref="ITapeIdentitySession.TryLockAsync"/> decided.</summary>
+internal enum TapeIdentityLockTake
+{
+    /// <summary>This pass holds the identity.</summary>
+    Held,
+
+    /// <summary>Another session still holds it after <c>lock_timeout</c>.</summary>
+    Busy,
+
+    /// <summary>The lock connection dropped.</summary>
+    Lost,
+}
+
+/// <summary>
+/// The session that holds every identity lock for one pass. Production uses one direct Postgres
+/// connection. A test can supply a session that throws.
+/// </summary>
+internal interface ITapeIdentitySession : IAsyncDisposable
+{
+    /// <summary>Takes the advisory lock for <paramref name="key"/>.</summary>
+    /// <param name="key">The identity's canonical string.</param>
+    /// <param name="cancellationToken">Cancels the take. A drop is <see cref="TapeIdentityLockTake.Lost"/>, not this.</param>
+    /// <returns>Held, busy, or lost. A provider error that is not a drop escapes.</returns>
+    Task<TapeIdentityLockTake> TryLockAsync(string key, CancellationToken cancellationToken);
+
+    /// <summary>True when the session still answers. A provider error that is not a drop escapes.</summary>
+    /// <returns>False when the session has dropped.</returns>
+    Task<bool> ProbeAsync();
+
+    /// <summary>Releases <paramref name="key"/>. A provider error that is not a drop escapes.</summary>
+    /// <param name="key">The identity's canonical string.</param>
+    /// <returns>The release.</returns>
+    Task UnlockAsync(string key);
+
+    /// <summary>Closes the session and opens another. The next file uses the new one.</summary>
+    /// <param name="cancellationToken">Cancels the open.</param>
+    /// <returns>The reopen.</returns>
+    Task ReopenAsync(CancellationToken cancellationToken);
+}
+
 /// <summary>One export or import of recorded tape. The worker and the CLI verbs both call this.</summary>
 public interface ITapeExportPass
 {
@@ -47,7 +87,8 @@ public interface ITapeExportPass
 /// archived either. The receipt for a failed upload keeps the last Drive file id. One identity is
 /// serialised with a session advisory lock on one direct connection for the pass. That connection
 /// is not pooled, sets <c>lock_timeout</c> and TCP keepalive (the socket option, not Npgsql's
-/// keepalive query), and is reopened if it drops. The
+/// keepalive query), and is reopened if it drops. A provider error that is not a dropped
+/// session fails that file and the pass continues. The
 /// pending receipt is committed before the upload, and the file id is committed after it. A
 /// <c>drive_disabled</c> day is exported again once Drive is on.
 /// </para>
@@ -66,6 +107,18 @@ public sealed class TapeExportPass(
     private readonly HostTelemetry _telemetry = telemetry;
     private readonly ITapeDriveUploader _drive = drive;
     private readonly ILogger<TapeExportPass> _logger = logger;
+
+    /// <summary>
+    /// When set, the pass locks through this session and does not open a Postgres identity connection.
+    /// Production leaves it unset.
+    /// </summary>
+    internal ITapeIdentitySession? IdentitySession { get; set; }
+
+    /// <summary>
+    /// Span tag on <c>tape.upload</c> when a lock outcome replaces a Drive failure. Not a counter tag:
+    /// a failure-type dimension would multiply <c>mcp.tape.uploads</c>.
+    /// </summary>
+    internal const string DriveFailureSpanTag = "drive.failure_type";
 
     /// <inheritdoc />
     public Task<TapeExportReport> ExportAsync(DateOnly? onlyDay, CancellationToken cancellationToken) =>
@@ -157,7 +210,7 @@ public sealed class TapeExportPass(
 
         // One session for every identity in the pass. Opened on the first upload and held until the pass
         // finishes, including across days. A drop reopens that same gate for the next file.
-        IdentityGate? gate = null;
+        ITapeIdentitySession? gate = IdentitySession;
         try
         {
             foreach (DateOnly day in days)
@@ -512,7 +565,7 @@ public sealed class TapeExportPass(
         DateOnly day,
         TapeExportVerification written,
         DateTimeOffset exportedAtUtc,
-        IdentityGate? gate,
+        ITapeIdentitySession? gate,
         CancellationToken cancellationToken)
     {
         bool failed = false;
@@ -550,7 +603,7 @@ public sealed class TapeExportPass(
         DateOnly day,
         TapeExportStoredFile file,
         DateTimeOffset exportedAtUtc,
-        IdentityGate? gate,
+        ITapeIdentitySession? gate,
         CancellationToken cancellationToken)
     {
         TapeDriveIdentity identity = new(
@@ -578,10 +631,29 @@ public sealed class TapeExportPass(
 
         string key = identity.Canonical();
         bool held = false;
+        Activity? uploadSpan = null;
         try
         {
-            IdentityGate.LockTake take = await gate!.TryLockAsync(key, cancellationToken).ConfigureAwait(false);
-            if (take == IdentityGate.LockTake.Busy)
+            TapeIdentityLockTake take;
+            try
+            {
+                take = await gate!.TryLockAsync(key, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (IsLockSessionFault(exception))
+            {
+                await FailLockSessionAsync(
+                    gate!,
+                    day,
+                    file,
+                    exportedAtUtc,
+                    exception,
+                    uploadSpan,
+                    upload: null,
+                    cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+
+            if (take == TapeIdentityLockTake.Busy)
             {
                 await CommitResultAsync(
                     day,
@@ -597,11 +669,11 @@ public sealed class TapeExportPass(
                     TapeUploadOperation.Lock,
                     TapeUploadReason.IdentityBusy,
                     failed: true);
-                await gate.ReopenAsync(cancellationToken).ConfigureAwait(false);
+                await ReopenQuietlyAsync(gate, cancellationToken).ConfigureAwait(false);
                 return true;
             }
 
-            if (take == IdentityGate.LockTake.Lost)
+            if (take == TapeIdentityLockTake.Lost)
             {
                 await CommitResultAsync(
                     day,
@@ -617,7 +689,7 @@ public sealed class TapeExportPass(
                     TapeUploadOperation.Lock,
                     TapeUploadReason.LockLost,
                     failed: true);
-                await gate.ReopenAsync(cancellationToken).ConfigureAwait(false);
+                await ReopenQuietlyAsync(gate, cancellationToken).ConfigureAwait(false);
                 return true;
             }
 
@@ -626,14 +698,36 @@ public sealed class TapeExportPass(
             string absolute = Path.Combine(
                 _options.Path,
                 file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            // Open before the upload so the span covers every retry and parents the Drive HTTP spans.
+            // The outcome tags are set when it ends, after the probe. Disposed in the finally.
+            uploadSpan = _telemetry.Activities.StartActivity("tape.upload", ActivityKind.Client);
             TapeDriveUploadResult result = await _drive.UploadAsync(
                 new TapeDriveUpload(identity, known, file.RelativePath, () => File.OpenRead(absolute)),
                 cancellationToken).ConfigureAwait(false);
 
-            if (!await gate.ProbeAsync().ConfigureAwait(false))
+            bool locked;
+            try
+            {
+                locked = await gate.ProbeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception) when (IsLockSessionFault(exception))
+            {
+                await FailLockSessionAsync(
+                    gate,
+                    day,
+                    file,
+                    exportedAtUtc,
+                    exception,
+                    uploadSpan,
+                    result,
+                    cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+
+            if (!locked)
             {
                 held = false;
-                await gate.ReopenAsync(cancellationToken).ConfigureAwait(false);
+                await ReopenQuietlyAsync(gate, cancellationToken).ConfigureAwait(false);
                 await CommitResultAsync(
                     day,
                     file,
@@ -648,11 +742,14 @@ public sealed class TapeExportPass(
                 // lock_lost and not also failed, permanent, or upload_timeout. The uploader
                 // records retries only and does not record the Drive failure. drive_retried,
                 // when any retries happened, counts attempts. It is not a second file outcome.
-                RecordUpload(
+                // The span tag keeps the Drive error the receipt no longer names.
+                FinishUpload(
+                    uploadSpan,
                     TapeUploadOutcome.Failed,
                     TapeUploadOperation.Lock,
                     TapeUploadReason.LockLost,
-                    failed: true);
+                    failed: true,
+                    result.Status == TapeDriveUploadStatus.Failed ? result.FailureType : null);
                 return true;
             }
 
@@ -679,7 +776,8 @@ public sealed class TapeExportPass(
                 cancellationToken).ConfigureAwait(false);
             if (result.Status == TapeDriveUploadStatus.Uploaded)
             {
-                RecordUpload(
+                FinishUpload(
+                    uploadSpan,
                     TapeUploadOutcome.Uploaded,
                     TapeUploadOperation.Upload,
                     TapeUploadReason.Uploaded,
@@ -688,11 +786,9 @@ public sealed class TapeExportPass(
             else
             {
                 // The lock is still held, so the Drive result is the file's one outcome.
-                RecordUpload(
-                    result.TerminalOutcome ?? TapeUploadOutcome.Failed,
-                    TapeUploadOperation.Upload,
-                    result.TerminalReason ?? TapeUploadReason.Failed,
-                    failed: true);
+                // A missing pair is a contract breach. Recording a generic failed would hide it.
+                (string outcome, string reason) = RequireTerminalOutcome(result);
+                FinishUpload(uploadSpan, outcome, TapeUploadOperation.Upload, reason, failed: true);
             }
 
             return result.Status == TapeDriveUploadStatus.Failed;
@@ -701,9 +797,40 @@ public sealed class TapeExportPass(
         {
             if (held)
             {
-                await gate!.UnlockAsync(key).ConfigureAwait(false);
+                try
+                {
+                    await gate!.UnlockAsync(key).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (IsLockSessionFault(exception))
+                {
+                    // The file outcome is already decided. An unlock fault must not replace it
+                    // and must not abort the remaining files.
+                    _logger.LogWarning(
+                        "Tape export could not release its identity lock ({ExceptionType}). The file outcome stands.",
+                        exception.GetType().Name);
+                }
             }
+
+            uploadSpan?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// The outcome and reason a failed upload carries. Null is a contract breach, not a generic failure.
+    /// </summary>
+    /// <param name="result">The uploader's result. Status is failed.</param>
+    /// <returns>The tags the pass records.</returns>
+    /// <exception cref="InvalidOperationException">Either tag is missing.</exception>
+    internal static (string Outcome, string Reason) RequireTerminalOutcome(TapeDriveUploadResult result)
+    {
+        string? outcome = result.TerminalOutcome;
+        string? reason = result.TerminalReason;
+        if (string.IsNullOrEmpty(outcome) || string.IsNullOrEmpty(reason))
+        {
+            throw new InvalidOperationException("A failed Drive upload returned no terminal outcome.");
+        }
+
+        return (outcome, reason);
     }
 
     private async Task ReportPendingAsync(CancellationToken cancellationToken)
@@ -726,12 +853,102 @@ public sealed class TapeExportPass(
             failed: false);
     }
 
-    private void RecordUpload(string outcome, string operation, string reason, bool failed)
+    private async Task FailLockSessionAsync(
+        ITapeIdentitySession gate,
+        DateOnly day,
+        TapeExportStoredFile file,
+        DateTimeOffset exportedAtUtc,
+        Exception exception,
+        Activity? uploadSpan,
+        TapeDriveUploadResult? upload,
+        CancellationToken cancellationToken)
+    {
+        // One file. The receipt must not stay pending, and this is its only terminal measurement.
+        // export_failed is the pass counter architecture.md names for a caught failure. Returning
+        // true marks the day's tape.export span Error and lets the remaining files continue.
+        _logger.LogError(
+            "Tape export lock session failed for {Path} ({ExceptionType}). Drive failure {FailureType}. The file failed and the pass continued.",
+            file.RelativePath,
+            exception.GetType().Name,
+            upload?.FailureType);
+        await CommitResultAsync(
+            day,
+            file,
+            exportedAtUtc,
+            upload?.FileId,
+            TapeExportReceipt.StateFailed,
+            exception.GetType().Name,
+            failureStatus: null,
+            cancellationToken).ConfigureAwait(false);
+        string? driveFailure = upload?.Status == TapeDriveUploadStatus.Failed ? upload.FailureType : null;
+        if (uploadSpan is null)
+        {
+            RecordUpload(
+                TapeUploadOutcome.Failed,
+                TapeUploadOperation.Lock,
+                TapeUploadReason.LockFault,
+                failed: true,
+                driveFailure);
+        }
+        else
+        {
+            FinishUpload(
+                uploadSpan,
+                TapeUploadOutcome.Failed,
+                TapeUploadOperation.Lock,
+                TapeUploadReason.LockFault,
+                failed: true,
+                driveFailure);
+        }
+
+        _telemetry.TapeExport(TapeExportOutcome.ExportFailed, 1);
+        await ReopenQuietlyAsync(gate, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task ReopenQuietlyAsync(ITapeIdentitySession gate, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await gate.ReopenAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsLockSessionFault(exception))
+        {
+            _logger.LogWarning(
+                "Tape export could not reopen its identity lock ({ExceptionType}).",
+                exception.GetType().Name);
+        }
+    }
+
+    private static bool IsLockSessionFault(Exception exception) =>
+        exception is not OperationCanceledException;
+
+    private void RecordUpload(
+        string outcome,
+        string operation,
+        string reason,
+        bool failed,
+        string? driveFailureType = null)
     {
         using Activity? span = _telemetry.Activities.StartActivity("tape.upload", ActivityKind.Client);
+        FinishUpload(span, outcome, operation, reason, failed, driveFailureType);
+    }
+
+    private void FinishUpload(
+        Activity? span,
+        string outcome,
+        string operation,
+        string reason,
+        bool failed,
+        string? driveFailureType = null)
+    {
         span?.SetTag(HostTelemetry.OperationTag, operation);
         span?.SetTag(HostTelemetry.ReasonTag, reason);
         span?.SetTag(HostTelemetry.OutcomeTag, outcome);
+        if (!string.IsNullOrEmpty(driveFailureType))
+        {
+            span?.SetTag(DriveFailureSpanTag, driveFailureType);
+        }
+
         span?.SetStatus(failed ? ActivityStatusCode.Error : ActivityStatusCode.Ok);
         _telemetry.TapeUpload(outcome, 1, operation, reason);
     }
@@ -1172,7 +1389,8 @@ public sealed class TapeExportPass(
     /// <param name="exception">The exception from the lock, the probe, or the unlock.</param>
     /// <returns>
     /// True for a dropped session. False for a programming error, an ordinary SQL error, or a
-    /// non-transient <see cref="NpgsqlException"/>. A false result is not caught, so it propagates.
+    /// bare <see cref="NpgsqlException"/>. A false result is not a lost lock. The pass fails that
+    /// file and continues.
     /// </returns>
     internal static bool IsIdentityConnectionFailure(Exception exception) =>
         IdentityGate.IsConnectionFailure(exception);
@@ -1183,7 +1401,7 @@ public sealed class TapeExportPass(
     /// option, not Npgsql's keepalive query) notices a half-open session. A drop is a lost lock, not a
     /// second owner.
     /// </summary>
-    private sealed class IdentityGate : IAsyncDisposable
+    private sealed class IdentityGate : ITapeIdentitySession
     {
         internal const string ApplicationName = "tape-export-lock";
 
@@ -1198,13 +1416,6 @@ public sealed class TapeExportPass(
             _logger = logger;
         }
 
-        internal enum LockTake
-        {
-            Held,
-            Busy,
-            Lost,
-        }
-
         internal static async Task<IdentityGate> OpenAsync(
             TopstepXDbContext database,
             ILogger logger,
@@ -1214,7 +1425,7 @@ public sealed class TapeExportPass(
             return new IdentityGate(database, connection, logger);
         }
 
-        internal async Task<LockTake> TryLockAsync(string key, CancellationToken cancellationToken)
+        public async Task<TapeIdentityLockTake> TryLockAsync(string key, CancellationToken cancellationToken)
         {
             try
             {
@@ -1224,7 +1435,7 @@ public sealed class TapeExportPass(
                 }
 
                 await AdvisoryAsync(_connection!, "pg_advisory_lock", key, cancellationToken).ConfigureAwait(false);
-                return LockTake.Held;
+                return TapeIdentityLockTake.Held;
             }
             catch (OperationCanceledException)
             {
@@ -1232,18 +1443,18 @@ public sealed class TapeExportPass(
             }
             catch (Exception exception) when (IsLockTimeout(exception))
             {
-                return LockTake.Busy;
+                return TapeIdentityLockTake.Busy;
             }
             catch (Exception exception) when (IsConnectionFailure(exception))
             {
                 _logger.LogWarning(
                     "Tape export lost its identity lock ({ExceptionType}).",
                     exception.GetType().Name);
-                return LockTake.Lost;
+                return TapeIdentityLockTake.Lost;
             }
         }
 
-        internal async Task<bool> ProbeAsync()
+        public async Task<bool> ProbeAsync()
         {
             if (_connection is null || _connection.State != ConnectionState.Open)
             {
@@ -1265,7 +1476,7 @@ public sealed class TapeExportPass(
             }
         }
 
-        internal async Task UnlockAsync(string key)
+        public async Task UnlockAsync(string key)
         {
             if (_connection is null || _connection.State != ConnectionState.Open)
             {
@@ -1284,7 +1495,7 @@ public sealed class TapeExportPass(
             }
         }
 
-        internal async Task ReopenAsync(CancellationToken cancellationToken)
+        public async Task ReopenAsync(CancellationToken cancellationToken)
         {
             await DisposeConnectionAsync().ConfigureAwait(false);
             _connection = await OpenConnectionAsync(_database, cancellationToken).ConfigureAwait(false);
@@ -1368,16 +1579,10 @@ public sealed class TapeExportPass(
                         or PostgresErrorCodes.CannotConnectNow;
                 }
 
-                // A non-Postgres NpgsqlException is a broken stream only when Npgsql marks it
-                // transient: the inner exception is an IOException, a SocketException, a
-                // TimeoutException, or another transient NpgsqlException. A bare NpgsqlException
-                // (protocol, auth, or a command already in progress) is not a lost lock. Leave
-                // it uncaught so it propagates. Keep walking when it is not transient, so an
-                // IOException further in still counts.
-                if (current is NpgsqlException npgsql && npgsql.IsTransient)
-                {
-                    return true;
-                }
+                // A bare NpgsqlException is not a lost lock. The walk above already matched an
+                // IOException, a SocketException, or a TimeoutException further in. Npgsql's
+                // IsTransient is that same chain, so a separate branch would change nothing.
+                // The pass fails the file and continues.
             }
 
             return false;

@@ -12,7 +12,9 @@
 # The rule, for every non-merge commit in the range:
 #   - Skipped if its AUTHOR date is before CUTOFF (2026-10-25T00:00:00-05:00). Author date, not committer
 #     date: a rebase rewrites the committer date, and an old commit rebased onto develop must not start failing.
-#   - Skipped if `git interpret-trailers --parse` returns no `Assisted-by:` trailer (any key case). Prose or a
+#   - Trailers are parsed with Assisted-by and Co-Authored-By configured as trailer keys (`git -c trailer.<x>.key=..
+#     interpret-trailers --parse`), so git's 25% rule accepts e.g. `Closes #1` above them without Signed-off-by.
+#   - Skipped if that parse returns no `Assisted-by:` trailer (any key case). Prose or a
 #     quoted commit body mentioning `Assisted-by:` does not count. No bot list is needed; Dependabot carries none.
 #   - Otherwise, judged only on the parsed trailers: each `Assisted-by:` must read `<Name> (<tool>)`, at least
 #     one `Co-Authored-By:` must be present, and EVERY `Co-Authored-By:` must read `<Name> <x@y>`.
@@ -63,7 +65,7 @@ for sha in $shas; do
   msg=$(git log -1 --format=%B "$sha")
   # Only what git itself parses as trailers counts. `Assisted-by:` in body prose or a quoted commit body is not
   # a trailer, so a commit with no PARSED Assisted-by is skipped.
-  trailers=$(printf '%s\n' "$msg" | git interpret-trailers --parse)
+  trailers=$(printf '%s\n' "$msg" | git -c trailer.assistedby.key=Assisted-by -c trailer.coauthoredby.key=Co-Authored-By interpret-trailers --parse)
   assisted=$(printf '%s\n' "$trailers" | grep -i '^Assisted-by:' || true)
   if [ -z "$assisted" ]; then
     skipped=$((skipped + 1)); continue

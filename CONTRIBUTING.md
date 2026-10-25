@@ -214,8 +214,9 @@ tracker and drifts from it.
 
   `commit-hygiene` enforces this for commits authored on or after 2026-10-25 00:00 CDT: an `Assisted-by:` trailer
   must have the `<Model Name> (<tool>)` shape (the check verifies the shape, not the name), and every
-  `Co-Authored-By:` trailer must read `<Name> <email>`, at least one required. Only what
-  `git interpret-trailers --parse` reads as trailers counts (`scripts/check-commit-trailers.sh`, gh#802).
+  `Co-Authored-By:` trailer must read `<Name> <email>`, and at least one must be present. Only what
+  `git interpret-trailers --parse` reads as trailers counts, with both keys configured so a line such as
+  `Closes #1` may sit above them (`scripts/check-commit-trailers.sh`, gh#802).
   A commit that fails this check can only be cleared by rewording it and force-pushing, which needs the
   repository owner's (Adam's) direct approval, the same as any force-push, so get the trailers right the first time.
 

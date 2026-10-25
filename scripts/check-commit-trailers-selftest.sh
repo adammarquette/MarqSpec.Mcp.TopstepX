@@ -226,10 +226,12 @@ envcase "pull_request with empty base exits 2" 2 "empty base sha" \
 # (step id trailers), passes its output as GATE, and never calls ./scripts/check-commit-trailers.sh directly.
 wf="$here/../.github/workflows/branch-policy.yml"
 act="$here/../.github/actions/fetch-base-script/action.yml"
-if grep -q 'uses: ./.github/actions/fetch-base-script' "$wf" && grep -q 'script: scripts/check-commit-trailers.sh' "$wf" \
+if grep -q 'uses: ./.github/actions/fetch-base-script' "$wf" \
+   && grep -q 'script: scripts/check-commit-trailers.sh' "$wf" \
    && grep -q 'GATE: ${{ steps.trailers.outputs.path }}' "$wf" \
    && grep -qF 'base-sha: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}' "$wf" \
-   && ! grep -q 'run: ./scripts/check-commit-trailers.sh' "$wf" && [ -f "$act" ] && grep -q 'git show "${BASE}:${SCRIPT}"' "$act"; then
+   && ! grep -q 'run: ./scripts/check-commit-trailers.sh' "$wf" \
+   && [ -f "$act" ] && grep -q 'git show "${BASE}:${SCRIPT}"' "$act"; then
   echo "ok   guard: branch-policy.yml runs the base copy of check-commit-trailers.sh"; pass=$((pass+1))
 else echo "FAIL guard: branch-policy.yml does not run the base copy of check-commit-trailers.sh"; fail=$((fail+1)); fi
 

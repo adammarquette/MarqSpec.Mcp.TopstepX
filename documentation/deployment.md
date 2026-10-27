@@ -273,6 +273,7 @@ is a possible later option; it needs Adam's approval and a scrub spec.
 
 **Adam's settings (not in any file):**
 - the GitHub `production` environment's required reviewers;
+- the GitHub `staging` environment's required reviewer, `adammarquette` (it gates the staging deploy);
 - variables `RAILWAY_STAGING_BASE_URL` / `RAILWAY_PRODUCTION_BASE_URL` on those environments;
 - each `RAILWAY_TOKEN` as a Railway project token scoped to that one environment.
 

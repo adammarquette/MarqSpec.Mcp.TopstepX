@@ -62,5 +62,5 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          npm ci --ignore-scripts --no-audit --no-fund --loglevel=error  # root package.json: the pinned railway SDK
+          scripts/railway/install-sdk.sh
           railway config plan --environment staging || echo "::warning::plan did not complete; see above"

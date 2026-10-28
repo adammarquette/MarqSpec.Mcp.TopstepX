@@ -194,6 +194,27 @@ expect reject template resource-url-other-host 'Mcp__OAuth__ResourceUrl: "https:
 expect reject template resource-url-wrong-path 'Mcp__OAuth__ResourceUrl: "https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp"' 'Mcp__OAuth__ResourceUrl: "https://${{RAILWAY_PUBLIC_DOMAIN}}/"'
 expect reject template required-scope-changed 'Mcp__OAuth__RequiredScope: "topstepx-mcp/read"' 'Mcp__OAuth__RequiredScope: "topstepx-mcp/trade"'
 expect reject template recorder-oauth-key 'Mcp__Auth__Mode: "StaticToken",' 'Mcp__Auth__Mode: "StaticToken", Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,'
+# ADR-0021 exception (2026-10-28): StaticToken on staging's server only; production keeps OAuth.
+B='ctx.environment === "staging" ? stagingStaticToken : oauth'
+ST='Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,'
+SC='Mcp__OAuth__RequiredScope: "topstepx-mcp/read",'
+expect accept template staging-back-on-oauth "$B" 'ctx.environment === "staging" ? oauth : oauth'
+NAMED='[static-token-staging-only]' expect reject template static-token-in-production "$B" '(ctx.environment === "staging" || production) ? stagingStaticToken : oauth'
+NAMED='[static-token-staging-only]' expect reject template static-token-everywhere "$B" 'ctx.environment === "staging" ? stagingStaticToken : stagingStaticToken'
+NAMED='[static-token-staging-only]' expect reject template static-token-not-staging "$B" 'ctx.environment === "staging" ? oauth : stagingStaticToken'
+NAMED='[static-token-no-oauth]' expect reject template static-token-with-resource-url "$ST" "$ST"' Mcp__OAuth__ResourceUrl: "https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp",'
+NAMED='[static-token-no-oauth]' expect reject template static-token-with-issuer "$ST" "$ST"' Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,'
+NAMED='[static-token-no-oauth]' expect reject template static-token-with-scope "$ST" "$ST $SC"
+NAMED='[static-token-no-oauth]' expect reject template static-token-with-colon-oauth-key "$ST" "$ST"' "Mcp:OAuth:ClientIds": ctx.shared.MCP_OAUTH_CLIENT_IDS,'
+NAMED='[static-token-secret]' expect reject template static-token-recorder-secret 'ctx.shared.MCP_HTTP_BEARER_TOKEN' 'ctx.shared.MCP_RECORDER_BEARER_TOKEN'
+NAMED='[static-token-secret]' expect reject template static-token-literal "$ST" 'Mcp__HttpBearerToken: "changeme-local",'
+NAMED='[static-token-secret]' expect reject template static-token-missing "$ST" ''
+NAMED='server: Mcp__OAuth__Issuer must be' expect reject template production-oauth-issuer-removed 'Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,' ''
+NAMED='server: Mcp__OAuth__ClientIds must be' expect reject template production-oauth-client-ids-removed 'Mcp__OAuth__ClientIds: ctx.shared.MCP_OAUTH_CLIENT_IDS,' ''
+NAMED='server: Mcp__OAuth__ResourceUrl must be' expect reject template production-oauth-resource-url-removed 'Mcp__OAuth__ResourceUrl: "https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp",' ''
+NAMED='server: Mcp__OAuth__RequiredScope is locked' expect reject template production-oauth-scope-removed "$SC" ''
+NAMED='must be unset under OAuth' expect reject template production-oauth-plus-static-token "$SC" "$SC $ST"
+NAMED='[oauth-required]' expect reject template production-auth-mode-dropped 'Mcp__Auth__Mode: "OAuth",' ''
 expect reject template base-url-arbitrary 'ProjectX__BaseUrl: "https://api.topstepx.com"' 'ProjectX__BaseUrl: "http://evil.example"'
 
 # --- roles ---

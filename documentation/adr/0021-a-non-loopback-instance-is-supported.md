@@ -266,6 +266,35 @@ the closed allowlist recorded on [ADR-0023](0023-aws-deployment-topology.md) §9
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Exception (2026-10-28) — Railway staging runs the static token until an OAuth issuer exists
+
+**Decided by Adam (operator), 2026-10-28:** *"Run staging on a static token for now, with an ADR-0021
+exception, and keep OAuth for production."*
+
+**Why.** No Cognito user pool exists for the Railway deployment
+([deployment.md](../deployment.md#railway-gh758)), so `MCP_OAUTH_ISSUER` and `MCP_OAUTH_CLIENT_IDS` have no
+valid values. An OAuth server with no issuer refuses to start (`OAuthOptions`), and staging could not deploy
+at all.
+
+**Scope.** Staging's `server` on Railway only. It runs `Mcp__Auth__Mode=StaticToken` with
+`Mcp__HttpBearerToken` from the staging shared variable `MCP_HTTP_BEARER_TOKEN`, and **no** `Mcp__OAuth__*` key
+beside it (`McpOptions` refuses that pairing at startup). Staging holds only the synthetic seed and runs with
+`Trading__Enabled=false`. That does not make a shared secret on a public listener acceptable in general. It
+is the price of a disposable environment deploying before its issuer exists.
+
+**Production stays on OAuth, and the checker enforces it.** `.railway/railway.ts` picks the server's auth with
+one explicit `ctx.environment === "staging"` branch, so every other environment gets the OAuth block.
+`scripts/railway/evaluate-template.mjs` fails `StaticToken` on the server in any environment but staging
+(`[static-token-staging-only]`), fails an OAuth key beside it (`[static-token-no-oauth]`), and keeps every
+OAuth requirement everywhere else. `scripts/check-deployment.sh` runs its static-token mode only with
+`MCP_CHECK_ENVIRONMENT=staging`.
+
+**Temporary.** This exception ends when an OAuth issuer (a Cognito user pool) exists for Railway. At that
+point the staging branch in `railway.ts` is deleted, `MCP_HTTP_BEARER_TOKEN` is removed from staging, and
+staging returns to the coupling above. Nothing else in this record changes.
+
+Assisted-by: grok-bot:sgt-squash
+
 ## Follow-ups
 
 - gh#510 lands as a dated update on ADR-0007; when it does, a dated update here says which of the three

@@ -293,5 +293,29 @@ expect reject template retention-raw-tape-days 'Logging__Console__FormatterName:
 expect reject template untyped-postgres-host 'POSTGRES_PRIVATE_HOST: postgres.env.RAILWAY_PRIVATE_DOMAIN,' 'POSTGRES_PRIVATE_HOST: "postgres.railway.internal",'
 expect reject template type-error 'restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 }' 'restartPolicyType: "SOMETIMES", restartPolicyMaxRetries: 10 }'
 
+# --- SDK pin (gh#832): the root package.json `railway config plan` loads must pin what CI compiles against ---
+expect_pin() {  # expect_pin <reject|accept> <name> <python edit of the root copy>
+  local want="$1" name="$2" edit="$3" dir="$work/pin-$2" got
+  mkdir -p "$dir" && cp "$here/../package.json" "$here/../package-lock.json" "$dir/"
+  python3 - "$dir" "$edit" <<'PY'
+import json, sys, os
+d, edit = sys.argv[1:]
+pkg = json.load(open(os.path.join(d, "package.json"))); lock = json.load(open(os.path.join(d, "package-lock.json")))
+exec(edit)
+json.dump(pkg, open(os.path.join(d, "package.json"), "w")); json.dump(lock, open(os.path.join(d, "package-lock.json"), "w"))
+PY
+  if RAILWAY_ROOT_PACKAGE_DIR="$dir" "$check" "$template" >/dev/null 2>"$work/err"; then got=accept; else got=reject; fi
+  cases=$((cases + 1))
+  if [ "$want" = reject ] && ! grep -qF "railway SDK pin mismatch" "$work/err"; then
+    echo "FAIL: $name rejected, but not by the named check railway SDK pin mismatch" >&2; failures=$((failures + 1))
+  elif [ "$got" = "$want" ]; then echo "ok: $want (pin) -- $name"
+  else echo "FAIL: wanted $want, got $got (pin) -- $name" >&2; failures=$((failures + 1)); fi
+}
+expect_pin accept sdk-pin-equal 'pass'
+expect_pin reject sdk-pin-root-manifest-differs 'pkg["dependencies"]["railway"] = "3.15.0"'
+expect_pin reject sdk-pin-root-range 'pkg["dependencies"]["railway"] = "^3.16.0"'
+expect_pin reject sdk-pin-root-lock-differs 'lock["packages"]["node_modules/railway"]["version"] = "3.15.0"'
+expect_pin reject sdk-pin-root-missing 'del pkg["dependencies"]["railway"]'
+
 echo "$cases cases (+ the committed template), $failures wrong"
 [ "$failures" -eq 0 ] || { echo "$failures case(s) went the wrong way" >&2; exit 1; }

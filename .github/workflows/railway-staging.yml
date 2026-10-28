@@ -78,7 +78,7 @@ jobs:
           scripts/railway/pin-image.sh "$VERSION" "$DIGEST"
           git -c user.name=ci -c user.email=ci@invalid commit -q -m "pin $VERSION" .railway/railway.ts
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 

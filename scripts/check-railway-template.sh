@@ -22,6 +22,9 @@ case "$mode" in template|deployable) ;; *) echo "check-railway-template: unknown
 template="${1:-$here/../.railway/railway.ts}"
 [ -f "$template" ] || { echo "check-railway-template: no template at $template" >&2; exit 2; }
 
+# The root SDK pin (what `railway config plan` loads) must equal the one compiled against below (gh#832).
+"$here/railway/check-sdk-pin.sh" >/dev/null || exit 1
+
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 cp "$here/railway/package.json" "$here/railway/package-lock.json" "$here/railway/tsconfig.json" \

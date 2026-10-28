@@ -62,6 +62,5 @@ jobs:
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
-          (cd scripts/railway && npm ci --ignore-scripts --no-audit --no-fund --loglevel=error)
-          mkdir -p node_modules && ln -sfn "$PWD/scripts/railway/node_modules/railway" node_modules/railway
+          npm ci --ignore-scripts --no-audit --no-fund --loglevel=error  # root package.json: the pinned railway SDK
           railway config plan --environment staging || echo "::warning::plan did not complete; see above"

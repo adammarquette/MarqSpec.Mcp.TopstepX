@@ -1,0 +1,12 @@
+{
+  "name": "topstepx-railway-iac",
+  "private": true,
+  "type": "module",
+  "description": "Deploy-time only: the Railway TypeScript SDK that `railway config plan` loads to evaluate .railway/railway.ts (gh#758). Pinned to the same version as scripts/railway/package.json. Nothing here ships in the image.",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "railway": "3.16.0"
+  }
+}

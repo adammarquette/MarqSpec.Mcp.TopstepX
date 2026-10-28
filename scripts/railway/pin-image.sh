@@ -15,3 +15,4 @@ sentinel=':REPLACE_WITH_RELEASE_TAG"'
 sed -i "s|$sentinel|:$version@$digest\"|" "$file"
 grep -F "marqspec.mcp.topstepx:$version@$digest\"" "$file" >/dev/null
 echo "pinned ghcr.io/adammarquette/marqspec.mcp.topstepx:$version@$digest"
+"$(dirname "${BASH_SOURCE[0]}")/embed-seed.sh" "$file"

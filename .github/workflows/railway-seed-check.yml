@@ -11,6 +11,10 @@ on:
   pull_request:
     paths:
       - "scripts/railway/seed/**"
+      - "scripts/railway/seed-staging.sh"
+      - "scripts/railway/embed-seed.sh"
+      - "scripts/railway/latest-migration.sh"
+      - ".railway/railway.ts"
       - "MarqSpec.Mcp.TopstepX.Data/Migrations/**"
       - ".github/workflows/railway-seed-check.yml"
   workflow_dispatch:
@@ -72,9 +76,26 @@ jobs:
           echo "trades/bars/coverage after run 1: $first, after run 2: $second"
           [ "$first" = "4800/240/2" ] || { echo "::error::unexpected seed counts $first"; exit 1; }
           [ "$first" = "$second" ] || { echo "::error::seed is not idempotent"; exit 1; }
+      # The script the staging `seed` service runs, under the same env shape the template gives it (minus the
+      # Railway host), run twice: it must wait for the newest migration, seed, and print the line
+      # seed-staging.sh waits for, with the expected counts both times.
+      - name: run-seed.sh (the seed service's script) seeds and reports
+        env:
+          POSTGRES_PRIVATE_HOST: localhost
+          PGPORT: "5432"
+          SEED_FOR_DIGEST: sha256:0000000000000000000000000000000000000000000000000000000000000000
+        run: |
+          SEED_AFTER_MIGRATION="$(scripts/railway/latest-migration.sh)"
+          SEED_SQL="$(cat scripts/railway/seed/staging-seed.sql)"
+          export SEED_AFTER_MIGRATION SEED_SQL
+          for run in 1 2; do
+            out="$(timeout 60 bash scripts/railway/seed/run-seed.sh)"
+            echo "$out"
+            [ "$out" = "seed-staging: ok $SEED_FOR_DIGEST 4800/240/2" ] || { echo "::error::run-seed.sh run $run printed '$out'"; exit 1; }
+          done
       - name: Seeder refuses anything but staging
         run: |
           for e in production prod Staging ""; do
-            if RAILWAY_TOKEN=x scripts/railway/seed-staging.sh "$e" 2>/dev/null; then echo "::error::seeded '$e'"; exit 1; fi
+            if RAILWAY_TOKEN=x scripts/railway/seed-staging.sh "$e" "sha256:$(printf '0%.0s' {1..64})" 1 2>/dev/null; then echo "::error::seeded '$e'"; exit 1; fi
           done
           echo ok

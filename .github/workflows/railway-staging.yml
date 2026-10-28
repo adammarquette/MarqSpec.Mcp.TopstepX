@@ -5,7 +5,7 @@
 # here; production goes through railway-promote.yml, which needs a passing staging record from this one.
 #
 # Staging is disposable: Postgres has no volume, so each deploy starts with an empty database, which this
-# then seeds with a synthetic fixture. Order: verify the image -> pin -> template checks (deployable mode,
+# then seeds with a synthetic fixture (a staging-only one-shot `seed` service; see deployment.md). Order: verify the image -> pin -> template checks (deployable mode,
 # Trading__Enabled literal "false") -> plan (saved) -> apply that plan -> /health reports the pinned
 # version and digest -> seed -> an authenticated MCP call (static token) -> record the digest as a GitHub
 # deployment + artifact.
@@ -112,10 +112,14 @@ jobs:
           DIGEST: ${{ inputs.digest }}
         run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 600
 
+      # The seed runs ON Railway, in the staging-only one-shot `seed` service the apply just (re)deployed; this
+      # waits for its "seed-staging: ok <digest> 4800/240/2" log line. No `railway ssh`: a project token cannot
+      # register the SSH key it needs (run 40767891986).
       - name: Seed the synthetic fixture (staging only)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: scripts/railway/seed-staging.sh staging
+          DIGEST: ${{ inputs.digest }}
+        run: scripts/railway/seed-staging.sh staging "$DIGEST" 900
 
       # Stays up: the seed must not have knocked anything over.
       - name: /health still reports the pinned image

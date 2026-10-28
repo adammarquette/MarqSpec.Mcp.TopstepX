@@ -115,6 +115,29 @@ export default defineRailway((ctx) => {
   // container mid-migration. 3990 >= store wait (90) + migration (3600) + 300 s warm-up, which the check requires.
   const HEALTHCHECK_TIMEOUT = 3990;
 
+  // ADR-0021: a listener the internet reaches runs OAuth, never the static token (McpOptions refuses a
+  // static token beside OAuth). Issuer and client ids are per-environment shared variables.
+  const oauth = {
+    Mcp__Auth__Mode: "OAuth",
+    Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,
+    Mcp__OAuth__ClientIds: ctx.shared.MCP_OAUTH_CLIENT_IDS,
+    // Tied to THIS service's public domain (same-service reference), https, path /mcp -- what
+    // check-deployment.sh compares the RFC 9728 `resource` against. No domain yet => "https:///mcp", which
+    // OAuthOptions refuses at startup: loud, not a silently wrong audience. See deployment.md for custom domains.
+    Mcp__OAuth__ResourceUrl: "https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp",
+    // Locked: the check rejects any other scope.
+    Mcp__OAuth__RequiredScope: "topstepx-mcp/read",
+  } as const;
+  // ADR-0021 EXCEPTION (2026-10-28), STAGING ONLY and temporary: no OAuth issuer (Cognito user pool) exists
+  // yet, so staging's server runs the static gate on its own secret, with NO Mcp__OAuth__* key beside it
+  // (McpOptions refuses that). Production has no path here: the branch names "staging" and nothing else, and
+  // evaluate-template.mjs fails StaticToken in any other environment. Delete this once the issuer exists.
+  const stagingStaticToken = {
+    Mcp__Auth__Mode: "StaticToken",
+    Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
+  } as const;
+  const serverAuth = ctx.environment === "staging" ? stagingStaticToken : oauth;
+
   const server = service("server", {
     source: server_image(),
     healthcheck: "/health",
@@ -123,17 +146,7 @@ export default defineRailway((ctx) => {
     deploy: { ...RESTART },
     env: {
       ...common,
-      // ADR-0021: a listener the internet reaches runs OAuth, never the static token (McpOptions refuses a
-      // static token beside OAuth). Issuer, client ids and resource URL are per-environment shared variables.
-      Mcp__Auth__Mode: "OAuth",
-      Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,
-      Mcp__OAuth__ClientIds: ctx.shared.MCP_OAUTH_CLIENT_IDS,
-      // Tied to THIS service's public domain (same-service reference), https, path /mcp -- what
-      // check-deployment.sh compares the RFC 9728 `resource` against. No domain yet => "https:///mcp", which
-      // OAuthOptions refuses at startup: loud, not a silently wrong audience. See deployment.md for custom domains.
-      Mcp__OAuth__ResourceUrl: "https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp",
-      // Locked: the check rejects any other scope.
-      Mcp__OAuth__RequiredScope: "topstepx-mcp/read",
+      ...serverAuth,
       // Railway's edge is the only path to this service and overwrites X-Forwarded-For.
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true",
       MarketData__RecordTape: "false",

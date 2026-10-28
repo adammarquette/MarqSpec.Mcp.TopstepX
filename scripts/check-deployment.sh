@@ -4,6 +4,16 @@
 #   MCP_CHECK_CLIENT_ID=…  MCP_CHECK_CLIENT_SECRET=…  MCP_CHECK_TOKEN_URL=…  \
 #     scripts/check-deployment.sh <base-url> <expected-version>
 #
+#   MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging  MCP_CHECK_BEARER_TOKEN=…  \
+#     scripts/check-deployment.sh <base-url> <expected-version>
+#
+#   The second form is ADR-0021's 2026-10-28 exception and nothing else: STAGING ONLY, until an OAuth issuer
+#   (Cognito user pool) exists. Assertion 2 then requires a bare `Bearer` challenge (and FAILS on an RFC 9728
+#   one, which would mean the instance is not in the mode the caller claims), and assertion 3 presents the
+#   static token instead of minting one. It refuses to run unless MCP_CHECK_ENVIRONMENT=staging, and refuses
+#   any OAuth client variable beside it -- exactly one mode, as McpOptions requires of the server. Production
+#   is OAuth; evaluate-template.mjs fails a production server on StaticToken.
+#
 #   e.g.  scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
 #
 # WHY THIS EXISTS (gh#521, gh#509)
@@ -119,6 +129,9 @@ usage: MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=�
 
   MCP_CHECK_CLIENT_ID / MCP_CHECK_CLIENT_SECRET   the Cognito deploy-check app client (ADR-0023 §9)
   MCP_CHECK_TOKEN_URL                             its `client_credentials` token endpoint
+
+  Staging only, ADR-0021 exception (2026-10-28), instead of the three above:
+  MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging  MCP_CHECK_BEARER_TOKEN=<Mcp__HttpBearerToken>
 
 Credentials are read from the environment and never from arguments: an argument is visible in `ps`.
 USAGE
@@ -263,8 +276,49 @@ esac
 # never fires. The trace is `+ '[' -z x ']'` then `+ '[' 28 -eq 0 ']'`. Worth keeping as a rule rather than
 # as a fix: **`${VAR+x}` is how you ask whether a secret is set without asking what it is**, and it removes
 # the need to relax `-u` in a script whose whole subject is what leaks.
+# THE AUTH MODE, stated rather than inferred. OAuth unless the caller says otherwise; StaticToken is the
+# ADR-0021 staging exception (2026-10-28) and is refused anywhere but staging, and beside any OAuth variable.
+AUTH_MODE="${MCP_CHECK_AUTH_MODE:-OAuth}"
+case "$AUTH_MODE" in
+  OAuth) ;;
+  StaticToken)
+    if [ "${MCP_CHECK_ENVIRONMENT:-}" != "staging" ]; then
+      die "  STATIC TOKEN OUTSIDE STAGING  MCP_CHECK_AUTH_MODE=StaticToken needs MCP_CHECK_ENVIRONMENT=staging"
+      die "The static token is ADR-0021's staging-only exception (2026-10-28). Production runs OAuth: check it"
+      die "with MCP_CHECK_CLIENT_ID / MCP_CHECK_CLIENT_SECRET / MCP_CHECK_TOKEN_URL. NOTHING HAS BEEN SENT."
+      exit 1
+    fi
+    for v in MCP_CHECK_CLIENT_ID MCP_CHECK_CLIENT_SECRET MCP_CHECK_TOKEN_URL; do
+      if [ -n "$(printenv "$v" | head -c 1)" ]; then
+        die "  TWO MODES  $v is set beside MCP_CHECK_AUTH_MODE=StaticToken"
+        die "Exactly one authentication mode, as McpOptions requires of the server. NOTHING HAS BEEN SENT."
+        exit 1
+      fi
+    done
+    if [ -z "${MCP_CHECK_BEARER_TOKEN+x}" ] || [ "${#MCP_CHECK_BEARER_TOKEN}" -eq 0 ]; then
+      die "  UNSET  MCP_CHECK_BEARER_TOKEN is empty or unset"
+      die "StaticToken mode presents that token at assertion 3; without it assertion 3 could only be skipped."
+      die "NOTHING HAS BEEN CHECKED."
+      exit 1
+    fi
+    # Read through printenv into grep, never expanded on a traced line: a quote, a backslash or a line break
+    # would break out of the curl config line the token is written into.
+    if printenv MCP_CHECK_BEARER_TOKEN | grep -q '["\\]' || [ "$(printenv MCP_CHECK_BEARER_TOKEN | wc -l)" -gt 1 ]; then
+      die "  UNUSABLE TOKEN  MCP_CHECK_BEARER_TOKEN contains a quote, a backslash or a line break"
+      die "It cannot be written into a curl config line safely. The value is not printed. NOTHING HAS BEEN SENT."
+      exit 1
+    fi
+    ;;
+  *)
+    die "  USAGE  MCP_CHECK_AUTH_MODE must be OAuth or StaticToken, got '$AUTH_MODE'"
+    exit 1
+    ;;
+esac
+
 MISSING=""
-if [ -z "${MCP_CHECK_CLIENT_ID+x}" ] || [ "${#MCP_CHECK_CLIENT_ID}" -eq 0 ]; then
+if [ "$AUTH_MODE" = "StaticToken" ]; then
+  :
+elif [ -z "${MCP_CHECK_CLIENT_ID+x}" ] || [ "${#MCP_CHECK_CLIENT_ID}" -eq 0 ]; then
   MISSING="MCP_CHECK_CLIENT_ID"
 elif [ -z "${MCP_CHECK_CLIENT_SECRET+x}" ] || [ "${#MCP_CHECK_CLIENT_SECRET}" -eq 0 ]; then
   MISSING="MCP_CHECK_CLIENT_SECRET"
@@ -311,6 +365,7 @@ fi
 # THE SAME RULE, ON THE SHARPER URL. Assertion 1's traffic is public data; this request carries the CLIENT
 # SECRET. So a plain-http token endpoint off loopback is refused before the secret is ever assembled into a
 # request — not after it has been sent once and the run has gone red for some later reason.
+if [ "$AUTH_MODE" = "OAuth" ]; then
 classify_url "$MCP_CHECK_TOKEN_URL"
 case "$URL_TRANSPORT" in
   tls|loopback) ;;
@@ -329,6 +384,7 @@ case "$URL_TRANSPORT" in
     exit 1
     ;;
 esac
+fi
 
 command -v curl >/dev/null 2>&1 || { die "  MISSING  curl is required, and nothing has been checked"; exit 1; }
 
@@ -606,6 +662,23 @@ fi
 
 CHALLENGE="$HEADER_VALUE"
 METADATA_URL="$(printf '%s' "$CHALLENGE" | sed -n 's/.*resource_metadata="\([^"]*\)".*/\1/p')"
+if [ "$AUTH_MODE" = "StaticToken" ]; then
+  if [ -n "$METADATA_URL" ]; then
+    die "  OAUTH CHALLENGE  StaticToken mode was asked for, but the 401 names a metadata document: $CHALLENGE"
+    die "That is the OAuth gate's refusal (RFC 9728). The instance is not in the mode this run claims, so"
+    die "nothing below would test what is deployed."
+    exit 1
+  fi
+  # HEADER_VALUE is the whole header line; the scheme is what follows the name.
+  case "$(printf '%s' "$CHALLENGE" | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r')" in
+    [Bb]earer|[Bb]earer\ *) ;;
+    *)
+      die "  NOT BEARER  the 401's challenge is not a Bearer challenge: $CHALLENGE"
+      exit 1
+      ;;
+  esac
+  ok "  OK  /mcp refuses an anonymous call with 401 and a bare Bearer challenge (StaticToken, ADR-0021 staging exception)"
+else
 if [ -z "$METADATA_URL" ]; then
   die "  NO RESOURCE_METADATA  the challenge names no metadata document: $CHALLENGE"
   die "A bare 'WWW-Authenticate: Bearer' is the STATIC token mode's refusal (ADR-0007). On a deployed"
@@ -650,6 +723,7 @@ if ! body_matches '"authorization_servers"[[:space:]]*:[[:space:]]*\['; then
 fi
 
 ok "  OK  /mcp refuses an anonymous call with 401, and the document it names claims $FOUND_RESOURCE"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. A client_credentials token, then initialize and tools/list with it.
@@ -658,6 +732,16 @@ ok "  OK  /mcp refuses an anonymous call with 401, and the document it names cla
 # traces and a heredoc's body is not traced — measured, and it is only ONE of the three things that make
 # that true of the whole script; the other two are the length check above and the token file below. Mode 600
 # by the umask; removed by the trap.
+if [ "$AUTH_MODE" = "StaticToken" ]; then
+  # The same shape as the minted token below: the value goes from the environment into the mode-600 config
+  # through printenv, and never onto a traced line.
+  {
+    printf 'header = "Authorization: Bearer '
+    printenv MCP_CHECK_BEARER_TOKEN | tr -d '\r\n'
+    printf '"\n'
+  } >"$CURL_CONFIG"
+  ok "  OK  presenting the static bearer token from MCP_CHECK_BEARER_TOKEN (not printed)"
+else
 cat >"$CURL_CONFIG" <<CONFIG
 user = "$MCP_CHECK_CLIENT_ID:$MCP_CHECK_CLIENT_SECRET"
 CONFIG
@@ -716,6 +800,7 @@ fi
 rm -f "$TOKEN_RAW" "$TOKEN_FILE"
 
 ok "  OK  the token endpoint minted a client_credentials access token"
+fi
 
 request "$CURL_CONFIG" --request POST --header "$ACCEPT" --header "$CONTENT" --data "$INITIALIZE" "$MCP_URL"
 
@@ -727,7 +812,10 @@ fi
 
 if [ "$HTTP_STATUS" != "200" ]; then
   die "  INITIALIZE REFUSED  POST $MCP_URL with a token answered $HTTP_STATUS, expected 200"
-  if [ "$HTTP_STATUS" = "401" ]; then
+  if [ "$HTTP_STATUS" = "401" ] && [ "$AUTH_MODE" = "StaticToken" ]; then
+    die "401 with the static token means MCP_CHECK_BEARER_TOKEN is not the server's Mcp__HttpBearerToken"
+    die "(staging's shared MCP_HTTP_BEARER_TOKEN). The value is not printed."
+  elif [ "$HTTP_STATUS" = "401" ]; then
     die "401 with a freshly minted token means the server did not accept THIS pool's token: the issuer it is"
     die "configured with, the client id not being in Mcp__OAuth__ClientIds, or the scope claim not carrying"
     die "Mcp__OAuth__RequiredScope as a whole entry. The server's own log names which claim, and it never"
@@ -865,4 +953,8 @@ else
   note "      not verify would have ended this run at assertion 1. ssl_verify_result reads 0 either way."
 fi
 
-ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, a refusal a connector can act on, a token, and $TOOL_COUNT tools."
+if [ "$AUTH_MODE" = "StaticToken" ]; then
+  ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, a static-token refusal, the static token accepted, and $TOOL_COUNT tools (StaticToken, staging only)."
+else
+  ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, a refusal a connector can act on, a token, and $TOOL_COUNT tools."
+fi

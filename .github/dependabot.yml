@@ -34,9 +34,13 @@ updates:
         versions: [">=8.0.0"]
 
   # The pinned Railway SDK + TypeScript the railway-template CI job compiles .railway/railway.ts against
-  # (gh#758). CI-only; nothing here ships in the image.
+  # (gh#758), and the root package.json that `railway config plan` loads the same SDK from. CI/deploy only;
+  # nothing here ships in the image. The group keeps both railway pins in one PR, because the deploy
+  # workflows refuse to run when they differ.
   - package-ecosystem: npm
-    directory: "/scripts/railway"
+    directories:
+      - "/"
+      - "/scripts/railway"
     schedule:
       interval: weekly
       day: monday
@@ -49,6 +53,10 @@ updates:
     commit-message:
       prefix: ci
       include: scope
+    groups:
+      railway-sdk:
+        patterns:
+          - "railway"
 
   - package-ecosystem: github-actions
     directory: "/"

@@ -245,7 +245,8 @@ Two manual workflows. Neither has run yet.
   1. checks that the GHCR tag resolves to the digest;
   2. pins the template with [`pin-image.sh`](../scripts/railway/pin-image.sh);
   3. runs `--mode deployable` and `no-order-path`;
-  4. installs the pinned Railway SDK from the root `package.json` (`npm ci`), then runs
+  4. installs the pinned Railway SDK from the root `package.json`
+     ([`install-sdk.sh`](../scripts/railway/install-sdk.sh)), then runs
      `railway config plan --out` and `apply --plan`;
   5. waits until `/health` reports exactly that version and digest
      ([`wait-for-health.sh`](../scripts/railway/wait-for-health.sh)), so it fails if nothing shipped;
@@ -262,8 +263,10 @@ Two manual workflows. Neither has run yet.
 **SDK location.** `railway config plan` evaluates `.railway/railway.ts`, so `import "railway/iac"` must
 resolve from `.railway/` upward. The root [`package.json`](../package.json) holds it, pinned exactly with a
 committed lockfile; `scripts/railway/node_modules` is not on that path. The root pin must equal
-`scripts/railway/package.json`'s, which the template checks compile against; the deploy workflows refuse a
-mismatch, and Dependabot bumps both in one grouped PR.
+`scripts/railway/package.json`'s, which the template checks compile against.
+[`check-sdk-pin.sh`](../scripts/railway/check-sdk-pin.sh) compares both manifests and lockfiles. It runs in
+PR CI (`check-railway-template.sh`) and again at deploy time (`install-sdk.sh`). Dependabot bumps both in one
+grouped PR.
 
 **Seed.** [`staging-seed.sql`](../scripts/railway/seed/staging-seed.sql) is synthetic and deterministic:
 - 4,800 trades on venue `synthetic` (`MNQ` / `MES`, a fixed price formula, no account ids, keys or PII);

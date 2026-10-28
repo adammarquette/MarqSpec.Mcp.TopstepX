@@ -7,10 +7,11 @@
 # Staging is disposable: Postgres has no volume, so each deploy starts with an empty database, which this
 # then seeds with a synthetic fixture. Order: verify the image -> pin -> template checks (deployable mode,
 # Trading__Enabled literal "false") -> plan (saved) -> apply that plan -> /health reports the pinned
-# version and digest -> seed -> record the digest as a GitHub deployment + artifact.
+# version and digest -> seed -> an authenticated MCP call (static token) -> record the digest as a GitHub
+# deployment + artifact.
 #
 # SECRETS: RAILWAY_TOKEN is a project token scoped to the Railway staging environment, held on the GitHub
-# `staging` environment. It reaches steps only via `env:`, never an argument, and no step uses `set -x`.
+# `staging` environment, beside MCP_HTTP_BEARER_TOKEN (staging's static MCP token, ADR-0021 exception). It reaches steps only via `env:`, never an argument, and no step uses `set -x`.
 # Railway's plan redacts variable values by default; --show-values is never passed.
 name: railway-staging
 
@@ -124,6 +125,20 @@ jobs:
           DIGEST: ${{ inputs.digest }}
         run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 120
 
+      # An authenticated MCP call, not just /health. Staging's server runs the static token (ADR-0021
+      # exception, 2026-10-28, until an OAuth issuer exists), so check-deployment.sh runs in StaticToken mode,
+      # which it refuses outside staging. MCP_HTTP_BEARER_TOKEN is a `staging` environment secret holding the
+      # same value as Railway's staging shared MCP_HTTP_BEARER_TOKEN; it reaches the script only via env:,
+      # and the script never prints it. Production stays OAuth and is not checked here.
+      - name: MCP answers with the static token (staging only)
+        env:
+          BASE_URL: ${{ vars.RAILWAY_STAGING_BASE_URL }}
+          VERSION: ${{ inputs.version }}
+          MCP_CHECK_AUTH_MODE: StaticToken
+          MCP_CHECK_ENVIRONMENT: staging
+          MCP_CHECK_BEARER_TOKEN: ${{ secrets.MCP_HTTP_BEARER_TOKEN }}
+        run: scripts/check-deployment.sh "$BASE_URL" "$VERSION"
+
       # The record railway-promote.yml requires: a successful `staging` GitHub deployment whose payload names
       # this exact digest. Written only after deploy, health and seed all passed.
       - name: Record the digest that passed
@@ -135,10 +150,10 @@ jobs:
         run: |
           id="$(jq -n --arg ref "$GITHUB_SHA" --arg v "$VERSION" --arg d "$DIGEST" --arg img "$IMAGE" \
                  '{ref:$ref, environment:"staging", auto_merge:false, required_contexts:[], transient_environment:true,
-                   description:("railway staging passed " + $v), payload:{image:$img, version:$v, digest:$d, checks:["deploy","health","seed"]}}' \
+                   description:("railway staging passed " + $v), payload:{image:$img, version:$v, digest:$d, checks:["deploy","health","seed","mcp"]}}' \
                | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - -q .id)"
           gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=success \
-            -f environment_url="${{ vars.RAILWAY_STAGING_BASE_URL }}" -f description="deploy, health and seed passed" >/dev/null
+            -f environment_url="${{ vars.RAILWAY_STAGING_BASE_URL }}" -f description="deploy, health, seed and mcp passed" >/dev/null
           jq -n --arg v "$VERSION" --arg d "$DIGEST" --arg id "$id" --arg run "$GITHUB_RUN_ID" \
             '{version:$v, digest:$d, deployment_id:$id, run_id:$run}' > staging-passed.json
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"

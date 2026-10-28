@@ -242,6 +242,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, frame.encode(), "text/event-stream")
 
     def _challenge(self):
+        if FAULT == "static":
+            # The static gate's refusal (ADR-0007): a bare Bearer, no metadata document. ADR-0021's
+            # 2026-10-28 exception runs staging's server like this until an OAuth issuer exists.
+            return {"WWW-Authenticate": "Bearer"}
         metadata = ORIGIN + "/.well-known/oauth-protected-resource/mcp"
         return {"WWW-Authenticate": f'Bearer resource_metadata="{metadata}", scope="{SCOPE}"'}
 
@@ -525,6 +529,27 @@ expect_accepted() {
 
 token_url_for() { printf '%s/oauth2/token' "$1"; }
 
+# StaticToken mode (ADR-0021 exception, 2026-10-28, staging only). The static token is the fixture's
+# ACCESS_TOKEN, so the leak needles above cover it too. Extra NAME=value pairs go into the gate's environment.
+run_gate_static() {
+  local base="$1" token="$2"; shift 2
+  GATE_STATUS=0
+  : >"$OUT"
+  : >"$ERR"
+  env CURL_HOME="" MCP_CHECK_AUTH_MODE=StaticToken MCP_CHECK_ENVIRONMENT=staging \
+    MCP_CHECK_BEARER_TOKEN="$token" "$@" \
+    bash "$GATE" "$base" "$FIXTURE_VERSION" >"$OUT" 2>"$ERR" || GATE_STATUS=$?
+  local stream needle found
+  for stream in "$OUT" "$ERR"; do
+    for needle in "$FIXTURE_CLIENT_SECRET" "$FIXTURE_ACCESS_TOKEN"; do
+      found=0
+      grep -qF "$needle" "$stream" || found=$?
+      if [ "$found" -eq 0 ]; then die "  LEAK  the gate printed a credential it handled, to $(basename "$stream")"; exit 1; fi
+      if [ "$found" -gt 1 ]; then die "  CANNOT READ  grep exited $found searching $(basename "$stream")"; exit 1; fi
+    done
+  done
+}
+
 # ---------------------------------------------------------------------------
 # 1. The sound fixture. FIRST, because every rejection below is worthless without it.
 # ---------------------------------------------------------------------------
@@ -678,4 +703,51 @@ stop_fixture
 expect_rejected "a self-signed certificate with an 'insecure' curlrc in scope" \
   "THE CERTIFICATE did not validate"
 
-ok "check-deployment.sh accepts a sound deployment and rejects eight known faults by name."
+# --- StaticToken mode: ADR-0021's staging exception (2026-10-28). Production stays OAuth. ---
+start_fixture static
+run_gate_static "$FIXTURE_ORIGIN" "$FIXTURE_ACCESS_TOKEN"
+stop_fixture
+expect_accepted "static-token staging deployment" \
+  "bare Bearer challenge" \
+  "tools/list returned $SOUND_TOOLS tools" \
+  "StaticToken, staging only"
+
+start_fixture static
+run_gate "$FIXTURE_ORIGIN" "$(token_url_for "$FIXTURE_ORIGIN")"
+stop_fixture
+expect_rejected "a static-token instance checked as OAuth" \
+  "NO RESOURCE_METADATA"
+
+start_fixture none
+run_gate_static "$FIXTURE_ORIGIN" "$FIXTURE_ACCESS_TOKEN"
+stop_fixture
+expect_rejected "StaticToken mode against an OAuth instance" \
+  "OAUTH CHALLENGE"
+
+start_fixture static
+run_gate_static "$FIXTURE_ORIGIN" "wrong-static-token-not-a-credential"
+stop_fixture
+expect_rejected "a wrong static token" \
+  "INITIALIZE REFUSED" \
+  "is not the server's Mcp__HttpBearerToken"
+
+start_fixture static
+run_gate_static "$FIXTURE_ORIGIN" "$FIXTURE_ACCESS_TOKEN" MCP_CHECK_ENVIRONMENT=production
+stop_fixture
+expect_rejected "StaticToken mode outside staging" \
+  "STATIC TOKEN OUTSIDE STAGING" \
+  "NOTHING HAS BEEN SENT"
+
+start_fixture static
+run_gate_static "$FIXTURE_ORIGIN" "$FIXTURE_ACCESS_TOKEN" MCP_CHECK_CLIENT_ID="$FIXTURE_CLIENT_ID"
+stop_fixture
+expect_rejected "StaticToken beside an OAuth client variable" \
+  "TWO MODES  MCP_CHECK_CLIENT_ID"
+
+start_fixture static
+run_gate_static "$FIXTURE_ORIGIN" ""
+stop_fixture
+expect_rejected "StaticToken with no token" \
+  "UNSET  MCP_CHECK_BEARER_TOKEN"
+
+ok "check-deployment.sh accepts a sound deployment in each mode and rejects fourteen known faults by name."

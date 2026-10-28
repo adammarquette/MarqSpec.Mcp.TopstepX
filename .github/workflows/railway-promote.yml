@@ -94,15 +94,9 @@ jobs:
       - name: Install the Railway CLI
         run: npm install -g "@railway/cli@$RAILWAY_CLI_VERSION" && railway --version
 
-      # .railway/railway.ts imports railway/iac. Node resolves that from .railway/ upward, so the SDK lives in
-      # the ROOT package.json (scripts/railway/node_modules is not on that path). Exact pin + package-lock.json,
-      # kept equal to scripts/railway's pin, which the template checks compile against.
-      - name: Install the Railway SDK (root package-lock.json)
-        run: |
-          npm ci --ignore-scripts --no-audit --no-fund --loglevel=error
-          root="$(jq -r .dependencies.railway package.json)"; ci="$(jq -r .devDependencies.railway scripts/railway/package.json)"
-          [ "$root" = "$ci" ] || { echo "::error::railway SDK pin differs: package.json $root, scripts/railway $ci"; exit 1; }
-          echo "railway SDK $(node -p 'require("./node_modules/railway/package.json").version')"
+      # Root package.json, exact pin + lockfile, checked against scripts/railway (gh#832).
+      - name: Install the Railway SDK
+        run: scripts/railway/install-sdk.sh
 
       # No --confirm-destructive: a plan that would delete or detach anything in production stops here.
       - name: Plan (saved)

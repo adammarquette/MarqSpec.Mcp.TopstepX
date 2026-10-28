@@ -245,7 +245,8 @@ Two manual workflows. Neither has run yet.
   1. checks that the GHCR tag resolves to the digest;
   2. pins the template with [`pin-image.sh`](../scripts/railway/pin-image.sh);
   3. runs `--mode deployable` and `no-order-path`;
-  4. runs `railway config plan --out`, then `apply --plan`;
+  4. installs the pinned Railway SDK from the root `package.json` (`npm ci`), then runs
+     `railway config plan --out` and `apply --plan`;
   5. waits until `/health` reports exactly that version and digest
      ([`wait-for-health.sh`](../scripts/railway/wait-for-health.sh)), so it fails if nothing shipped;
   6. seeds the synthetic fixture;
@@ -257,6 +258,12 @@ Two manual workflows. Neither has run yet.
   under environment `production`. It refuses any version and digest without a successful staging record,
   then deploys exactly that pin. A destructive plan stops it. **Production never auto-deploys**, and every
   production run stays a manual, watched operation until Adam approves otherwise.
+
+**SDK location.** `railway config plan` evaluates `.railway/railway.ts`, so `import "railway/iac"` must
+resolve from `.railway/` upward. The root [`package.json`](../package.json) holds it, pinned exactly with a
+committed lockfile; `scripts/railway/node_modules` is not on that path. The root pin must equal
+`scripts/railway/package.json`'s, which the template checks compile against; the deploy workflows refuse a
+mismatch, and Dependabot bumps both in one grouped PR.
 
 **Seed.** [`staging-seed.sql`](../scripts/railway/seed/staging-seed.sql) is synthetic and deterministic:
 - 4,800 trades on venue `synthetic` (`MNQ` / `MES`, a fixed price formula, no account ids, keys or PII);

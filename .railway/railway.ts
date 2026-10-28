@@ -5,6 +5,7 @@
 // documentation/deployment.md#railway-gh758. Any key absent here takes the code default, as under compose.
 // Railway docs: https://docs.railway.com/infrastructure-as-code/reference . Needs Railway CLI >= 5.42.1.
 //
+// Services: postgres, server, recorder everywhere, plus a one-shot `seed` in staging only.
 // Rules this file holds, checked offline by scripts/check-railway-template.sh (railway-template job) and, for
 // Trading__Enabled, by scripts/check-no-order-path.sh (required no-order-path job):
 //   - IMAGE SOURCE ONLY, PINNED. The server ships as the private GHCR image release.yml publishes; Railway never
@@ -39,6 +40,17 @@ const POSTGRES_IMAGE =
 
 // The mount ROOT is root-owned and holds lost+found, so PGDATA is a subdirectory of it.
 const PG_MOUNT = "/home/postgres/pgdata";
+
+// STAGING SEED (gh#758, headless). The synthetic fixture is loaded by a one-shot `seed` service that exists in
+// staging ONLY: the pinned Postgres image (it carries psql) on the private network, with no domain, TCP proxy or
+// volume. It runs scripts/railway/seed/run-seed.sh, which waits for the app's migrations, applies the SQL and
+// logs "seed-staging: ok <digest> <counts>"; seed-staging.sh reads that line with `railway logs` and the same
+// project token. No SSH key, no public database, no new secret.
+// DEPLOY-TIME SENTINELS: scripts/railway/embed-seed.sh fills all three from the repo (the SQL file, run-seed.sh,
+// the newest EF migration id); `--mode deployable` requires that they match the repo exactly.
+const SEED_SQL = "REPLACE_WITH_SEED_SQL";
+const SEED_SCRIPT = "REPLACE_WITH_SEED_SCRIPT";
+const SEED_AFTER_MIGRATION = "REPLACE_WITH_LATEST_MIGRATION";
 
 
 
@@ -185,5 +197,29 @@ export default defineRailway((ctx) => {
     },
   });
 
-  return project("marqspec-mcp-topstepx", { resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])] });
+  // STAGING ONLY (see SEED_SQL above). ON_FAILURE with a small budget: the SQL is idempotent, so a retry after a
+  // transient connection error is safe; a clean exit 0 leaves the deployment completed. The start command only
+  // pipes SEED_SCRIPT into bash, so Railway's start-command parsing never sees the script's quotes or $.
+  const seed =
+    ctx.environment === "staging"
+      ? service("seed", {
+          source: image(POSTGRES_IMAGE),
+          startCommand: "bash -c 'printenv SEED_SCRIPT | bash'",
+          deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 3 },
+          env: {
+            POSTGRES_PRIVATE_HOST: postgres.env.RAILWAY_PRIVATE_DOMAIN,
+            PGPORT: "5432",
+            PGUSER: "topstepx",
+            PGDATABASE: "topstepx_mcp",
+            PGPASSWORD: ctx.shared.POSTGRES_PASSWORD,
+            SEED_AFTER_MIGRATION,
+            // Changes with every pin, so each staging deploy re-runs the seed, and its log line names the digest.
+            SEED_FOR_DIGEST: IMAGE_DIGEST,
+            SEED_SCRIPT,
+            SEED_SQL,
+          },
+        })
+      : undefined;
+
+  return project("marqspec-mcp-topstepx", { resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(seed ? [seed] : [])] });
 });

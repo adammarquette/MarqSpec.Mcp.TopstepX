@@ -251,14 +251,15 @@ Two manual workflows. Neither has run yet.
   `version` and `digest`, under environment `staging`. There is no push trigger: develop publishes no release
   image. In order, it:
   1. checks that the GHCR tag resolves to the digest;
-  2. pins the template with [`pin-image.sh`](../scripts/railway/pin-image.sh);
+  2. pins the template with [`pin-image.sh`](../scripts/railway/pin-image.sh) and fills the seed sentinels
+     with [`embed-seed.sh`](../scripts/railway/embed-seed.sh);
   3. runs `--mode deployable` and `no-order-path`;
   4. installs the pinned Railway SDK from the root `package.json`
      ([`install-sdk.sh`](../scripts/railway/install-sdk.sh)), then runs
      `railway config plan --out` and `apply --plan`;
   5. waits until `/health` reports exactly that version and digest
      ([`wait-for-health.sh`](../scripts/railway/wait-for-health.sh)), so it fails if nothing shipped;
-  6. seeds the synthetic fixture;
+  6. waits for the staging-only `seed` service to log that it seeded the fixture for this digest;
   7. checks `/health` again;
   8. records the digest that passed as a `staging` GitHub deployment and a `staging-passed` artifact.
 
@@ -281,12 +282,27 @@ grouped PR.
 - 1-minute bars derived from those trades;
 - tape coverage rows.
 
-It is idempotent (`ON CONFLICT DO NOTHING`). [`seed-staging.sh`](../scripts/railway/seed-staging.sh) refuses
-any environment but `staging` and runs `psql` inside the `postgres` service over `railway ssh`. That path is
-unverified with a project token.
+It is idempotent (`ON CONFLICT DO NOTHING`). It runs **on Railway, headless**, in a one-shot `seed` service
+that the template defines for `staging` only. That service:
+- runs the pinned Postgres image (it has `psql`) on the private network, with no domain, TCP proxy or volume;
+- gets `PGPASSWORD` from `shared.POSTGRES_PASSWORD`, the same variable `postgres` uses;
+- runs [`run-seed.sh`](../scripts/railway/seed/run-seed.sh). The script waits for the newest EF migration
+  ([`latest-migration.sh`](../scripts/railway/latest-migration.sh)), applies the SQL, and logs
+  `seed-staging: ok <digest> 4800/240/2`.
+
+`embed-seed.sh` copies the SQL, the script and the migration id into the template at deploy time.
+`--mode deployable` refuses a template whose copies differ from the repo (`[seed]`). `SEED_FOR_DIGEST` changes
+with every pin, so every apply re-runs the seed.
+[`seed-staging.sh`](../scripts/railway/seed-staging.sh) refuses any environment but `staging`. It reads the
+seed's log with `railway logs` and the same project token, and fails on a wrong count or a timeout.
+
+It does not use `railway ssh`. That needs an SSH key registered to a Railway account or workspace, and a
+project token cannot register one ([docs](https://docs.railway.com/cli/ssh); run 40767891986 failed on it).
+Until the first staging run, the log line as `railway logs` returns it is unverified.
 
 [`railway-seed-check.yml`](../.github/workflows/railway-seed-check.yml) keeps the seed honest on PRs: it
-applies every migration, seeds twice and compares the counts. A scrubbed snapshot of recent production tape
+applies every migration, seeds twice and compares the counts. It also runs `run-seed.sh` twice against that
+database. A scrubbed snapshot of recent production tape
 is a possible later option; it needs Adam's approval and a scrub spec.
 
 **Adam's settings (not in any file):**

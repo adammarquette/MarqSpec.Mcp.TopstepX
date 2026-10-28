@@ -26,7 +26,7 @@ SENTINEL=':REPLACE_WITH_RELEASE_TAG"'
 mutate() {
   local name="$1"; shift
   local out="$work/$name.ts"
-  python3 - "$template" "$out" "$@" <<'PY'
+  python3 - "${MUTATE_BASE:-$template}" "$out" "$@" <<'PY'
 import sys
 src, dst, *pairs = sys.argv[1:]
 text = open(src).read()
@@ -42,7 +42,10 @@ PY
 expect() {  # expect <reject|accept> <mode> <name> <from> <to> ...
   local want="$1" mode="$2" name="$3"; shift 3
   local file got
-  file="$(mutate "$name" "$@")" || { echo "FAIL: case $name could not be built" >&2; failures=$((failures + 1)); return; }
+  local base="$template"
+  # Deployable cases start from the template as railway-staging.yml leaves it before pinning: seed embedded.
+  [ "$mode" = deployable ] && base="$embedded"
+  file="$(MUTATE_BASE="$base" mutate "$name" "$@")" || { echo "FAIL: case $name could not be built" >&2; failures=$((failures + 1)); return; }
   if "$check" --mode "$mode" "$file" >/dev/null 2>"$work/err"; then got=accept; else got=reject; fi
   cases=$((cases + 1))
   if [ -n "${NAMED:-}" ] && ! grep -qF "$NAMED" "$work/err"; then
@@ -52,6 +55,9 @@ expect() {  # expect <reject|accept> <mode> <name> <from> <to> ...
 }
 
 "$check" "$template" >/dev/null || { echo "FAIL: the committed template does not pass" >&2; exit 1; }
+embedded="$work/embedded.ts"
+cp "$template" "$embedded" && "$here/railway/embed-seed.sh" "$embedded" >/dev/null \
+  || { echo "FAIL: embed-seed.sh could not fill the committed template" >&2; exit 1; }
 echo "ok: committed template passes (template mode)"
 
 # --- pinning (blockers 1, 2) ---
@@ -224,7 +230,7 @@ expect reject template https-ports-set 'ASPNETCORE_HTTP_PORTS: "8080",' 'ASPNETC
 NAMED='[export-blocked]' expect reject template r3-root-recorder-restored \
   'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
   const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
-  'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])]' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])]' \
+  'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])' \
   'replicas: 1,
     deploy: {
       ...RESTART,' '...(exports ? { volumeMounts: { "/data": exports } } : {}),
@@ -236,7 +242,7 @@ NAMED='[export-blocked]' expect reject template r3-root-recorder-restored \
 NAMED='[export-blocked]' expect reject template export-volume-only-blocked \
   'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
   const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
-  'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])]' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])]' \
+  'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])' \
   'replicas: 1,
     deploy: {
       ...RESTART,' '...(exports ? { volumeMounts: { "/data": exports } } : {}),
@@ -246,7 +252,7 @@ NAMED='[export-blocked]' expect reject template export-volume-only-blocked \
 NAMED='[export-blocked]' expect reject template export-volume-at-old-path-blocked \
   'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
   const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
-  'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])]' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])]' \
+  'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])' \
   'replicas: 1,
     deploy: {
       ...RESTART,' '...(exports ? { volumeMounts: { "/data/tape-exports": exports } } : {}),
@@ -313,6 +319,27 @@ expect accept template healthcheck-generous 'const HEALTHCHECK_TIMEOUT = 3990;' 
 expect reject template retention-raw-tape-days 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Retention__RawTapeDays: "30",'
 expect reject template untyped-postgres-host 'POSTGRES_PRIVATE_HOST: postgres.env.RAILWAY_PRIVATE_DOMAIN,' 'POSTGRES_PRIVATE_HOST: "postgres.railway.internal",'
 expect reject template type-error 'restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 }' 'restartPolicyType: "SOMETIMES", restartPolicyMaxRetries: 10 }'
+
+# --- staging seed service (gh#758 headless seed): staging only, private, one-shot, repo-exact ---
+PIN_OK=("$SENTINEL" ":0.5.0@$DIGEST\"")
+NAMED='[seed-staging-only]' expect reject template seed-in-every-environment 'ctx.environment === "staging"
+      ? service("seed"' 'true
+      ? service("seed"'
+NAMED='[seed-staging-only]' expect reject template seed-removed ', ...(seed ? [seed] : [])' ''
+NAMED='[seed]' expect reject template seed-other-image '          source: image(POSTGRES_IMAGE),
+          startCommand' '          source: image("postgres:17"),
+          startCommand'
+NAMED='[seed]' expect reject template seed-start-command-changed "printenv SEED_SCRIPT | bash'" "printenv SEED_SCRIPT | bash; sleep infinity'"
+NAMED='[seed]' expect reject template seed-restarts-always 'restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 3 }' 'restartPolicyType: "ALWAYS", restartPolicyMaxRetries: 3 }'
+NAMED='[seed]' expect reject template seed-password-literal 'PGPASSWORD: ctx.shared.POSTGRES_PASSWORD,' 'PGPASSWORD: "hunter2",'
+NAMED='[seed]' expect reject template seed-extra-env 'PGPORT: "5432",' 'PGPORT: "5432", PGSSLMODE: "disable",'
+NAMED='[seed]' expect reject template seed-public-tcp-proxy '          startCommand:' '          tcpProxies: ["5432"],
+          startCommand:'
+NAMED='[seed]' expect reject template seed-digest-not-the-pin 'SEED_FOR_DIGEST: IMAGE_DIGEST,' "SEED_FOR_DIGEST: \"$DIGEST\","
+NAMED='[seed]' expect reject template seed-sql-hand-edited 'const SEED_SQL = "REPLACE_WITH_SEED_SQL";' 'const SEED_SQL = "SELECT 1";'
+NAMED='[seed]' expect reject deployable seed-sentinel-in-deployable-mode "${PIN_OK[@]}" 'const SEED_SQL = "' 'const SEED_SQL = "REPLACE_WITH_SEED_SQL"; const UNUSED = "'
+NAMED='[seed]' expect reject deployable seed-sql-drifted "${PIN_OK[@]}" 'ON CONFLICT DO NOTHING' 'ON CONFLICT DO UPDATE'
+NAMED='[seed]' expect reject deployable seed-waits-for-old-migration "${PIN_OK[@]}" 'const SEED_AFTER_MIGRATION = "2' 'const SEED_AFTER_MIGRATION = "1'
 
 # --- SDK pin (gh#832): the root package.json `railway config plan` loads must pin what CI compiles against ---
 expect_pin() {  # expect_pin <reject|accept> <name> <python edit of the root copy>

@@ -32,7 +32,7 @@ const CONNECTION_STRING =
 
 // Every shared variable the template may reference, and the only keys allowed to carry each.
 const SHARED = {
-  POSTGRES_PASSWORD: ["POSTGRES_PASSWORD"],
+  POSTGRES_PASSWORD: ["POSTGRES_PASSWORD", "PGPASSWORD"],
   PROJECTX_API_KEY: ["ProjectX__ApiKey"],
   PROJECTX_API_SECRET: ["ProjectX__ApiSecret"],
   PROJECTX_DATA_TIER: ["ProjectX__DataTier"],
@@ -80,7 +80,10 @@ const TRADING = Object.fromEntries([
 const services = graph.resources.filter((r) => r.type === "service");
 const byName = Object.fromEntries(services.map((s) => [s.name, s]));
 const names = services.map((s) => s.name).sort().join(",");
-if (names !== "postgres,recorder,server") fail(`services must be exactly postgres, server, recorder; got ${names}`);
+// gh#758 headless seed: staging (and only staging) adds the one-shot `seed` service.
+const SEED_ENVIRONMENT = "staging";
+const wantNames = environment === SEED_ENVIRONMENT ? "postgres,recorder,seed,server" : "postgres,recorder,server";
+if (names !== wantNames) fail(`[seed-staging-only] services must be exactly ${wantNames.split(",").join(", ")} in ${environment}; got ${names}`);
 
 const literal = (v) => (v && v.type === "literal" ? v.value : undefined);
 const isShared = (v, name) => v && v.type === "sharedReference" && (!name || v.name === name);
@@ -172,8 +175,50 @@ for (const s of services) {
     if (SECRET_KEY.test(key) && value !== "") fail(`${s.name}: ${key} carries a secret; it must be a ctx.shared reference, not a literal`);
     if (key === "ASPNETCORE_URLS" || key === "ASPNETCORE_HTTPS_PORTS") fail(`${s.name}: ${key} must not be set; ASPNETCORE_HTTP_PORTS=8080 is the only listener (TLS is Railway's edge)`);
     if (key === "POSTGRES_HOST_AUTH_METHOD" && value.trim().toLowerCase() === "trust") fail(`${s.name}: POSTGRES_HOST_AUTH_METHOD=trust disables the password`);
-    if (key === "Deployment__ImageDigest" && /^(sha256:[0-9a-f]{64})?$/.test(value)) continue;
+    if ((key === "Deployment__ImageDigest" || key === "SEED_FOR_DIGEST") && /^(sha256:[0-9a-f]{64})?$/.test(value)) continue;
+    // The seed's SQL and script are repo files checked against the repo below, not credentials.
+    if (s.name === "seed" && (key === "SEED_SQL" || key === "SEED_SCRIPT")) continue;
+    if (key === "SEED_AFTER_MIGRATION" && /^(\d{14}_[A-Za-z0-9]+|REPLACE_WITH_LATEST_MIGRATION)$/.test(value)) continue;
     if (CREDENTIAL_SHAPE.test(value)) fail(`${s.name}: ${key} holds a credential-shaped literal`);
+  }
+}
+
+// ---- named check: [seed] (gh#758 headless staging seed) ------------------------------------------------
+// Staging only (enforced by the service list above). A one-shot psql runner on the pinned Postgres image: private
+// network only, no volume, the database password only as the shared reference, and its SQL, script and awaited
+// migration exactly the repo's (deployable mode; template mode may still carry the sentinels).
+const seed = byName.seed;
+if (seed) {
+  const env = seed.variables ?? {};
+  const d = seed.deploy ?? {};
+  const fs = await import("node:fs");
+  if (seed.source?.image !== byName.postgres?.source?.image) fail(`[seed] seed: must run the postgres service's pinned image, got ${seed.source?.image}`);
+  if (d.startCommand !== "bash -c 'printenv SEED_SCRIPT | bash'") fail(`[seed] seed: startCommand must be exactly bash -c 'printenv SEED_SCRIPT | bash', got ${JSON.stringify(d.startCommand)}`);
+  if (d.restartPolicyType !== "ON_FAILURE" || !(d.restartPolicyMaxRetries >= 1 && d.restartPolicyMaxRetries <= 3)) fail("[seed] seed: restart ON_FAILURE with 1..3 retries (a one-shot, never ALWAYS)");
+  if ((d.numReplicas ?? 1) !== 1 || d.multiRegionConfig) fail("[seed] seed: exactly one replica");
+  if (d.healthcheckPath) fail("[seed] seed: no healthcheck; it serves nothing");
+  const net = seed.networking ?? {};
+  if (Object.keys(net).some((k) => k !== "privateNetworkEndpoint" && Object.keys(net[k] ?? {}).length)) fail(`[seed] seed: no domain or TCP proxy, got ${JSON.stringify(net)}`);
+  if (Object.keys(seed.volumeAttachments ?? {}).length) fail("[seed] seed: no volume");
+  const keys = Object.keys(env).sort().join(",");
+  const SEED_KEYS = "PGDATABASE,PGPASSWORD,PGPORT,PGUSER,POSTGRES_PRIVATE_HOST,SEED_AFTER_MIGRATION,SEED_FOR_DIGEST,SEED_SCRIPT,SEED_SQL";
+  if (keys !== SEED_KEYS) fail(`[seed] seed: env must be exactly ${SEED_KEYS}; got ${keys}`);
+  for (const [k, v] of [["PGPORT", "5432"], ["PGUSER", "topstepx"], ["PGDATABASE", "topstepx_mcp"]])
+    if (literal(env[k]) !== v) fail(`[seed] seed: ${k} must be the literal "${v}"`);
+  if (!isShared(env.PGPASSWORD, "POSTGRES_PASSWORD")) fail("[seed] seed: PGPASSWORD must be ctx.shared.POSTGRES_PASSWORD");
+  if (env.POSTGRES_PRIVATE_HOST?.type !== "reference") fail("[seed] seed: POSTGRES_PRIVATE_HOST must be the typed postgres.env.RAILWAY_PRIVATE_DOMAIN reference");
+  if (literal(env.SEED_FOR_DIGEST) !== literal(byName.server?.variables?.Deployment__ImageDigest))
+    fail("[seed] seed: SEED_FOR_DIGEST must be the server's pinned digest (IMAGE_DIGEST)");
+  const repo = {
+    SEED_SQL: ["REPLACE_WITH_SEED_SQL", process.env.SEED_SQL_FILE && fs.readFileSync(process.env.SEED_SQL_FILE, "utf8").trim()],
+    SEED_SCRIPT: ["REPLACE_WITH_SEED_SCRIPT", process.env.SEED_SCRIPT_FILE && fs.readFileSync(process.env.SEED_SCRIPT_FILE, "utf8").trim()],
+    SEED_AFTER_MIGRATION: ["REPLACE_WITH_LATEST_MIGRATION", process.env.SEED_LATEST_MIGRATION],
+  };
+  for (const [k, [sentinel, want]] of Object.entries(repo)) {
+    const got = literal(env[k]);
+    if (!want) fail(`[seed] checker: no repo value for ${k} (run via check-railway-template.sh)`);
+    else if (got === sentinel) { if (mode === "deployable") fail(`[seed] seed: ${k} is still the sentinel; run scripts/railway/embed-seed.sh first`); }
+    else if (got !== want) fail(`[seed] seed: ${k} differs from the repo's; re-run scripts/railway/embed-seed.sh on a clean template`);
   }
 }
 

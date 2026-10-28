@@ -38,6 +38,10 @@ else
 fi
 ( cd "$work" && ./node_modules/.bin/tsc -p . )
 
+# The staging seed's repo values (evaluate-template.mjs [seed]): deployable mode requires the template to carry them.
+export SEED_SQL_FILE="$here/railway/seed/staging-seed.sql" SEED_SCRIPT_FILE="$here/railway/seed/run-seed.sh"
+SEED_LATEST_MIGRATION="$("$here/railway/latest-migration.sh")"; export SEED_LATEST_MIGRATION
+
 status=0
 # EVERY environment the file might be evaluated for: the two named ones, Railway's common "dev", and an
 # arbitrary name, so a ternary on ctx.environment cannot arm anything in an environment CI never looked at.

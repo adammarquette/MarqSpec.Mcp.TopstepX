@@ -66,9 +66,10 @@ jobs:
             || { echo "::error::Trades is not a Timescale hypertable; the per-chunk index build did not run"; exit 1; }
           psql -v ON_ERROR_STOP=1 -tAc "SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.\"IX_Trades_Instrument_TradeTimeUtc\"'::regclass" | grep -qx t \
             || { echo "::error::IX_Trades_Instrument_TradeTimeUtc is missing or invalid"; exit 1; }
-      # Staging's database is NOT empty: the recorder writes live rows into the same tables (gh#ISSUE). Put
+      # Staging's database is NOT empty: the recorder writes live rows into the same tables (gh#839). Put
       # one non-fixture row in each table first, so every check below runs against a database that already
-      # has data, and must count only venue 'synthetic' and leave the other rows alone.
+      # has data, and must count only venue 'synthetic' and leave the other rows alone. Their count and md5
+# per table are saved as a baseline, which every seed below must leave byte-for-byte the same.
       - name: Pre-existing non-fixture rows (like staging's recorder writes)
         run: |
           psql -v ON_ERROR_STOP=1 -q <<'SQL'
@@ -85,13 +86,18 @@ jobs:
           VALUES ('recorded', 'MNQ', 'CON.F.US.MNQ.Z26', '2026-10-22 13:30:00+00', '2026-10-22 13:31:00+00',
                   '2026-10-22 13:31:00+00');
           SQL
+          fp() { echo "(SELECT count(*)||':'||md5(coalesce(string_agg(r::text, '|' ORDER BY r::text), ''))
+            FROM \"$1\" r WHERE \"Venue\" <> 'synthetic')"; }
+          echo "SELECT $(fp Trades)||'/'||$(fp Bars)||'/'||$(fp TapeCoverage);" > "$RUNNER_TEMP/other.sql"
+          psql -v ON_ERROR_STOP=1 -tA -f "$RUNNER_TEMP/other.sql" | tee "$RUNNER_TEMP/other.base"
+          grep -Eqx '1:[0-9a-f]{32}/1:[0-9a-f]{32}/1:[0-9a-f]{32}' "$RUNNER_TEMP/other.base" \
+            || { echo "::error::expected one non-fixture row per table"; exit 1; }
       - name: Seed twice, compare
         run: |
           syn='WHERE "Venue" = '"'"'synthetic'"'"''
           sep="||'/'||"
           q="SELECT (SELECT count(*) FROM \"Trades\" $syn)$sep(SELECT count(*) FROM \"Bars\" $syn)"
           q="$q$sep(SELECT count(*) FROM \"TapeCoverage\" $syn)"
-          other='SELECT count(*) FROM "Trades" WHERE "Venue" <> '"'"'synthetic'"'"''
           psql -v ON_ERROR_STOP=1 -q -f scripts/railway/seed/staging-seed.sql
           first="$(psql -tAc "$q")"
           psql -v ON_ERROR_STOP=1 -q -f scripts/railway/seed/staging-seed.sql
@@ -99,7 +105,9 @@ jobs:
           echo "trades/bars/coverage after run 1: $first, after run 2: $second"
           [ "$first" = "4800/240/2" ] || { echo "::error::unexpected seed counts $first"; exit 1; }
           [ "$first" = "$second" ] || { echo "::error::seed is not idempotent"; exit 1; }
-          [ "$(psql -tAc "$other")" = 1 ] || { echo "::error::the seed touched non-fixture rows"; exit 1; }
+          other="$(psql -v ON_ERROR_STOP=1 -tA -f "$RUNNER_TEMP/other.sql")"
+          [ "$other" = "$(cat "$RUNNER_TEMP/other.base")" ] \
+            || { echo "::error::the seed changed non-fixture rows: $other"; exit 1; }
       # The script the staging `seed` service runs, under the same env shape the template gives it (minus the
       # Railway host), run twice: it must wait for the newest migration, seed, and print the line
       # seed-staging.sh waits for, with the expected counts both times.
@@ -119,6 +127,9 @@ jobs:
             [ "$out" = "seed-staging: ok $SEED_RUN_ID $SEED_FOR_DIGEST 4800/240/2" ] \
               || { echo "::error::run-seed.sh run $run printed '$out'"; exit 1; }
           done
+          other="$(psql -v ON_ERROR_STOP=1 -tA -f "$RUNNER_TEMP/other.sql")"
+          [ "$other" = "$(cat "$RUNNER_TEMP/other.base")" ] \
+            || { echo "::error::run-seed.sh changed non-fixture rows: $other"; exit 1; }
       - name: Seeder refuses anything but staging
         run: |
           for e in production prod Staging ""; do

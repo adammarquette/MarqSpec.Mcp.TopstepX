@@ -178,10 +178,10 @@ before any production deploy. Production deploys stay manual and need Adam's app
 - **Startup order (gh#844):** server and recorder migrate only at startup and do not retry once the store
   is Unavailable. So each has a [pre-deploy command](https://docs.railway.com/deployments/pre-deploy-command)
   (`PG_WAIT`: bash `/dev/tcp`, the app image has no `psql`) that waits for `postgres:5432`: 100 attempts,
-  each capped at 3 s, 5 s apart (800 s at worst), within `preDeployTimeoutSeconds=900`. It runs on the private network with the service's variables, and
-  a failure stops that deployment, so the old one keeps serving. `[pg-wait]` pins it; postgres and the
-  seed have none. **Remaining gap ([#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843)):**
-  the wait runs only when server and recorder themselves redeploy. A postgres-only redeploy (a
+  each capped at 3 s, 5 s apart (800 s at worst), within `preDeployTimeoutSeconds=900`. It runs on the
+  private network with the service's variables, and a failure stops that deployment, so the old one keeps
+  serving. `[pg-wait]` pins it; postgres and the seed have none.
+  **Remaining gap ([#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843)):** the wait runs only when server and recorder themselves redeploy. A postgres-only redeploy (a
   `POSTGRES_IMAGE` bump, a password change) onto an empty database leaves them running unmigrated, and the
   seed then fails after its 4000 s wait. Staging's volume (gh#846) makes that rarer (an empty database now
   means the first attach or a wipe) but does not remove it; #843's app-side retry is the real fix. Until it

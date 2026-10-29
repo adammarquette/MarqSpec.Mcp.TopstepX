@@ -25,7 +25,9 @@ until [ "$(q -c "$applied" 2>/dev/null || true)" = 1 ]; do
   i=$((i + 1))
   [ "$i" -le 400 ] || {
     reported=1
-    echo "seed-staging: FAILED $SEED_RUN_ID migration $SEED_AFTER_MIGRATION not applied after 4000 s"; exit 1; }
+    echo "seed-staging: FAILED $SEED_RUN_ID migration $SEED_AFTER_MIGRATION not applied after 4000 s"
+    exit 1
+  }
   sleep 10
 done
 # The SQL ends with a status SELECT for people running it by hand; discard it so this prints ONE line.

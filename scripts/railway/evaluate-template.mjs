@@ -179,6 +179,7 @@ for (const s of services) {
     // The seed's SQL and script are repo files checked against the repo below, not credentials.
     if (s.name === "seed" && (key === "SEED_SQL" || key === "SEED_SCRIPT")) continue;
     if (key === "SEED_AFTER_MIGRATION" && /^(\d{14}_[A-Za-z0-9]+|REPLACE_WITH_LATEST_MIGRATION)$/.test(value)) continue;
+    if (key === "SEED_RUN_ID" && /^([1-9]\d*-[1-9]\d*|REPLACE_WITH_SEED_RUN_ID)$/.test(value)) continue;
     if (CREDENTIAL_SHAPE.test(value)) fail(`${s.name}: ${key} holds a credential-shaped literal`);
   }
 }
@@ -201,7 +202,10 @@ if (seed) {
   if (Object.keys(net).some((k) => k !== "privateNetworkEndpoint" && Object.keys(net[k] ?? {}).length)) fail(`[seed] seed: no domain or TCP proxy, got ${JSON.stringify(net)}`);
   if (Object.keys(seed.volumeAttachments ?? {}).length) fail("[seed] seed: no volume");
   const keys = Object.keys(env).sort().join(",");
-  const SEED_KEYS = "PGDATABASE,PGPASSWORD,PGPORT,PGUSER,POSTGRES_PRIVATE_HOST,SEED_AFTER_MIGRATION,SEED_FOR_DIGEST,SEED_SCRIPT,SEED_SQL";
+  const SEED_KEYS = [
+    "PGDATABASE", "PGPASSWORD", "PGPORT", "PGUSER", "POSTGRES_PRIVATE_HOST",
+    "SEED_AFTER_MIGRATION", "SEED_FOR_DIGEST", "SEED_RUN_ID", "SEED_SCRIPT", "SEED_SQL",
+  ].join(",");
   if (keys !== SEED_KEYS) fail(`[seed] seed: env must be exactly ${SEED_KEYS}; got ${keys}`);
   for (const [k, v] of [["PGPORT", "5432"], ["PGUSER", "topstepx"], ["PGDATABASE", "topstepx_mcp"]])
     if (literal(env[k]) !== v) fail(`[seed] seed: ${k} must be the literal "${v}"`);
@@ -209,6 +213,15 @@ if (seed) {
   if (env.POSTGRES_PRIVATE_HOST?.type !== "reference") fail("[seed] seed: POSTGRES_PRIVATE_HOST must be the typed postgres.env.RAILWAY_PRIVATE_DOMAIN reference");
   if (literal(env.SEED_FOR_DIGEST) !== literal(byName.server?.variables?.Deployment__ImageDigest))
     fail("[seed] seed: SEED_FOR_DIGEST must be the server's pinned digest (IMAGE_DIGEST)");
+  // [seed-run-id] (gh#837): the workflow run, "<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>", filled by embed-seed.sh.
+  // It makes every run's seed config unique (so apply always redeploys the seed) and is the id seed-staging.sh
+  // requires in the ok line. Template mode may carry the sentinel; deployable mode must carry a real run id.
+  const runId = literal(env.SEED_RUN_ID);
+  if (runId === "REPLACE_WITH_SEED_RUN_ID") {
+    if (mode === "deployable") fail("[seed-run-id] seed: SEED_RUN_ID is still the sentinel; run scripts/railway/embed-seed.sh with GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT set");
+  } else if (!/^[1-9]\d*-[1-9]\d*$/.test(runId ?? "")) {
+    fail(`[seed-run-id] seed: SEED_RUN_ID must be <GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT> (positive integers), got ${JSON.stringify(runId)}`);
+  }
   const repo = {
     SEED_SQL: ["REPLACE_WITH_SEED_SQL", process.env.SEED_SQL_FILE && fs.readFileSync(process.env.SEED_SQL_FILE, "utf8").trim()],
     SEED_SCRIPT: ["REPLACE_WITH_SEED_SCRIPT", process.env.SEED_SCRIPT_FILE && fs.readFileSync(process.env.SEED_SCRIPT_FILE, "utf8").trim()],

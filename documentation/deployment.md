@@ -84,12 +84,14 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 
 **Production and staging keep the Postgres data; other environments are disposable.**
 - `production` and `staging` each require exactly one volume (`postgres-data`, 10 GiB, at
-  `/home/postgres/pgdata`). Staging's was added on 2026-10-29 (gh#846): its recorded tape now survives
-  deploys and Postgres restarts. Backups and the tape export stay production-only.
+  `/home/postgres/pgdata`). Staging's was added on 2026-10-29 (gh#846) so its recorded tape is
+  meant to survive deploys and Postgres restarts; the first staging deploy after gh#846 checks that.
+  Backups and the tape export stay production-only.
 - A volume is a paid resource: Railway bills the storage actually used, $0.15 per GB per month
   ([pricing](https://docs.railway.com/reference/pricing/plans)), so a full 10 GiB costs about $1.50 a month.
 - `dev` and PR sandboxes have **no volume, no backups and no tape export**; every redeploy starts empty.
-- The check enforces all three directions (`[pg-volume]`). `Retention__*` stays unset everywhere (gh#763).
+- `[pg-volume]` enforces all three directions: production has exactly one, staging has exactly one, and
+  every other environment has none. `Retention__*` stays unset everywhere (gh#763).
 
 **Tape export (gh#755, contract from PR #765): deferred.** `TapeExport__Enabled` is the literal `"false"` in every
 environment, and no service has an export volume or `RAILWAY_RUN_UID`. Production turns it on only when both are
@@ -152,8 +154,8 @@ refuses case, colon and computed variants of `Trading__Enabled` in `.railway/`. 
 allowed variable-name characters; a Railway forum answer reports that a `:` in a name breaks builds, and nothing
 documents case folding. So treat both as unsupported; the check refuses them regardless.
 
-**Volume permissions (production, staging).** Railway mounts volumes root-owned, while the image runs as `postgres`
-(uid 1000) and Postgres refuses to run as root. The template therefore:
+**Volume permissions (production, staging).** Railway mounts volumes root-owned, while the image runs
+as `postgres` (uid 1000) and Postgres refuses to run as root. The template therefore:
 - sets `RAILWAY_RUN_UID=0` (Railway's documented remedy for non-root images);
 - puts `PGDATA` one level below the mount.
 
@@ -265,8 +267,17 @@ Two manual workflows. Neither has run yet.
   7. checks `/health` again;
   8. records the digest that passed as a `staging` GitHub deployment and a `staging-passed` artifact.
 
-  Staging's data **survives** redeploys and restarts (volume, gh#846). Resetting it means wiping the
-  `postgres-data` volume by hand; a redeploy no longer does.
+  Staging's volume (gh#846) is meant to keep its data across redeploys and restarts; the first staging
+  deploy after gh#846 checks that. Resetting staging means wiping the `postgres-data` volume (a volume
+  action in Railway, see [volumes](https://docs.railway.com/reference/volumes)); a redeploy no longer does.
+
+  **First attach and any wipe:** adding the volume changes postgres's config, so that apply redeploys postgres
+  onto an *empty* volume. Server and recorder redeploy only when their own config changes, and they migrate
+  only at startup, so a deploy that re-pins the digest already running leaves them unmigrated and the seed
+  times out. For that deploy, and after any volume wipe, redeploy server and recorder once postgres is up
+  (or deploy a new digest). The volume makes a postgres-only redeploy onto an empty database rarer but does
+  not remove it; the app-side retry in
+  [#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843) is the real fix.
 - **[`railway-promote.yml`](../.github/workflows/railway-promote.yml)** runs on `workflow_dispatch` only,
   under environment `production`. It refuses any version and digest without a successful staging record,
   then deploys exactly that pin. A destructive plan stops it. **Production never auto-deploys**, and every
@@ -305,7 +316,7 @@ seed's log with `railway logs` and the same project token. It passes only on the
 so an older run's line never counts. It fails on this run's `FAILED` line, a timeout, or wrong counts
 (`seed-staging: wrong counts: got X want 4800/240/2`).
 The seed is idempotent (every insert is `ON CONFLICT DO NOTHING`), so re-running it on the persistent staging
-volume adds nothing twice, and its counts cover only the fixture's rows.
+volume adds no duplicate rows, and its counts cover only the fixture's rows.
 
 It does not use `railway ssh`. That needs an SSH key registered to a Railway account or workspace, and a
 project token cannot register one ([docs](https://docs.railway.com/cli/ssh); run 40767891986 failed on it).

@@ -65,10 +65,11 @@ const RESTART = { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 }
 export default defineRailway((ctx) => {
   const production = ctx.environment === "production";
 
-  // PRODUCTION AND STAGING: the Postgres volume (10 GiB to start; growing is a non-destructive resize, shrinking
-  // is destructive). Staging got it on 2026-10-29 (gh#846, Adam's call): its recorded tape survives deploys
-  // and restarts. Backups and any tape export stay production-only. Every other environment is DISPOSABLE:
-  // Postgres runs on the container's ephemeral storage, so each redeploy starts empty. The check enforces all.
+  // PRODUCTION AND STAGING: the Postgres volume (10 GiB to start; growing is a non-destructive resize,
+  // shrinking is destructive). Staging got it on 2026-10-29 (gh#846, Adam's call): its recorded tape is meant
+  // to survive deploys and restarts. Backups and any tape export stay production-only. Every other
+  // environment is DISPOSABLE: Postgres runs on the container's ephemeral storage, so each redeploy starts
+  // empty. [pg-volume] enforces all three: production one, staging one, everything else none.
   const persistent = production || ctx.environment === "staging";
   const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
 

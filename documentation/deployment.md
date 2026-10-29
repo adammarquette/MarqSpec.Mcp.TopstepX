@@ -291,11 +291,11 @@ that the template defines for `staging` only. That service:
   `seed-staging: ok <run-id> <digest> 4800/240/2`.
 
 `embed-seed.sh` copies the SQL, the script and the migration id into the template at deploy time.
-`--mode deployable` refuses a template whose copies differ from the repo (`[seed]`). It also writes
-`SEED_RUN_ID`, `<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`. Both variables are required, with no fallback; run
-locally as `GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=1 scripts/railway/pin-image.sh ...`. `--mode deployable`
-requires a filled, well-formed run id (`[seed-run-id]`). The id changes every run, so every apply re-runs the
-seed, even for the same digest.
+`--mode deployable` refuses a template whose copies differ from the repo (`[seed]`). `embed-seed.sh` also
+writes `SEED_RUN_ID`, `<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`. Both variables are required, with no
+fallback; run locally as `GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=1 scripts/railway/pin-image.sh ...`.
+`--mode deployable` requires a filled, well-formed run id (`[seed-run-id]`). The id changes every run, so
+every apply re-runs the seed, even for the same digest.
 [`seed-staging.sh`](../scripts/railway/seed-staging.sh) refuses any environment but `staging`. It reads the
 seed's log with `railway logs` and the same project token. It passes only on the ok line with this run's id,
 so an older run's line never counts. It fails on this run's `FAILED` line, a timeout, or wrong counts

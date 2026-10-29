@@ -15,9 +15,11 @@
 # 2 on bad arguments. UNVERIFIED ON RAILWAY until the first staging run: the line's shape via `railway logs`.
 set -euo pipefail
 env_name="${1:-}"
-[ "$env_name" = "staging" ] || { echo "seed-staging: refusing '$env_name'; only 'staging' is ever seeded" >&2; exit 2; }
+[ "$env_name" = "staging" ] || {
+  echo "seed-staging: refusing '$env_name'; only 'staging' is ever seeded" >&2; exit 2; }
 digest="${2:-}"
-[[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "seed-staging: digest must be sha256:<64 hex>" >&2; exit 2; }
+[[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+  echo "seed-staging: digest must be sha256:<64 hex>" >&2; exit 2; }
 run_id="${3:-}"
 [[ "$run_id" =~ ^[1-9][0-9]*-[1-9][0-9]*$ ]] || {
   echo "seed-staging: run id must be <GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>, got '$run_id'" >&2; exit 2; }

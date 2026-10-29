@@ -12,7 +12,8 @@
 # a GitHub deployment + artifact.
 #
 # SECRETS: RAILWAY_TOKEN is a project token scoped to the Railway staging environment, held on the GitHub
-# `staging` environment, beside MCP_HTTP_BEARER_TOKEN (staging's static MCP token, ADR-0021 exception). It reaches steps only via `env:`, never an argument, and no step uses `set -x`.
+# `staging` environment, beside MCP_HTTP_BEARER_TOKEN (staging's static MCP token, ADR-0021 exception).
+# It reaches steps only via `env:`, never an argument, and no step uses `set -x`.
 # Railway's plan redacts variable values by default; --show-values is never passed.
 name: railway-staging
 

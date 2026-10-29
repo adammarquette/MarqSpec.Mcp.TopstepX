@@ -173,10 +173,13 @@ deploy stays manual and needs Adam's approval.
 - **Store wait:** `Store__StartupWaitSeconds=90`, required ≥ 30, because Railway has no `depends_on`.
 - **Startup order (gh#844):** server and recorder migrate only at startup and do not retry once the store
   is Unavailable. So each has a [pre-deploy command](https://docs.railway.com/deployments/pre-deploy-command)
-  (`PG_WAIT`: bash `/dev/tcp`, the app image has no `psql`) that waits up to 600 s for `postgres:5432`,
-  capped by `preDeployTimeoutSeconds=900`. It runs on the private network with the service's variables, and
+  (`PG_WAIT`: bash `/dev/tcp`, the app image has no `psql`) that waits for `postgres:5432`: 100 attempts,
+  each capped at 3 s, 5 s apart (800 s at worst), within `preDeployTimeoutSeconds=900`. It runs on the private network with the service's variables, and
   a failure stops that deployment, so the old one keeps serving. `[pg-wait]` pins it; postgres and the
-  seed have none.
+  seed have none. **Gap until staging has a volume (#846):** the wait runs only when server and recorder
+  themselves redeploy. A postgres-only redeploy (a `POSTGRES_IMAGE` bump, a password change) still leaves them
+  running against an empty database that they never migrate, and the seed then fails after its 4000 s wait.
+  Remedy: after any staging postgres redeploy, redeploy server and recorder.
 - **Healthcheck:** `/health` with `healthcheckTimeout=3990` on server and recorder. The EF migration runs
   **before** the app listens and may build a per-chunk index on `Trades` under `Migrations__CommandTimeoutSeconds`
   (default 3600, #761); Railway's default ~300 s healthcheck would kill the container mid-migration and retry

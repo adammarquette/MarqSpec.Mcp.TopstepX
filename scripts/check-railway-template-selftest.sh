@@ -389,7 +389,7 @@ NAMED='[pg-wait]' expect reject template pg-wait-server-only '    source: server
     deploy: {
       ...RESTART,'
 NAMED='[pg-wait]' expect reject template pg-wait-true '  "bash -c '"'"'for i' '  "true"; const PG_WAIT_OLD = "bash -c '"'"'for i'
-NAMED='[pg-wait]' expect reject template pg-wait-other-port '/5432) 2>' '/6543) 2>'
+NAMED='[pg-wait]' expect reject template pg-wait-other-port '/5432" 2>' '/6543" 2>'
 NAMED='[pg-wait]' expect reject template pg-wait-timeout-omitted '      preDeployTimeoutSeconds: PG_WAIT_TIMEOUT,
 ' ''
 NAMED='[pg-wait]' expect reject template pg-wait-timeout-below-loop 'const PG_WAIT_TIMEOUT = 900;' 'const PG_WAIT_TIMEOUT = 300;'

@@ -58,21 +58,27 @@ const SEED_RUN_ID = "REPLACE_WITH_SEED_RUN_ID";
 
 
 // One retry budget for every service: Railway's DEFAULT, On Failure with 10 restarts
-// (docs.railway.com/deployments/restart-policy), so it is NOT stated. 10, not 5: on a cold deploy Postgres initdb
-// plus the app's 90 s StartupWait can exhaust 5 quick retries; 10 still surfaces a crash loop within minutes.
-// NO DEFAULT DRIFT (gh#844): Railway stores a default as null, so stating ON_FAILURE or 10 made every plan
-// show "null -> ON_FAILURE / null -> 10" for postgres, server and recorder (runs 40944859199, 40947739913), and
-// every apply redeployed postgres -- an empty database in staging. evaluate-template.mjs [no-default-drift]
-// rejects stating either default; RESTART stays as the one place a non-default budget would go.
+// (docs.railway.com/deployments/restart-policy), so it is NOT stated. 10, not 5: on a cold deploy Postgres
+// initdb plus the app's 90 s StartupWait can exhaust 5 quick retries; 10 still surfaces a crash loop within
+// minutes.
+// NO DEFAULT DRIFT (gh#844): Railway stores a default as null, so stating ON_FAILURE or 10 made every
+// plan show "null -> ON_FAILURE / null -> 10" for postgres, server and recorder (runs 40944859199,
+// 40947739913), and every apply redeployed postgres -- an empty database in staging.
+// evaluate-template.mjs [no-default-drift] rejects stating either default; RESTART stays as the one place
+// a non-default budget would go.
 const RESTART = {} as const;
 
 // STARTUP ORDER (gh#844). Railway has no depends-on between services, and server/recorder migrate only at
 // startup. So their pre-deploy command (it runs on the private network with the service's variables, and a
 // failure stops the deployment: docs.railway.com/deployments/pre-deploy-command) waits until Postgres accepts
 // TCP on 5432 (the image's init server listens on the socket only) before the new container starts. bash's
-// /dev/tcp, because the app image has no psql. <= 120 x 5 s, capped by PG_WAIT_TIMEOUT.
+// /dev/tcp, because the app image has no psql. Each attempt is capped by `timeout 3` (a black-holed address
+// would otherwise block for ~2 min), so the worst case is 100 x (3 + 5) s = 800 s, under PG_WAIT_TIMEOUT.
+// KEEP IN SYNC: evaluate-template.mjs [pg-wait] pins this exact string (its PG_WAIT).
 const PG_WAIT =
-  "bash -c 'for i in $(seq 1 120); do (: </dev/tcp/$POSTGRES_PRIVATE_HOST/5432) 2>/dev/null && echo pg-wait: ok && exit 0; sleep 5; done; echo pg-wait: FAILED; exit 1'";
+  "bash -c 'for i in $(seq 1 100); do " +
+  'timeout 3 bash -c ": </dev/tcp/$POSTGRES_PRIVATE_HOST/5432" 2>/dev/null && echo pg-wait: ok && exit 0; ' +
+  "sleep 5; done; echo pg-wait: FAILED; exit 1'";
 const PG_WAIT_TIMEOUT = 900;
 
 export default defineRailway((ctx) => {

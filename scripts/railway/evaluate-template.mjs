@@ -202,14 +202,18 @@ for (const s of services) {
 // ---- named check: [pg-wait] (gh#844) -------------------------------------------------------------------
 // Railway has no cross-service ordering, and server/recorder run EF migrations only at startup (no retry once the
 // store is Unavailable). Their pre-deploy command must be exactly the template's TCP wait for postgres:5432, with
-// a timeout above its own 600 s loop and within Railway's 1..3600 s. postgres and seed have none (the seed waits
-// for the migration itself).
-const PG_WAIT = "bash -c 'for i in $(seq 1 120); do (: </dev/tcp/$POSTGRES_PRIVATE_HOST/5432) 2>/dev/null && echo pg-wait: ok && exit 0; sleep 5; done; echo pg-wait: FAILED; exit 1'";
+// a timeout above its own 800 s worst case (100 x (3 s attempt + 5 s sleep)) and within Railway's 1..3600 s.
+// postgres and seed have none (the seed waits for the migration itself).
+// KEEP IN SYNC: this is .railway/railway.ts's PG_WAIT, character for character.
+const PG_WAIT =
+  "bash -c 'for i in $(seq 1 100); do " +
+  'timeout 3 bash -c ": </dev/tcp/$POSTGRES_PRIVATE_HOST/5432" 2>/dev/null && echo pg-wait: ok && exit 0; ' +
+  "sleep 5; done; echo pg-wait: FAILED; exit 1'";
 for (const s of services) {
   const d = s.deploy ?? {};
   if (s.name === "server" || s.name === "recorder") {
     if (JSON.stringify(d.preDeployCommand) !== JSON.stringify([PG_WAIT])) fail(`[pg-wait] ${s.name}: preDeploy must be exactly the template's PG_WAIT (wait for postgres:5432 before migrating), got ${JSON.stringify(d.preDeployCommand)}`);
-    if (!(Number.isInteger(d.preDeployTimeoutSeconds) && d.preDeployTimeoutSeconds > 600 && d.preDeployTimeoutSeconds <= 3600)) fail(`[pg-wait] ${s.name}: preDeployTimeoutSeconds must be 601..3600 (above PG_WAIT's 600 s loop), got ${JSON.stringify(d.preDeployTimeoutSeconds)}`);
+    if (!(Number.isInteger(d.preDeployTimeoutSeconds) && d.preDeployTimeoutSeconds > 800 && d.preDeployTimeoutSeconds <= 3600)) fail(`[pg-wait] ${s.name}: preDeployTimeoutSeconds must be 801..3600 (above PG_WAIT's 800 s worst case), got ${JSON.stringify(d.preDeployTimeoutSeconds)}`);
   } else if (d.preDeployCommand?.length || d.preDeployTimeoutSeconds !== undefined) {
     fail(`[pg-wait] ${s.name}: no pre-deploy command (only server and recorder wait for postgres)`);
   }

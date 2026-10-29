@@ -66,9 +66,32 @@ jobs:
             || { echo "::error::Trades is not a Timescale hypertable; the per-chunk index build did not run"; exit 1; }
           psql -v ON_ERROR_STOP=1 -tAc "SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.\"IX_Trades_Instrument_TradeTimeUtc\"'::regclass" | grep -qx t \
             || { echo "::error::IX_Trades_Instrument_TradeTimeUtc is missing or invalid"; exit 1; }
+      # Staging's database is NOT empty: the recorder writes live rows into the same tables (gh#ISSUE). Put
+      # one non-fixture row in each table first, so every check below runs against a database that already
+      # has data, and must count only venue 'synthetic' and leave the other rows alone.
+      - name: Pre-existing non-fixture rows (like staging's recorder writes)
+        run: |
+          psql -v ON_ERROR_STOP=1 -q <<'SQL'
+          INSERT INTO "Trades" ("Venue", "Instrument", "ContractId", "TradeTimeUtc", "Sequence", "Direction",
+                                "Price", "Size", "RecordedAt")
+          VALUES ('recorded', 'MNQ', 'CON.F.US.MNQ.Z26', '2026-10-22 13:30:00+00', 0, 1, 21000, 1,
+                  '2026-10-22 13:30:01+00');
+          INSERT INTO "Bars" ("Venue", "Instrument", "ResolutionMinutes", "BucketStart", "ContractId", "Open",
+                              "High", "Low", "Close", "Volume", "RecordedAt")
+          VALUES ('recorded', 'MNQ', 1, '2026-10-22 13:30:00+00', 'CON.F.US.MNQ.Z26',
+                  21000, 21000, 21000, 21000, 1, '2026-10-22 13:31:00+00');
+          INSERT INTO "TapeCoverage" ("Venue", "Instrument", "ContractId", "RangeStart", "RangeEnd",
+                                      "RecordedAt")
+          VALUES ('recorded', 'MNQ', 'CON.F.US.MNQ.Z26', '2026-10-22 13:30:00+00', '2026-10-22 13:31:00+00',
+                  '2026-10-22 13:31:00+00');
+          SQL
       - name: Seed twice, compare
         run: |
-          q='SELECT (SELECT count(*) FROM "Trades")||'"'"'/'"'"'||(SELECT count(*) FROM "Bars")||'"'"'/'"'"'||(SELECT count(*) FROM "TapeCoverage")'
+          syn='WHERE "Venue" = '"'"'synthetic'"'"''
+          sep="||'/'||"
+          q="SELECT (SELECT count(*) FROM \"Trades\" $syn)$sep(SELECT count(*) FROM \"Bars\" $syn)"
+          q="$q$sep(SELECT count(*) FROM \"TapeCoverage\" $syn)"
+          other='SELECT count(*) FROM "Trades" WHERE "Venue" <> '"'"'synthetic'"'"''
           psql -v ON_ERROR_STOP=1 -q -f scripts/railway/seed/staging-seed.sql
           first="$(psql -tAc "$q")"
           psql -v ON_ERROR_STOP=1 -q -f scripts/railway/seed/staging-seed.sql
@@ -76,6 +99,7 @@ jobs:
           echo "trades/bars/coverage after run 1: $first, after run 2: $second"
           [ "$first" = "4800/240/2" ] || { echo "::error::unexpected seed counts $first"; exit 1; }
           [ "$first" = "$second" ] || { echo "::error::seed is not idempotent"; exit 1; }
+          [ "$(psql -tAc "$other")" = 1 ] || { echo "::error::the seed touched non-fixture rows"; exit 1; }
       # The script the staging `seed` service runs, under the same env shape the template gives it (minus the
       # Railway host), run twice: it must wait for the newest migration, seed, and print the line
       # seed-staging.sh waits for, with the expected counts both times.

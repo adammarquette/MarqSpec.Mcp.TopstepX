@@ -288,7 +288,8 @@ that the template defines for `staging` only. That service:
 - gets `PGPASSWORD` from `shared.POSTGRES_PASSWORD`, the same variable `postgres` uses;
 - runs [`run-seed.sh`](../scripts/railway/seed/run-seed.sh). The script waits for the newest EF migration
   ([`latest-migration.sh`](../scripts/railway/latest-migration.sh)), applies the SQL, and logs
-  `seed-staging: ok <run-id> <digest> 4800/240/2`.
+  `seed-staging: ok <run-id> <digest> 4800/240/2`. The counts are of venue `synthetic` rows only, because
+  the recorder writes live rows into the same tables.
 
 `embed-seed.sh` copies the SQL, the script and the migration id into the template at deploy time.
 `--mode deployable` refuses a template whose copies differ from the repo (`[seed]`). `embed-seed.sh` also

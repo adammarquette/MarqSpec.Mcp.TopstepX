@@ -30,7 +30,10 @@ until [ "$(q -c "$applied" 2>/dev/null || true)" = 1 ]; do
 done
 # The SQL ends with a status SELECT for people running it by hand; discard it so this prints ONE line.
 printenv SEED_SQL | q -q >/dev/null
-counts_sql="SELECT (SELECT count(*) FROM \"Trades\")||'/'||(SELECT count(*) FROM \"Bars\")"
-counts_sql="$counts_sql||'/'||(SELECT count(*) FROM \"TapeCoverage\")"
+# Count ONLY the fixture's rows (venue 'synthetic'): staging's recorder writes live rows into the same tables,
+# so table totals are not the fixture's counts (gh#839).
+syn="WHERE \"Venue\" = 'synthetic'"
+counts_sql="SELECT (SELECT count(*) FROM \"Trades\" $syn)||'/'||(SELECT count(*) FROM \"Bars\" $syn)"
+counts_sql="$counts_sql||'/'||(SELECT count(*) FROM \"TapeCoverage\" $syn)"
 counts="$(q -c "$counts_sql")"
 echo "seed-staging: ok $SEED_RUN_ID $SEED_FOR_DIGEST $counts"

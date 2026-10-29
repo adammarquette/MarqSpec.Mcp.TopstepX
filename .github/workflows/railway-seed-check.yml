@@ -69,7 +69,7 @@ jobs:
       # Staging's database is NOT empty: the recorder writes live rows into the same tables (gh#839). Put
       # one non-fixture row in each table first, so every check below runs against a database that already
       # has data, and must count only venue 'synthetic' and leave the other rows alone. Their count and md5
-# per table are saved as a baseline, which every seed below must leave byte-for-byte the same.
+      # per table are saved as a baseline, which every seed below must leave byte-for-byte the same.
       - name: Pre-existing non-fixture rows (like staging's recorder writes)
         run: |
           psql -v ON_ERROR_STOP=1 -q <<'SQL'

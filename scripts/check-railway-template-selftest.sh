@@ -87,7 +87,7 @@ expect reject template postgres-trust-auth 'RAILWAY_RUN_UID: "0",' 'RAILWAY_RUN_
 expect reject template auto-updates-on 'autoUpdates: { type: "disabled" }' 'autoUpdates: { type: "patch" }'
 expect reject template auto-updates-removed 'image(SERVER_IMAGE, { autoUpdates: { type: "disabled" } })' 'image(SERVER_IMAGE)'
 
-# --- postgres volume (blocker 3) ---
+# --- postgres volume (gh#755 production, gh#846 staging) ---
 # gh#846: production AND staging keep Postgres on the volume; every other environment has none ([pg-volume]).
 NAMED='[pg-volume]' expect reject template production-without-volume 'const persistent = production || ctx.environment === "staging";' \
   'const persistent = ctx.environment === "staging";'

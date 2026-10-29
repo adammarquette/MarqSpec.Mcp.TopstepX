@@ -1,11 +1,11 @@
-# railway-staging.yml -- deploy ONE pinned GHCR image to the DISPOSABLE Railway staging environment (gh#758).
+# railway-staging.yml -- deploy ONE pinned GHCR image to the Railway staging environment (gh#758).
 #
 # Manual only (workflow_dispatch). There is no push trigger: develop publishes no release image, and this
 # deploys only an image release.yml already published, named by tag AND digest. There is NO production job
 # here; production goes through railway-promote.yml, which needs a passing staging record from this one.
 #
-# Staging is disposable: Postgres has no volume, so each deploy starts with an empty database, which this
-# then seeds with a synthetic fixture (a staging-only one-shot `seed` service; see deployment.md).
+# Staging Postgres keeps its data on a volume (gh#846); each deploy seeds it with an idempotent
+# synthetic fixture (a staging-only one-shot `seed` service; see deployment.md).
 # Order: verify the image -> pin (and embed the seed, tagged with this run's id) -> template checks
 # (deployable mode, Trading__Enabled literal "false") -> plan (saved) -> apply that plan -> /health reports
 # the pinned version and digest -> seed -> an authenticated MCP call (static token) -> record the digest as

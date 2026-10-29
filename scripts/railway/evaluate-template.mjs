@@ -27,6 +27,8 @@ const SERVER_PIN = new RegExp(`^${SERVER_REPO.replace(/\./g, "\\.")}(?::(\\d+\\.
 const DEPLOYABLE_PIN = new RegExp(`^${SERVER_REPO.replace(/\./g, "\\.")}:\\d+\\.\\d+\\.\\d+${DIGEST}$`);
 const PG_PIN = new RegExp(`^timescale/timescaledb-ha(?::pg17(?:\\.[0-9][0-9A-Za-z.-]*)?(?:${DIGEST})?|${DIGEST})$`);
 const PG_MOUNT = "/home/postgres/pgdata";
+// The environments whose Postgres keeps its data on a volume (gh#846 added staging on 2026-10-29).
+const PG_VOLUME_ENVIRONMENTS = ["production", "staging"];
 const CONNECTION_STRING =
   "Host=${{POSTGRES_PRIVATE_HOST}};Port=5432;Database=topstepx_mcp;Username=topstepx;Password=${{shared.POSTGRES_PASSWORD}}";
 
@@ -241,13 +243,15 @@ if (pg) {
   const env = pg.variables ?? {};
   if (!PG_PIN.test(pg.source?.image ?? "") || !pg.source.image.includes("@sha256:")) fail(`postgres: image must be timescale/timescaledb-ha:pg17@sha256:<digest> (ADR-0004, pinned), got ${pg.source?.image}`);
   const mounts = Object.values(pg.volumeAttachments ?? {});
-  if (environment === "production") {
-    if (mounts.length !== 1 || mounts[0].mountPath !== PG_MOUNT) fail(`postgres: production needs exactly one volume at ${PG_MOUNT}; the tape must survive a redeploy (gh#755)`);
+  // [pg-volume] production (gh#755) and staging (gh#846, 2026-10-29) keep Postgres on exactly one volume at
+  // PG_MOUNT; every other environment is disposable and has none.
+  if (PG_VOLUME_ENVIRONMENTS.includes(environment)) {
+    if (mounts.length !== 1 || mounts[0].mountPath !== PG_MOUNT) fail(`[pg-volume] postgres: ${environment} needs exactly one volume at ${PG_MOUNT}; the tape must survive a redeploy (gh#755, gh#846)`);
   } else if (mounts.length) {
-    fail(`postgres: ${environment} is disposable and must have NO volume (ephemeral database, no backups); got ${JSON.stringify(mounts)}`);
+    fail(`[pg-volume] postgres: ${environment} is disposable and must have NO volume (ephemeral database, no backups); got ${JSON.stringify(mounts)}`);
   }
   const volumes = graph.resources.filter((r) => r.type === "volume");
-  if (environment !== "production" && volumes.length) fail(`${environment}: no volume resources outside production; got ${volumes.map((v) => v.name).join(", ")}`);
+  if (!PG_VOLUME_ENVIRONMENTS.includes(environment) && volumes.length) fail(`[pg-volume] ${environment}: no volume resources outside ${PG_VOLUME_ENVIRONMENTS.join(" and ")}; got ${volumes.map((v) => v.name).join(", ")}`);
   const pgdata = literal(env.PGDATA) ?? "";
   if (!pgdata.startsWith(`${PG_MOUNT}/`) || pgdata.slice(PG_MOUNT.length + 1).includes("..") || pgdata.length <= PG_MOUNT.length + 1)
     fail(`postgres: PGDATA must be a subdirectory of the volume ${PG_MOUNT}, got "${pgdata}"`);
@@ -375,7 +379,7 @@ if (recorder) {
     if (literal(env.TapeExport__Enabled) !== "false") fail('recorder: the tape export is deferred (gh#767); TapeExport__Enabled must be the literal "false"');
     if (env.RAILWAY_RUN_UID) fail("recorder: no export volume, so no RAILWAY_RUN_UID (gh#767)");
   } else {
-    if (literal(env.TapeExport__Enabled) !== "false") fail(`recorder: ${environment} is disposable; TapeExport__Enabled must be the literal "false"`);
+    if (literal(env.TapeExport__Enabled) !== "false") fail(`recorder: ${environment} is not production (no tape export); TapeExport__Enabled must be the literal "false"`);
     for (const k of Object.keys(env)) if (/^tapeexport(__|:)drive(__|:)/i.test(k)) fail(`recorder: ${environment} has no export target; ${k} must not be set`);
     if (env.RAILWAY_RUN_UID) fail(`recorder: ${environment} has no export volume, so it must not run as root (RAILWAY_RUN_UID)`);
   }

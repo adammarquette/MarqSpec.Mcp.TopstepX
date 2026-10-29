@@ -56,7 +56,7 @@ expect() {  # expect <reject|accept> <mode> <name> <from> <to> ...
 
 "$check" "$template" >/dev/null || { echo "FAIL: the committed template does not pass" >&2; exit 1; }
 embedded="$work/embedded.ts"
-cp "$template" "$embedded" && "$here/railway/embed-seed.sh" "$embedded" >/dev/null \
+cp "$template" "$embedded" && GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=1 "$here/railway/embed-seed.sh" "$embedded" >/dev/null \
   || { echo "FAIL: embed-seed.sh could not fill the committed template" >&2; exit 1; }
 echo "ok: committed template passes (template mode)"
 
@@ -340,6 +340,17 @@ NAMED='[seed]' expect reject template seed-sql-hand-edited 'const SEED_SQL = "RE
 NAMED='[seed]' expect reject deployable seed-sentinel-in-deployable-mode "${PIN_OK[@]}" 'const SEED_SQL = "' 'const SEED_SQL = "REPLACE_WITH_SEED_SQL"; const UNUSED = "'
 NAMED='[seed]' expect reject deployable seed-sql-drifted "${PIN_OK[@]}" 'ON CONFLICT DO NOTHING' 'ON CONFLICT DO UPDATE'
 NAMED='[seed]' expect reject deployable seed-waits-for-old-migration "${PIN_OK[@]}" 'const SEED_AFTER_MIGRATION = "2' 'const SEED_AFTER_MIGRATION = "1'
+# --- seed run id (gh#837): every run's ok line names its own run, so an older run's line cannot pass ---
+expect accept deployable seed-run-id-retry-attempt "${PIN_OK[@]}" 'const SEED_RUN_ID = "123-1"' 'const SEED_RUN_ID = "987654321-3"'
+NAMED='[seed-run-id]' expect reject deployable seed-run-id-sentinel-in-deployable-mode "${PIN_OK[@]}" \
+  'const SEED_RUN_ID = "123-1"' 'const SEED_RUN_ID = "REPLACE_WITH_SEED_RUN_ID"'
+NAMED='[seed-run-id]' expect reject deployable seed-run-id-empty "${PIN_OK[@]}" 'const SEED_RUN_ID = "123-1"' 'const SEED_RUN_ID = ""'
+NAMED='[seed-run-id]' expect reject deployable seed-run-id-no-attempt "${PIN_OK[@]}" 'const SEED_RUN_ID = "123-1"' 'const SEED_RUN_ID = "123"'
+NAMED='[seed-run-id]' expect reject deployable seed-run-id-local-word "${PIN_OK[@]}" 'const SEED_RUN_ID = "123-1"' 'const SEED_RUN_ID = "local-1"'
+NAMED='[seed-run-id]' expect reject template seed-run-id-malformed-in-template-mode \
+  'const SEED_RUN_ID = "REPLACE_WITH_SEED_RUN_ID"' 'const SEED_RUN_ID = "0-1"'
+NAMED='[seed]' expect reject template seed-run-id-removed '            SEED_RUN_ID,
+' ''
 
 # --- SDK pin (gh#832): the root package.json `railway config plan` loads must pin what CI compiles against ---
 expect_pin() {  # expect_pin <reject|accept> <name> <python edit of the root copy>

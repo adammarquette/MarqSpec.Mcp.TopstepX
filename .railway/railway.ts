@@ -44,13 +44,16 @@ const PG_MOUNT = "/home/postgres/pgdata";
 // STAGING SEED (gh#758, headless). The synthetic fixture is loaded by a one-shot `seed` service that exists in
 // staging ONLY: the pinned Postgres image (it carries psql) on the private network, with no domain, TCP proxy or
 // volume. It runs scripts/railway/seed/run-seed.sh, which waits for the app's migrations, applies the SQL and
-// logs "seed-staging: ok <digest> <counts>"; seed-staging.sh reads that line with `railway logs` and the same
-// project token. No SSH key, no public database, no new secret.
-// DEPLOY-TIME SENTINELS: scripts/railway/embed-seed.sh fills all three from the repo (the SQL file, run-seed.sh,
-// the newest EF migration id); `--mode deployable` requires that they match the repo exactly.
+// logs "seed-staging: ok <run-id> <digest> <counts>"; seed-staging.sh reads that line with `railway logs` and
+// the same project token. No SSH key, no public database, no new secret.
+// DEPLOY-TIME SENTINELS: scripts/railway/embed-seed.sh fills the first three from the repo (the SQL file,
+// run-seed.sh, the newest EF migration id); `--mode deployable` requires that they match the repo exactly.
+// SEED_RUN_ID is the workflow run, "<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>": unique per run, so every staging
+// deploy changes the seed's config (forcing a fresh seed) and the ok line proves THIS run, not an older one.
 const SEED_SQL = "REPLACE_WITH_SEED_SQL";
 const SEED_SCRIPT = "REPLACE_WITH_SEED_SCRIPT";
 const SEED_AFTER_MIGRATION = "REPLACE_WITH_LATEST_MIGRATION";
+const SEED_RUN_ID = "REPLACE_WITH_SEED_RUN_ID";
 
 
 
@@ -213,8 +216,9 @@ export default defineRailway((ctx) => {
             PGDATABASE: "topstepx_mcp",
             PGPASSWORD: ctx.shared.POSTGRES_PASSWORD,
             SEED_AFTER_MIGRATION,
-            // Changes with every pin, so each staging deploy re-runs the seed, and its log line names the digest.
+            // Its log line names the digest; SEED_RUN_ID changes every run, so each deploy re-runs the seed.
             SEED_FOR_DIGEST: IMAGE_DIGEST,
+            SEED_RUN_ID,
             SEED_SCRIPT,
             SEED_SQL,
           },

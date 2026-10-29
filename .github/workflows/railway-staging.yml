@@ -5,10 +5,11 @@
 # here; production goes through railway-promote.yml, which needs a passing staging record from this one.
 #
 # Staging is disposable: Postgres has no volume, so each deploy starts with an empty database, which this
-# then seeds with a synthetic fixture (a staging-only one-shot `seed` service; see deployment.md). Order: verify the image -> pin -> template checks (deployable mode,
-# Trading__Enabled literal "false") -> plan (saved) -> apply that plan -> /health reports the pinned
-# version and digest -> seed -> an authenticated MCP call (static token) -> record the digest as a GitHub
-# deployment + artifact.
+# then seeds with a synthetic fixture (a staging-only one-shot `seed` service; see deployment.md).
+# Order: verify the image -> pin (and embed the seed, tagged with this run's id) -> template checks
+# (deployable mode, Trading__Enabled literal "false") -> plan (saved) -> apply that plan -> /health reports
+# the pinned version and digest -> seed -> an authenticated MCP call (static token) -> record the digest as
+# a GitHub deployment + artifact.
 #
 # SECRETS: RAILWAY_TOKEN is a project token scoped to the Railway staging environment, held on the GitHub
 # `staging` environment, beside MCP_HTTP_BEARER_TOKEN (staging's static MCP token, ADR-0021 exception). It reaches steps only via `env:`, never an argument, and no step uses `set -x`.
@@ -112,14 +113,16 @@ jobs:
           DIGEST: ${{ inputs.digest }}
         run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 600
 
-      # The seed runs ON Railway, in the staging-only one-shot `seed` service the apply just (re)deployed; this
-      # waits for its "seed-staging: ok <digest> 4800/240/2" log line. No `railway ssh`: a project token cannot
-      # register the SSH key it needs (run 40767891986).
+      # The seed runs ON Railway, in the staging-only one-shot `seed` service the apply just (re)deployed;
+      # this waits for its "seed-staging: ok <run-id> <digest> 4800/240/2" log line, where <run-id> is
+      # this run's "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" (embedded at pin time), so an older run's line never
+      # passes. No `railway ssh`: a project token cannot register the SSH key it needs (run 40767891986).
       - name: Seed the synthetic fixture (staging only)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           DIGEST: ${{ inputs.digest }}
-        run: scripts/railway/seed-staging.sh staging "$DIGEST" 900
+        run: |
+          scripts/railway/seed-staging.sh staging "$DIGEST" "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 900
 
       # Stays up: the seed must not have knocked anything over.
       - name: /health still reports the pinned image

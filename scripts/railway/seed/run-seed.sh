@@ -8,6 +8,8 @@
 # SEED_AFTER_MIGRATION (the server migrates at startup, up to Migrations__CommandTimeoutSeconds), applies the
 # idempotent SQL, and prints ONE line that seed-staging.sh looks for in `railway logs`:
 #   seed-staging: ok <SEED_RUN_ID> <SEED_FOR_DIGEST> <trades>/<bars>/<coverage>
+# While it waits it also prints, once a minute (gh#844), a line that neither ok nor FAILED matches:
+#   seed-staging: waiting <SEED_RUN_ID> for migration <SEED_AFTER_MIGRATION> (<seconds> s)
 set -eu
 # Any failure that reaches set -e (e.g. a psql error in the apply) still prints this run's FAILED line, so
 # seed-staging.sh fails at once instead of waiting out its timeout. Lines that already printed FAILED set
@@ -28,6 +30,9 @@ until [ "$(q -c "$applied" 2>/dev/null || true)" = 1 ]; do
     echo "seed-staging: FAILED $SEED_RUN_ID migration $SEED_AFTER_MIGRATION not applied after 4000 s"
     exit 1
   }
+  # Once a minute, say what it waits for: seed-staging.sh prints the last log lines on its own timeout.
+  [ $((i % 6)) -ne 0 ] ||
+    echo "seed-staging: waiting $SEED_RUN_ID for migration $SEED_AFTER_MIGRATION ($((i * 10)) s)"
   sleep 10
 done
 # The SQL ends with a status SELECT for people running it by hand; discard it so this prints ONE line.

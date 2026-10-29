@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # seed-staging.sh <environment> <sha256:digest> <run-id> [timeout-seconds] -- confirm the synthetic fixture
-# landed in the disposable staging Postgres (gh#758, gh#837).
+# landed in the staging Postgres (gh#758, gh#837).
 #
 # STAGING ONLY: refuses any environment other than the literal "staging". The seed itself runs ON RAILWAY, in
 # the staging-only one-shot `seed` service (.railway/railway.ts; scripts/railway/seed/run-seed.sh), which

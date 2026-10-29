@@ -23,8 +23,8 @@ images stay private on GHCR, and TopstepX ships only as an image.
    Postgres is `timescale/timescaledb-ha:pg17`, pinned by digest. Railway never builds this repository.
 3. **Two roles from one image.** `server` is public and runs OAuth; its resource URL is its own Railway
    domain over https. `recorder` records the tape, is private, has no OAuth keys, and runs one replica.
-4. **Staging is disposable; production keeps the data.** Outside production there is no volume, no backups
-   and no tape export, so every redeploy starts with an empty database. Production requires the Postgres volume.
+4. **Production and staging keep the data.** Both require the Postgres volume (staging since gh#846,
+   2026-10-29). Backups and the tape export are production-only; dev and PR sandboxes have no volume.
    The gh#755 tape export is deferred everywhere: production's recorder gets its one volume at `/data` (exports in `/data/tape-exports`)
    only after the deployed image contains #765 and chowns the mount and drops to uid 64198 at startup (#767).
    It is never enabled through `RAILWAY_RUN_UID=0`. The `TapeExport__*` names are provisional until #765 merges.
@@ -50,7 +50,7 @@ front of a plaintext `8080` listener and health-checked `/health`. On Railway:
   operator action (`railway config plan`, then `apply`). Production deploys stay manual until Adam approves
   otherwise, so `deployment.md`'s "running the new image is not automated here" remains true for production.
 - **Postgres volume.** It relies on `RAILWAY_RUN_UID=0` plus the image's root-then-`gosu` entrypoint, which
-  has not been observed on Railway. Staging has no volume, so it is verified on the first production deploy.
+  has not been observed on Railway. Staging has the same volume (gh#846), so it is verified on staging first.
 - **Recorder redeploys.** A redeploy briefly runs two recorders (`deployment.md`).
 
 ## Open items before acceptance

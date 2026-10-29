@@ -65,10 +65,12 @@ const RESTART = { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 }
 export default defineRailway((ctx) => {
   const production = ctx.environment === "production";
 
-  // PRODUCTION ONLY: the volume (10 GiB to start; growing is a non-destructive resize, shrinking is destructive),
-  // and with it backups and any tape export. Every other environment is DISPOSABLE: Postgres runs on the
-  // container's ephemeral storage, so each redeploy starts from an empty database. The check enforces both.
-  const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
+  // PRODUCTION AND STAGING: the Postgres volume (10 GiB to start; growing is a non-destructive resize, shrinking
+  // is destructive). Staging got it on 2026-10-29 (gh#846, Adam's call): its recorded tape survives deploys
+  // and restarts. Backups and any tape export stay production-only. Every other environment is DISPOSABLE:
+  // Postgres runs on the container's ephemeral storage, so each redeploy starts empty. The check enforces all.
+  const persistent = production || ctx.environment === "staging";
+  const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
 
   const postgres = service("postgres", {
     source: image(POSTGRES_IMAGE),
@@ -76,7 +78,7 @@ export default defineRailway((ctx) => {
     deploy: { ...RESTART },
     env: {
       // PGDATA is the same path with or without a volume. Without one it is image storage the postgres user
-      // already owns; with one (production) the points below apply.
+      // already owns; with one (production, staging) the points below apply.
       // VOLUME PERMISSIONS. Railway mounts volumes root-owned; this image runs as postgres (uid 1000), and
       // Postgres refuses to run as root. RAILWAY_RUN_UID=0 (Railway's documented fix for non-root images,
       // docs.railway.com/reference/volumes) starts the entrypoint as root; the image's own

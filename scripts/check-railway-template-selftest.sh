@@ -88,8 +88,26 @@ expect reject template auto-updates-on 'autoUpdates: { type: "disabled" }' 'auto
 expect reject template auto-updates-removed 'image(SERVER_IMAGE, { autoUpdates: { type: "disabled" } })' 'image(SERVER_IMAGE)'
 
 # --- postgres volume (blocker 3) ---
-expect reject template production-without-volume 'const pgdata = production ? volume' 'const pgdata = false ? volume'
-expect reject template staging-with-volume 'const pgdata = production ? volume' 'const pgdata = true ? volume'
+# gh#846: production AND staging keep Postgres on the volume; every other environment has none ([pg-volume]).
+NAMED='[pg-volume]' expect reject template production-without-volume 'const persistent = production || ctx.environment === "staging";' \
+  'const persistent = ctx.environment === "staging";'
+NAMED='[pg-volume]' expect reject template staging-without-volume 'const persistent = production || ctx.environment === "staging";' 'const persistent = production;'
+NAMED='[pg-volume]' expect reject template every-environment-with-volume 'const pgdata = persistent ? volume' \
+  'const pgdata = true ? volume'
+NAMED='[pg-volume]' expect reject template dev-with-volume 'const persistent = production || ctx.environment === "staging";' \
+  'const persistent = production || ctx.environment === "staging" || ctx.environment === "dev";'
+NAMED='[pg-volume]' expect reject template pr-sandbox-with-volume 'const persistent = production || ctx.environment === "staging";' \
+  'const persistent = production || ctx.environment === "staging" || ctx.environment === "pr-sandbox-1234";'
+NAMED='[pg-volume]' expect reject template staging-wrong-mount 'volumeMounts: { [PG_MOUNT]: pgdata }' \
+  'volumeMounts: { [ctx.environment === "staging" ? "/var/lib/postgresql" : PG_MOUNT]: pgdata }'
+NAMED='[pg-volume]' expect reject template staging-mount-is-pgdata 'volumeMounts: { [PG_MOUNT]: pgdata }' \
+  'volumeMounts: { [ctx.environment === "staging" ? `${PG_MOUNT}/data` : PG_MOUNT]: pgdata }'
+NAMED='PGDATA must be a subdirectory' expect reject template staging-pgdata-outside-volume 'PGDATA: `${PG_MOUNT}/data`' \
+  'PGDATA: ctx.environment === "staging" ? "/var/lib/postgresql/data" : `${PG_MOUNT}/data`'
+NAMED='PGDATA must be a subdirectory' expect reject template staging-pgdata-is-mount-root 'PGDATA: `${PG_MOUNT}/data`' \
+  'PGDATA: ctx.environment === "staging" ? PG_MOUNT : `${PG_MOUNT}/data`'
+NAMED='RAILWAY_RUN_UID must be' expect reject template staging-run-uid-cleared 'RAILWAY_RUN_UID: "0",' \
+  'RAILWAY_RUN_UID: ctx.environment === "staging" ? "" : "0",'
 # --- tape export (gh#755 contract, PR #765; deferred in production until gh#767) ---
 expect reject template export-on-everywhere 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: "true",'
 expect reject template export-on-in-production-without-volume 'TapeExport__Enabled: "false",' 'TapeExport__Enabled: ctx.environment === "production" ? "true" : "false",'
@@ -228,7 +246,7 @@ expect reject template plaintext-port-cleared 'ASPNETCORE_HTTP_PORTS: "8080"' 'A
 expect reject template aspnetcore-urls-set 'ASPNETCORE_HTTP_PORTS: "8080",' 'ASPNETCORE_HTTP_PORTS: "8080", ASPNETCORE_URLS: "http://+:5000",'
 expect reject template https-ports-set 'ASPNETCORE_HTTP_PORTS: "8080",' 'ASPNETCORE_HTTP_PORTS: "8080", ASPNETCORE_HTTPS_PORTS: "",'
 NAMED='[export-blocked]' expect reject template r3-root-recorder-restored \
-  'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
+  'const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
   const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
   'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])' \
   'replicas: 1,
@@ -240,7 +258,7 @@ NAMED='[export-blocked]' expect reject template r3-root-recorder-restored \
   'TapeExport__Enabled: "false",' 'TapeExport__Enabled: production ? "true" : "false",
       ...(production ? { TapeExport__Schedule: "06:00", TapeExport__Path: "/data/tape-exports", TapeExport__Format: "csv.gz+parquet", RAILWAY_RUN_UID: "0" } : {}),'
 NAMED='[export-blocked]' expect reject template export-volume-only-blocked \
-  'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
+  'const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
   const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
   'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])' \
   'replicas: 1,
@@ -250,7 +268,7 @@ NAMED='[export-blocked]' expect reject template export-volume-only-blocked \
     deploy: {
       ...RESTART,'
 NAMED='[export-blocked]' expect reject template export-volume-at-old-path-blocked \
-  'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = production ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
+  'const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240 }) : undefined;' 'const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
   const exports = production ? volume("tape-exports", { sizeMB: 10240 }) : undefined;' \
   'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : [])' 'resources: [postgres, server, recorder, ...(pgdata ? [pgdata] : []), ...(exports ? [exports] : [])' \
   'replicas: 1,

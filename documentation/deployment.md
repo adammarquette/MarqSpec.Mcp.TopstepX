@@ -252,14 +252,14 @@ Two manual workflows. Neither has run yet.
   image. In order, it:
   1. checks that the GHCR tag resolves to the digest;
   2. pins the template with [`pin-image.sh`](../scripts/railway/pin-image.sh) and fills the seed sentinels
-     with [`embed-seed.sh`](../scripts/railway/embed-seed.sh);
+     with [`embed-seed.sh`](../scripts/railway/embed-seed.sh), including this run's id;
   3. runs `--mode deployable` and `no-order-path`;
   4. installs the pinned Railway SDK from the root `package.json`
      ([`install-sdk.sh`](../scripts/railway/install-sdk.sh)), then runs
      `railway config plan --out` and `apply --plan`;
   5. waits until `/health` reports exactly that version and digest
      ([`wait-for-health.sh`](../scripts/railway/wait-for-health.sh)), so it fails if nothing shipped;
-  6. waits for the staging-only `seed` service to log that it seeded the fixture for this digest;
+  6. waits for the staging-only `seed` service to log that it seeded the fixture for this run and digest;
   7. checks `/health` again;
   8. records the digest that passed as a `staging` GitHub deployment and a `staging-passed` artifact.
 
@@ -288,13 +288,20 @@ that the template defines for `staging` only. That service:
 - gets `PGPASSWORD` from `shared.POSTGRES_PASSWORD`, the same variable `postgres` uses;
 - runs [`run-seed.sh`](../scripts/railway/seed/run-seed.sh). The script waits for the newest EF migration
   ([`latest-migration.sh`](../scripts/railway/latest-migration.sh)), applies the SQL, and logs
-  `seed-staging: ok <digest> 4800/240/2`.
+  `seed-staging: ok <run-id> <digest> 4800/240/2`.
 
 `embed-seed.sh` copies the SQL, the script and the migration id into the template at deploy time.
-`--mode deployable` refuses a template whose copies differ from the repo (`[seed]`). `SEED_FOR_DIGEST` changes
-with every pin, so every apply re-runs the seed.
+`--mode deployable` refuses a template whose copies differ from the repo (`[seed]`). It also writes
+`SEED_RUN_ID`, `<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`. Both variables are required, with no fallback; run
+locally as `GITHUB_RUN_ID=123 GITHUB_RUN_ATTEMPT=1 scripts/railway/pin-image.sh ...`. `--mode deployable`
+requires a filled, well-formed run id (`[seed-run-id]`). The id changes every run, so every apply re-runs the
+seed, even for the same digest.
 [`seed-staging.sh`](../scripts/railway/seed-staging.sh) refuses any environment but `staging`. It reads the
-seed's log with `railway logs` and the same project token, and fails on a wrong count or a timeout.
+seed's log with `railway logs` and the same project token. It passes only on the ok line with this run's id,
+so an older run's line never counts. It fails on this run's `FAILED` line, a timeout, or wrong counts
+(`seed-staging: wrong counts: got X want 4800/240/2`).
+Postgres has no volume and the seed is one-shot: if Postgres restarts after the seed, staging stays empty
+until the next deploy.
 
 It does not use `railway ssh`. That needs an SSH key registered to a Railway account or workspace, and a
 project token cannot register one ([docs](https://docs.railway.com/cli/ssh); run 40767891986 failed on it).

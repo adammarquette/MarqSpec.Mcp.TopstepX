@@ -84,8 +84,12 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 
 **Staging is disposable; production keeps the data.**
 - Outside `production`, Postgres has **no volume, no backups and no tape export**. The database lives on the
-  container's ephemeral storage, so every redeploy starts empty. Staging exists to test changes before prod
-  and keeps no long-term data.
+  container's ephemeral storage, so every redeploy **of postgres** starts empty. Staging exists to test
+  changes before prod and keeps no long-term data.
+- An apply redeploys postgres only when postgres's own config changes (gh#844). Until gh#844 the template
+  stated Railway's default restart policy, which Railway stores as null, so every plan re-applied it and
+  every apply redeployed (and emptied) staging's Postgres; `[no-default-drift]` now rejects that. A volume on
+  staging Postgres is proposed separately (a new paid resource, needs Adam's approval).
 - `production` requires exactly one volume (`postgres-data`, 10 GiB, at `/home/postgres/pgdata`).
 - The check enforces both directions. `Retention__*` stays unset everywhere (gh#763).
 
@@ -167,6 +171,12 @@ deploy stays manual and needs Adam's approval.
 - **Ports:** only `ASPNETCORE_HTTP_PORTS=8080`. `ASPNETCORE_URLS` and `ASPNETCORE_HTTPS_PORTS` are rejected
   because TLS is at Railway's edge (ADR-0021).
 - **Store wait:** `Store__StartupWaitSeconds=90`, required ≥ 30, because Railway has no `depends_on`.
+- **Startup order (gh#844):** server and recorder migrate only at startup and do not retry once the store
+  is Unavailable. So each has a [pre-deploy command](https://docs.railway.com/deployments/pre-deploy-command)
+  (`PG_WAIT`: bash `/dev/tcp`, the app image has no `psql`) that waits up to 600 s for `postgres:5432`,
+  capped by `preDeployTimeoutSeconds=900`. It runs on the private network with the service's variables, and
+  a failure stops that deployment, so the old one keeps serving. `[pg-wait]` pins it; postgres and the
+  seed have none.
 - **Healthcheck:** `/health` with `healthcheckTimeout=3990` on server and recorder. The EF migration runs
   **before** the app listens and may build a per-chunk index on `Trades` under `Migrations__CommandTimeoutSeconds`
   (default 3600, #761); Railway's default ~300 s healthcheck would kill the container mid-migration and retry
@@ -183,7 +193,9 @@ deploy stays manual and needs Adam's approval.
 - **Resource URL:** `Mcp__OAuth__ResourceUrl` is exactly `https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp`, the
   server's own domain.
 - **Forwarded headers:** `ASPNETCORE_FORWARDEDHEADERS_ENABLED` is true on `server` and false on `recorder`.
-- **Restarts:** one restart budget (`ON_FAILURE`, 10) for all three services.
+- **Restarts:** Railway's default (`ON_FAILURE`, 10) for all three services, left **unstated**: Railway
+  stores a default as null, so stating it is a diff in every plan and a redeploy on every apply
+  (`[no-default-drift]`, gh#844). The seed states only its 3 retries.
 - **Logs and telemetry:** JSON console logs; a per-role `Otel__ServiceName`.
 - **Absent:** compose's `MarketData__*`, `Indicators__*`, `KeyLevels__*`, `Trading__Max*`,
   `Trading__DeniedSymbols`, `Trading__KillSwitchFile` and `Embeddings__*`, so code defaults apply.
@@ -300,7 +312,9 @@ every apply re-runs the seed, even for the same digest.
 [`seed-staging.sh`](../scripts/railway/seed-staging.sh) refuses any environment but `staging`. It reads the
 seed's log with `railway logs` and the same project token. It passes only on the ok line with this run's id,
 so an older run's line never counts. It fails on this run's `FAILED` line, a timeout, or wrong counts
-(`seed-staging: wrong counts: got X want 4800/240/2`).
+(`seed-staging: wrong counts: got X want 4800/240/2`). While the seed waits for the migration it logs
+`seed-staging: waiting <run-id> for migration <id> (<n> s)` once a minute, so a timeout's last log lines say
+what it was waiting for (gh#844).
 Postgres has no volume and the seed is one-shot: if Postgres restarts after the seed, staging stays empty
 until the next deploy.
 

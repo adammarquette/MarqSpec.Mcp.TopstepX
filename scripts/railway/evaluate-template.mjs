@@ -184,6 +184,35 @@ for (const s of services) {
   }
 }
 
+// ---- named check: [no-default-drift] (gh#844) ----------------------------------------------------------
+// Railway stores a setting equal to its default as null, so a template that STATES the default (restart policy
+// On Failure, 10 retries: docs.railway.com/deployments/restart-policy) shows "null -> value" in every plan, and
+// every apply redeploys that service. For postgres in staging (no volume) that was an empty database on every
+// deploy (runs 40944859199, 40947739913). State only non-default values; ALWAYS/NEVER are refused outright.
+const DEFAULT_RESTART = { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 };
+for (const s of services) {
+  const d = s.deploy ?? {};
+  for (const [k, v] of Object.entries(DEFAULT_RESTART))
+    if (d[k] === v) fail(`[no-default-drift] ${s.name}: deploy.${k} ${JSON.stringify(v)} is Railway's default, stored as null, so every plan re-applies it and redeploys ${s.name}; leave it unset`);
+  if (d.restartPolicyType !== undefined && d.restartPolicyType !== "ON_FAILURE") fail(`[no-default-drift] ${s.name}: restartPolicyType ${JSON.stringify(d.restartPolicyType)}; only Railway's default ON_FAILURE (unset) is allowed`);
+}
+
+// ---- named check: [pg-wait] (gh#844) -------------------------------------------------------------------
+// Railway has no cross-service ordering, and server/recorder run EF migrations only at startup (no retry once the
+// store is Unavailable). Their pre-deploy command must be exactly the template's TCP wait for postgres:5432, with
+// a timeout above its own 600 s loop and within Railway's 1..3600 s. postgres and seed have none (the seed waits
+// for the migration itself).
+const PG_WAIT = "bash -c 'for i in $(seq 1 120); do (: </dev/tcp/$POSTGRES_PRIVATE_HOST/5432) 2>/dev/null && echo pg-wait: ok && exit 0; sleep 5; done; echo pg-wait: FAILED; exit 1'";
+for (const s of services) {
+  const d = s.deploy ?? {};
+  if (s.name === "server" || s.name === "recorder") {
+    if (JSON.stringify(d.preDeployCommand) !== JSON.stringify([PG_WAIT])) fail(`[pg-wait] ${s.name}: preDeploy must be exactly the template's PG_WAIT (wait for postgres:5432 before migrating), got ${JSON.stringify(d.preDeployCommand)}`);
+    if (!(Number.isInteger(d.preDeployTimeoutSeconds) && d.preDeployTimeoutSeconds > 600 && d.preDeployTimeoutSeconds <= 3600)) fail(`[pg-wait] ${s.name}: preDeployTimeoutSeconds must be 601..3600 (above PG_WAIT's 600 s loop), got ${JSON.stringify(d.preDeployTimeoutSeconds)}`);
+  } else if (d.preDeployCommand?.length || d.preDeployTimeoutSeconds !== undefined) {
+    fail(`[pg-wait] ${s.name}: no pre-deploy command (only server and recorder wait for postgres)`);
+  }
+}
+
 // ---- named check: [seed] (gh#758 headless staging seed) ------------------------------------------------
 // Staging only (enforced by the service list above). A one-shot psql runner on the pinned Postgres image: private
 // network only, no volume, the database password only as the shared reference, and its SQL, script and awaited
@@ -195,7 +224,8 @@ if (seed) {
   const fs = await import("node:fs");
   if (seed.source?.image !== byName.postgres?.source?.image) fail(`[seed] seed: must run the postgres service's pinned image, got ${seed.source?.image}`);
   if (d.startCommand !== "bash -c 'printenv SEED_SCRIPT | bash'") fail(`[seed] seed: startCommand must be exactly bash -c 'printenv SEED_SCRIPT | bash', got ${JSON.stringify(d.startCommand)}`);
-  if (d.restartPolicyType !== "ON_FAILURE" || !(d.restartPolicyMaxRetries >= 1 && d.restartPolicyMaxRetries <= 3)) fail("[seed] seed: restart ON_FAILURE with 1..3 retries (a one-shot, never ALWAYS)");
+  // Type unset = Railway's default ON_FAILURE ([no-default-drift] rejects stating it); never ALWAYS or NEVER.
+  if (d.restartPolicyType !== undefined || !(d.restartPolicyMaxRetries >= 1 && d.restartPolicyMaxRetries <= 3)) fail("[seed] seed: restart ON_FAILURE (Railway's default, unstated) with 1..3 retries (a one-shot, never ALWAYS)");
   if ((d.numReplicas ?? 1) !== 1 || d.multiRegionConfig) fail("[seed] seed: exactly one replica");
   if (d.healthcheckPath) fail("[seed] seed: no healthcheck; it serves nothing");
   const net = seed.networking ?? {};
@@ -295,7 +325,8 @@ for (const name of ["server", "recorder"]) {
     if (!isShared(env[k], shared)) fail(`${name}: ${k} must be ctx.shared.${shared}`);
   if (literal(env.ConnectionStrings__Default) !== CONNECTION_STRING) fail(`${name}: ConnectionStrings__Default missing or altered`);
   if (env.POSTGRES_PRIVATE_HOST?.type !== "reference") fail(`${name}: POSTGRES_PRIVATE_HOST must be the typed postgres.env.RAILWAY_PRIVATE_DOMAIN reference`);
-  if ((s.deploy?.restartPolicyMaxRetries ?? 0) < 3) fail(`${name}: restartPolicyMaxRetries must be >= 3`);
+  // Unset = Railway's default of 10 (docs.railway.com/deployments/restart-policy).
+  if ((s.deploy?.restartPolicyMaxRetries ?? 10) < 3) fail(`${name}: restartPolicyMaxRetries must be >= 3`);
   if (!/^marqspec-mcp-topstepx-/.test(literal(env.Otel__ServiceName) ?? "")) fail(`${name}: Otel__ServiceName must name the role`);
 }
 

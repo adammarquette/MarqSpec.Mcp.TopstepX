@@ -162,10 +162,10 @@ expect reject template postgres-tcp-proxy 'source: image(POSTGRES_IMAGE),' 'sour
 expect reject template server-tcp-proxy 'healthcheck: "/health",
     healthcheckTimeout: HEALTHCHECK_TIMEOUT,
     replicas: 1,
-    deploy: { ...RESTART },' 'healthcheck: "/health",
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'healthcheck: "/health",
     healthcheckTimeout: HEALTHCHECK_TIMEOUT, tcpProxies: ["8080"],
     replicas: 1,
-    deploy: { ...RESTART },'
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 
 # --- secrets ---
 expect reject template literal-postgres-password 'POSTGRES_PASSWORD: ctx.shared.POSTGRES_PASSWORD' 'POSTGRES_PASSWORD: "hunter2"'
@@ -282,24 +282,24 @@ expect reject template startup-wait-exponent 'Store__StartupWaitSeconds: "90"' '
 expect reject template startup-wait-padded 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: " 90"'
 # --- gh#772: exactly one server replica, no multi-region, in every environment ---
 NAMED='[single-server]' expect reject template server-two-replicas 'replicas: 1,
-    deploy: { ...RESTART },' 'replicas: 2,
-    deploy: { ...RESTART },'
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'replicas: 2,
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 NAMED='[single-server]' expect reject template server-replicas-omitted 'replicas: 1,
-    deploy: { ...RESTART },' 'deploy: { ...RESTART },'
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 NAMED='[single-server]' expect reject template server-two-replicas-in-production 'replicas: 1,
-    deploy: { ...RESTART },' 'replicas: ctx.environment === "production" ? 2 : 1,
-    deploy: { ...RESTART },'
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'replicas: ctx.environment === "production" ? 2 : 1,
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 NAMED='[single-server]' expect reject template server-multi-region 'replicas: 1,
-    deploy: { ...RESTART },' 'regions: { "us-west2": 1, "europe-west4": 1 },
-    deploy: { ...RESTART },'
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'regions: { "us-west2": 1, "europe-west4": 1 },
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 NAMED='[single-server]' expect reject template server-per-region-replicas 'replicas: 1,
-    deploy: { ...RESTART },' 'replicas: { "us-west2": 1, "us-east4": 1 },
-    deploy: { ...RESTART },'
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'replicas: { "us-west2": 1, "us-east4": 1 },
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 # replicas: 1 overrides deploy.numReplicas in SDK 3.16.0, so the raw deploy field is tested without it.
 NAMED='[single-server]' expect reject template server-deploy-num-replicas 'replicas: 1,
-    deploy: { ...RESTART },' 'deploy: { ...RESTART, numReplicas: 3 },'
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT, numReplicas: 3 },'
 expect reject template startup-wait-zero 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: "0"'
-expect reject template restart-retries-zero 'restartPolicyMaxRetries: 10 }' 'restartPolicyMaxRetries: 0 }'
+expect reject template restart-retries-zero 'const RESTART = {} as const;' 'const RESTART = { restartPolicyMaxRetries: 0 } as const;'
 expect reject template server-records-tape 'MarketData__RecordTape: "false"' 'MarketData__RecordTape: "true"'
 expect reject template recorder-replicas-3 'replicas: 1,
     deploy: {
@@ -318,7 +318,7 @@ NAMED='migration timeout' expect reject template healthcheck-timeout-omitted '  
 expect accept template healthcheck-generous 'const HEALTHCHECK_TIMEOUT = 3990;' 'const HEALTHCHECK_TIMEOUT = 7200;'
 expect reject template retention-raw-tape-days 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Retention__RawTapeDays: "30",'
 expect reject template untyped-postgres-host 'POSTGRES_PRIVATE_HOST: postgres.env.RAILWAY_PRIVATE_DOMAIN,' 'POSTGRES_PRIVATE_HOST: "postgres.railway.internal",'
-expect reject template type-error 'restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 }' 'restartPolicyType: "SOMETIMES", restartPolicyMaxRetries: 10 }'
+expect reject template type-error 'const RESTART = {} as const;' 'const RESTART = { restartPolicyType: "SOMETIMES" } as const;'
 
 # --- staging seed service (gh#758 headless seed): staging only, private, one-shot, repo-exact ---
 PIN_OK=("$SENTINEL" ":0.5.0@$DIGEST\"")
@@ -330,7 +330,9 @@ NAMED='[seed]' expect reject template seed-other-image '          source: image(
           startCommand' '          source: image("postgres:17"),
           startCommand'
 NAMED='[seed]' expect reject template seed-start-command-changed "printenv SEED_SCRIPT | bash'" "printenv SEED_SCRIPT | bash; sleep infinity'"
-NAMED='[seed]' expect reject template seed-restarts-always 'restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 3 }' 'restartPolicyType: "ALWAYS", restartPolicyMaxRetries: 3 }'
+NAMED='[seed]' expect reject template seed-restarts-always 'deploy: { restartPolicyMaxRetries: 3 },' 'deploy: { restartPolicyType: "ALWAYS", restartPolicyMaxRetries: 3 },'
+NAMED='[seed]' expect reject template seed-restarts-never 'deploy: { restartPolicyMaxRetries: 3 },' 'deploy: { restartPolicyType: "NEVER", restartPolicyMaxRetries: 3 },'
+NAMED='[seed]' expect reject template seed-retries-default 'deploy: { restartPolicyMaxRetries: 3 },' 'deploy: {},'
 NAMED='[seed]' expect reject template seed-password-literal 'PGPASSWORD: ctx.shared.POSTGRES_PASSWORD,' 'PGPASSWORD: "hunter2",'
 NAMED='[seed]' expect reject template seed-extra-env 'PGPORT: "5432",' 'PGPORT: "5432", PGSSLMODE: "disable",'
 NAMED='[seed]' expect reject template seed-public-tcp-proxy '          startCommand:' '          tcpProxies: ["5432"],
@@ -351,6 +353,54 @@ NAMED='[seed-run-id]' expect reject template seed-run-id-malformed-in-template-m
   'const SEED_RUN_ID = "REPLACE_WITH_SEED_RUN_ID"' 'const SEED_RUN_ID = "0-1"'
 NAMED='[seed]' expect reject template seed-run-id-removed '            SEED_RUN_ID,
 ' ''
+
+# --- gh#844: no Railway-default restart settings (each re-applies on every plan and redeploys the service) ---
+NAMED='[no-default-drift]' expect reject template restart-default-type-stated 'const RESTART = {} as const;' \
+  'const RESTART = { restartPolicyType: "ON_FAILURE" } as const;'
+NAMED='[no-default-drift]' expect reject template restart-default-retries-stated 'const RESTART = {} as const;' \
+  'const RESTART = { restartPolicyMaxRetries: 10 } as const;'
+NAMED='[no-default-drift]' expect reject template restart-the-old-shape 'const RESTART = {} as const;' \
+  'const RESTART = { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 } as const;'
+NAMED='[no-default-drift]' expect reject template postgres-default-retries 'deploy: { ...RESTART },
+    env: {
+      // PGDATA' 'deploy: { ...RESTART, restartPolicyMaxRetries: 10 },
+    env: {
+      // PGDATA'
+NAMED='[no-default-drift]' expect reject template seed-default-type-stated 'deploy: { restartPolicyMaxRetries: 3 },' \
+  'deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 3 },'
+NAMED='[no-default-drift]' expect reject template restart-always 'const RESTART = {} as const;' \
+  'const RESTART = { restartPolicyType: "ALWAYS" } as const;'
+expect accept template restart-non-default-retries 'const RESTART = {} as const;' \
+  'const RESTART = { restartPolicyMaxRetries: 8 } as const;'
+
+# --- gh#844: server and recorder wait for postgres:5432 in a pre-deploy command before they migrate ---
+NAMED='[pg-wait]' expect reject template pg-wait-removed '    preDeploy: PG_WAIT,
+' ''
+NAMED='[pg-wait]' expect reject template pg-wait-server-only '    source: server_image(),
+    preDeploy: PG_WAIT,
+    healthcheck: "/health",
+    healthcheckTimeout: HEALTHCHECK_TIMEOUT,
+    replicas: 1,
+    deploy: {
+      ...RESTART,' '    source: server_image(),
+    healthcheck: "/health",
+    healthcheckTimeout: HEALTHCHECK_TIMEOUT,
+    replicas: 1,
+    deploy: {
+      ...RESTART,'
+NAMED='[pg-wait]' expect reject template pg-wait-true '  "bash -c '"'"'for i' '  "true"; const PG_WAIT_OLD = "bash -c '"'"'for i'
+NAMED='[pg-wait]' expect reject template pg-wait-other-port '/5432) 2>' '/6543) 2>'
+NAMED='[pg-wait]' expect reject template pg-wait-timeout-omitted '      preDeployTimeoutSeconds: PG_WAIT_TIMEOUT,
+' ''
+NAMED='[pg-wait]' expect reject template pg-wait-timeout-below-loop 'const PG_WAIT_TIMEOUT = 900;' 'const PG_WAIT_TIMEOUT = 300;'
+NAMED='[pg-wait]' expect reject template pg-wait-timeout-above-railway-max 'const PG_WAIT_TIMEOUT = 900;' \
+  'const PG_WAIT_TIMEOUT = 7200;'
+expect accept template pg-wait-timeout-max 'const PG_WAIT_TIMEOUT = 900;' 'const PG_WAIT_TIMEOUT = 3600;'
+NAMED='[pg-wait]' expect reject template pg-wait-on-postgres 'source: image(POSTGRES_IMAGE),
+    ...(pgdata' 'source: image(POSTGRES_IMAGE), preDeploy: PG_WAIT,
+    ...(pgdata'
+NAMED='[pg-wait]' expect reject template pg-wait-on-seed '          startCommand:' '          preDeploy: PG_WAIT,
+          startCommand:'
 
 # --- SDK pin (gh#832): the root package.json `railway config plan` loads must pin what CI compiles against ---
 expect_pin() {  # expect_pin <reject|accept> <name> <python edit of the root copy>

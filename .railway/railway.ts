@@ -57,10 +57,23 @@ const SEED_RUN_ID = "REPLACE_WITH_SEED_RUN_ID";
 
 
 
-// One retry budget for every service. 10, not 5: on a cold deploy Postgres initdb plus the app's 90 s
-// StartupWait can exhaust 5 quick ON_FAILURE retries before the database answers; 10 still surfaces a
-// genuine crash loop within minutes.
-const RESTART = { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 } as const;
+// One retry budget for every service: Railway's DEFAULT, On Failure with 10 restarts
+// (docs.railway.com/deployments/restart-policy), so it is NOT stated. 10, not 5: on a cold deploy Postgres initdb
+// plus the app's 90 s StartupWait can exhaust 5 quick retries; 10 still surfaces a crash loop within minutes.
+// NO DEFAULT DRIFT (gh#844): Railway stores a default as null, so stating ON_FAILURE or 10 made every plan
+// show "null -> ON_FAILURE / null -> 10" for postgres, server and recorder (runs 40944859199, 40947739913), and
+// every apply redeployed postgres -- an empty database in staging. evaluate-template.mjs [no-default-drift]
+// rejects stating either default; RESTART stays as the one place a non-default budget would go.
+const RESTART = {} as const;
+
+// STARTUP ORDER (gh#844). Railway has no depends-on between services, and server/recorder migrate only at
+// startup. So their pre-deploy command (it runs on the private network with the service's variables, and a
+// failure stops the deployment: docs.railway.com/deployments/pre-deploy-command) waits until Postgres accepts
+// TCP on 5432 (the image's init server listens on the socket only) before the new container starts. bash's
+// /dev/tcp, because the app image has no psql. <= 120 x 5 s, capped by PG_WAIT_TIMEOUT.
+const PG_WAIT =
+  "bash -c 'for i in $(seq 1 120); do (: </dev/tcp/$POSTGRES_PRIVATE_HOST/5432) 2>/dev/null && echo pg-wait: ok && exit 0; sleep 5; done; echo pg-wait: FAILED; exit 1'";
+const PG_WAIT_TIMEOUT = 900;
 
 export default defineRailway((ctx) => {
   const production = ctx.environment === "production";
@@ -155,10 +168,11 @@ export default defineRailway((ctx) => {
 
   const server = service("server", {
     source: server_image(),
+    preDeploy: PG_WAIT,
     healthcheck: "/health",
     healthcheckTimeout: HEALTHCHECK_TIMEOUT,
     replicas: 1,
-    deploy: { ...RESTART },
+    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },
     env: {
       ...common,
       ...serverAuth,
@@ -172,11 +186,13 @@ export default defineRailway((ctx) => {
   // Same image, HTTP transport (stdio never records), NO public domain, exactly one replica.
   const recorder = service("recorder", {
     source: server_image(),
+    preDeploy: PG_WAIT,
     healthcheck: "/health",
     healthcheckTimeout: HEALTHCHECK_TIMEOUT,
     replicas: 1,
     deploy: {
       ...RESTART,
+      preDeployTimeoutSeconds: PG_WAIT_TIMEOUT,
       // Shorten the window two recorders coexist on a redeploy: stop the old one as soon as the new one is
       // healthy, and give it time to release the tape lease cleanly. See deployment.md on the lease.
       overlapSeconds: 0,
@@ -200,15 +216,16 @@ export default defineRailway((ctx) => {
     },
   });
 
-  // STAGING ONLY (see SEED_SQL above). ON_FAILURE with a small budget: the SQL is idempotent, so a retry after a
-  // transient connection error is safe; a clean exit 0 leaves the deployment completed. The start command only
-  // pipes SEED_SCRIPT into bash, so Railway's start-command parsing never sees the script's quotes or $.
+  // STAGING ONLY (see SEED_SQL above). Railway's default ON_FAILURE (not stated: [no-default-drift]) with a
+  // small budget: the SQL is idempotent, so a retry after a transient connection error is safe; a clean exit 0
+  // leaves the deployment completed. The start command only pipes SEED_SCRIPT into bash, so Railway's
+  // start-command parsing never sees the script's quotes or $. No pre-deploy wait: run-seed.sh waits itself.
   const seed =
     ctx.environment === "staging"
       ? service("seed", {
           source: image(POSTGRES_IMAGE),
           startCommand: "bash -c 'printenv SEED_SCRIPT | bash'",
-          deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 3 },
+          deploy: { restartPolicyMaxRetries: 3 },
           env: {
             POSTGRES_PRIVATE_HOST: postgres.env.RAILWAY_PRIVATE_DOMAIN,
             PGPORT: "5432",

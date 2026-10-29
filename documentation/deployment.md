@@ -176,10 +176,12 @@ deploy stays manual and needs Adam's approval.
   (`PG_WAIT`: bash `/dev/tcp`, the app image has no `psql`) that waits for `postgres:5432`: 100 attempts,
   each capped at 3 s, 5 s apart (800 s at worst), within `preDeployTimeoutSeconds=900`. It runs on the private network with the service's variables, and
   a failure stops that deployment, so the old one keeps serving. `[pg-wait]` pins it; postgres and the
-  seed have none. **Gap until staging has a volume (#846):** the wait runs only when server and recorder
-  themselves redeploy. A postgres-only redeploy (a `POSTGRES_IMAGE` bump, a password change) still leaves them
-  running against an empty database that they never migrate, and the seed then fails after its 4000 s wait.
-  Remedy: after any staging postgres redeploy, redeploy server and recorder.
+  seed have none. **Remaining gap ([#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843)):**
+  the wait runs only when server and recorder themselves redeploy. A postgres-only redeploy (a
+  `POSTGRES_IMAGE` bump, a password change) onto an empty database leaves them running unmigrated, and the
+  seed then fails after its 4000 s wait. A staging volume (#846) makes that rarer but does not remove it;
+  #843's app-side retry is the real fix. Until it lands: after any staging postgres redeploy, redeploy
+  server and recorder.
 - **Healthcheck:** `/health` with `healthcheckTimeout=3990` on server and recorder. The EF migration runs
   **before** the app listens and may build a per-chunk index on `Trades` under `Migrations__CommandTimeoutSeconds`
   (default 3600, #761); Railway's default ~300 s healthcheck would kill the container mid-migration and retry

@@ -41,6 +41,13 @@ const POSTGRES_IMAGE =
 // The mount ROOT is root-owned and holds lost+found, so PGDATA is a subdirectory of it.
 const PG_MOUNT = "/home/postgres/pgdata";
 
+// VOLUME REGION (gh#850). Railway stores a volume's region when it is first attached (staging's postgres-data got
+// us-east4-eqdc4a on 2026-10-29). Unstated, every plan tries "us-east4-eqdc4a -> null", which the apply gate
+// refuses as destructive (run 40975564814). Stated here so the plan has no diff, and so production's volume is
+// created in the same region rather than wherever Railway picks. Changing it moves a volume: never casually.
+// KEEP IN SYNC: evaluate-template.mjs [pg-volume] pins this value (its PG_VOLUME_REGION).
+const PG_VOLUME_REGION = "us-east4-eqdc4a";
+
 // STAGING SEED (gh#758, headless). The synthetic fixture is loaded by a one-shot `seed` service that exists in
 // staging ONLY: the pinned Postgres image (it carries psql) on the private network, with no domain, TCP proxy or
 // volume. It runs scripts/railway/seed/run-seed.sh, which waits for the app's migrations, applies the SQL and
@@ -90,7 +97,7 @@ export default defineRailway((ctx) => {
   // environment is DISPOSABLE: Postgres runs on the container's ephemeral storage, so each redeploy starts
   // empty. [pg-volume] enforces all three: production one, staging one, everything else none.
   const persistent = production || ctx.environment === "staging";
-  const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240 }) : undefined;
+  const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240, region: PG_VOLUME_REGION }) : undefined;
 
   const postgres = service("postgres", {
     source: image(POSTGRES_IMAGE),

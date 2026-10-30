@@ -29,6 +29,9 @@ const PG_PIN = new RegExp(`^timescale/timescaledb-ha(?::pg17(?:\\.[0-9][0-9A-Za-
 const PG_MOUNT = "/home/postgres/pgdata";
 // The environments whose Postgres keeps its data on a volume (gh#846 added staging on 2026-10-29).
 const PG_VOLUME_ENVIRONMENTS = ["production", "staging"];
+// gh#850: the region Railway stored on staging's volume; unstated, every plan tries to null it (destructive).
+// KEEP IN SYNC: .railway/railway.ts PG_VOLUME_REGION.
+const PG_VOLUME_REGION = "us-east4-eqdc4a";
 const CONNECTION_STRING =
   "Host=${{POSTGRES_PRIVATE_HOST}};Port=5432;Database=topstepx_mcp;Username=topstepx;Password=${{shared.POSTGRES_PASSWORD}}";
 
@@ -285,6 +288,12 @@ if (pg) {
     fail(`[pg-volume] postgres: ${environment} is disposable and must have NO volume (ephemeral database, no backups); got ${JSON.stringify(mounts)}`);
   }
   const volumes = graph.resources.filter((r) => r.type === "volume");
+  // [pg-volume] gh#850: each volume states its region, so a region Railway fills in after the first attach can't
+  // show up as a destructive "-> null" diff on the next plan.
+  for (const v of volumes) {
+    const region = v.config?.region ?? v.region;
+    if (region !== PG_VOLUME_REGION) fail(`[pg-volume] volume ${v.name}: region must be stated as "${PG_VOLUME_REGION}" (Railway stores it on first attach; unstated it drifts to null, gh#850), got ${JSON.stringify(region ?? null)}`);
+  }
   if (!PG_VOLUME_ENVIRONMENTS.includes(environment) && volumes.length) fail(`[pg-volume] ${environment}: no volume resources outside ${PG_VOLUME_ENVIRONMENTS.join(" and ")}; got ${volumes.map((v) => v.name).join(", ")}`);
   const pgdata = literal(env.PGDATA) ?? "";
   if (!pgdata.startsWith(`${PG_MOUNT}/`) || pgdata.slice(PG_MOUNT.length + 1).includes("..") || pgdata.length <= PG_MOUNT.length + 1)

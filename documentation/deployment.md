@@ -96,6 +96,11 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
   stated Railway's default restart policy, which Railway stores as null, so every plan re-applied it and
   every apply redeployed (and, before the volume, emptied) staging's Postgres; `[no-default-drift]` now
   rejects that.
+- The volume states its region, `us-east4-eqdc4a` (gh#850). Railway stores a region on a volume when it is
+  first attached; left unstated, every plan then tried `us-east4-eqdc4a -> null`, which the apply gate
+  refuses as destructive (run 40975564814). `[pg-volume]` requires the stated region on every volume, and
+  production's volume is created in the same one. Never add `--confirm-destructive` to clear a diff like this:
+  changing a volume's region can move or wipe its data.
 
 **Tape export (gh#755, contract from PR #765): deferred.** `TapeExport__Enabled` is the literal `"false"` in every
 environment, and no service has an export volume or `RAILWAY_RUN_UID`. Production turns it on only when both are

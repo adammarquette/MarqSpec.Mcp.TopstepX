@@ -1142,12 +1142,13 @@ Trades and closed coverage are one pair per contract per day,
 it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
 An older generation is left on disk.
 The image user is uid 64198. Railway allows one volume per service and mounts it as root at `/data`.
-Export on Railway is deferred until gh#767 (the template, gh#774, keeps `[export-blocked]`). Do not
-set `RAILWAY_RUN_UID=0` or enable the export on Railway now. The start command in
-[deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755) is the shape gh#767 moves into
-the image: it refuses symlinks, `chown -h` only top-level entries that are not already uid 64198, and
-`exec /usr/sbin/runuser` drops to `mcp`. Without uid 0 that command exits and the container crash-loops. A
-volume the application cannot write is still a skipped pass, not a crash and not a silent success.
+Since gh#767 the image `ENTRYPOINT` is `scripts/prepare-tape-volume.sh`
+([deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755)). Started as 64198 (the default) it
+execs `dotnet` unchanged. Started as root it refuses symlinks, `chown -h` only top-level entries of `/data`
+that are not already uid 64198, then `setpriv` drops to 64198 and execs `dotnet` as PID 1. Export on Railway
+stays blocked by the template (gh#774, `[export-blocked]`) until `EXPORT_UNBLOCKED` is flipped; do not set
+`RAILWAY_RUN_UID=0` or enable the export on Railway before then. A volume the application cannot write is
+still a skipped pass, not a crash and not a silent success.
 A key placed after start stays root-owned mode 0644 until the next start, or until it is chowned
 and chmodded at placement time. The committed compose file forwards the environment variables and
 does not mount the volume.

@@ -778,7 +778,7 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
   two-minute deadline. A deadline during the wait records `Timeout` and the next file still runs. A
   permanent failure (credential, HTTP 400, 401, 403, 404) is not. HTTP 408, 429, 500, 502, and 503
   are transient. The local file and the local rows stay, and the last good file id stays. Export on
-  Railway waits for gh#767; the template blocks it until then.
+  Railway waits for the template to unblock it (gh#767 ships the image side).
 - **R-10.7** Each file writes one `TapeExportReceipts` row. `pending` is the in-flight upload.
   `drive_disabled` means Drive was off. `uploaded` and `failed` are the outcomes. A failure stores the
   exception type and the HTTP status, never the credential, and does not clear `DriveFileId`. This

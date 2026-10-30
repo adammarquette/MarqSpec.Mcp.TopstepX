@@ -30,13 +30,13 @@ WORKDIR /app
 # this it prints "Cannot load library libgssapi_krb5.so.2" as the FIRST line in the log. It is harmless -- the
 # connection succeeds -- which is precisely the problem: an alarming error above a successful startup sends
 # the next person debugging something that is not broken.
-# runuser is already on this image: util-linux is Essential in Debian and the aspnet:10.0
-# layer ships it. A Railway volume is mounted as root; the documented start command (deferred
-# until gh#767) uses that runuser to drop to uid 64198. The image entrypoint itself stays dotnet.
+# setpriv is already on this image: util-linux is Essential in Debian and the aspnet:10.0 layer ships it.
+# The entrypoint (gh#767) uses it to drop from root to uid 64198 with a plain execve, so the app stays PID 1.
+# runuser is not used there: it forks and stays as the parent. Nothing is installed for this.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
     && rm -rf /var/lib/apt/lists/* \
-    && test -x /usr/sbin/runuser
+    && test -x /usr/bin/setpriv
 
 # Non-root. This process holds brokerage credentials and reaches the public internet; there is no reason for
 # it to be able to write to its own image.
@@ -44,6 +44,9 @@ RUN useradd --uid 64198 --create-home --shell /usr/sbin/nologin mcp
 USER 64198
 
 COPY --from=build --chown=64198:64198 /app .
+
+# Root-owned and not writable by 64198, because a root start (RAILWAY_RUN_UID=0) runs it before dropping.
+COPY --chmod=0755 scripts/prepare-tape-volume.sh /usr/local/bin/prepare-tape-volume.sh
 
 # The ICU data behind TimeZoneInfo.FindSystemTimeZoneById("America/Chicago"). Every session rule in this
 # codebase is Central wall-clock, so invariant globalization would break gap detection rather than merely
@@ -69,4 +72,7 @@ ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 # override, which is the HTTP-without-compose recipe, not this EXPOSE. A bare `docker run` is not the
 # deployment this number describes.
 EXPOSE 8443
-ENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.dll"]
+# gh#767. Started as 64198 (the default above) the script logs one line and execs dotnet unchanged. Started as
+# root (RAILWAY_RUN_UID=0, the production recorder only) it chowns the /data tape volume, then drops to
+# 64198 and execs dotnet. See scripts/prepare-tape-volume.sh and documentation/deployment.md.
+ENTRYPOINT ["/usr/local/bin/prepare-tape-volume.sh", "dotnet", "MarqSpec.Mcp.TopstepX.dll"]

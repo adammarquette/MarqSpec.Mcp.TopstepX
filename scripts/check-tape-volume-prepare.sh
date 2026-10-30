@@ -1,5 +1,5 @@
 #!/bin/sh
-# check-tape-volume-prepare.sh — the deferred start command refuses a symlink and fixes ownership.
+# check-tape-volume-prepare.sh — the image entrypoint refuses a symlink, fixes ownership and drops root.
 #
 # Runs as root. A non-root caller cannot prove the ownership lines, so it fails instead of skipping.
 set -eu
@@ -30,7 +30,7 @@ trap 'rm -rf "$work"' EXIT
 # The root itself is a symlink. The command must stop before it creates anything through it.
 mkdir -p "$work/real"
 ln -s "$work/real" "$work/linked-root"
-if PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" "$work/linked-root" >"$work/out" 2>"$work/err"; then
+if TAPE_VOLUME_ROOT="$work/linked-root" PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" >"$work/out" 2>"$work/err"; then
   echo "a symlink at the volume root was accepted" >&2
   exit 1
 fi
@@ -43,7 +43,7 @@ fi
 # A symlink where the key directory should be.
 mkdir -p "$work/vol/elsewhere"
 ln -s "$work/vol/elsewhere" "$work/vol/keys"
-if PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" "$work/vol" >"$work/out" 2>"$work/err"; then
+if TAPE_VOLUME_ROOT="$work/vol" PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" >"$work/out" 2>"$work/err"; then
   echo "a symlink at the keys directory was accepted" >&2
   exit 1
 fi
@@ -60,7 +60,7 @@ echo 'not-a-secret' >"$work/outside"
 ln -s "$work/outside" "$work/vol/escape"
 mkdir -p "$work/vol/keys"
 echo 'placeholder' >"$work/vol/keys/drive-sa.json"
-PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" "$work/vol"
+TAPE_VOLUME_ROOT="$work/vol" PREPARE_TAPE_VOLUME_ONLY=1 "$prepare"
 
 owner=$(stat -c %u "$work/vol")
 keys_owner=$(stat -c %u "$work/vol/keys")
@@ -74,18 +74,20 @@ if [ "$owner" != "64198" ] || [ "$keys_owner" != "64198" ] || [ "$keys_mode" != 
   exit 1
 fi
 
-# Without uid 0 the command exits before it prepares anything. The checkout is not traversable by
-# nobody (the runner work directory is mode 700), so the command is copied onto this temp dir first.
-# /usr/sbin/runuser does not depend on sudo's PATH.
+# Without uid 0 the entrypoint behaves as before gh#767: it logs one line, prepares nothing and runs its
+# arguments as the caller. The checkout is not traversable by nobody (the runner work directory is mode 700),
+# so the script is copied onto this temp dir first. /usr/sbin/runuser does not depend on sudo's PATH.
 cp "$prepare" "$work/prepare-tape-volume.sh"
 chmod 755 "$work" "$work/prepare-tape-volume.sh"
-if /usr/sbin/runuser -u nobody -- env PREPARE_TAPE_VOLUME_ONLY=1 "$work/prepare-tape-volume.sh" "$work/unprepared" >"$work/out" 2>"$work/err"; then
-  echo "a non-root caller was accepted" >&2
+if ! /usr/sbin/runuser -u nobody -- env TAPE_VOLUME_ROOT="$work/unprepared" "$work/prepare-tape-volume.sh" \
+  /bin/sh -c 'id -u' >"$work/out" 2>"$work/err"; then
+  echo "a non-root caller did not run its command:" >&2
+  cat "$work/err" >&2
   exit 1
 fi
-if ! grep -q 'requires uid 0' "$work/err"; then
-  echo "a non-root caller did not report uid 0:" >&2
-  cat "$work/err" >&2
+if ! grep -q 'skipped: running as uid' "$work/err" || [ "$(cat "$work/out")" = "0" ]; then
+  echo "a non-root caller did not skip, or ran as root:" >&2
+  cat "$work/out" "$work/err" >&2
   exit 1
 fi
 if [ -e "$work/unprepared" ]; then
@@ -93,4 +95,26 @@ if [ -e "$work/unprepared" ]; then
   exit 1
 fi
 
-echo "ok  tape volume prepare refuses a symlink and chowns with -h"
+# As root with no volume mounted: one log line, nothing created, and the command still runs as 64198.
+TAPE_VOLUME_ROOT="$work/absent" "$prepare" /bin/sh -c 'id -u; id -g' >"$work/out" 2>"$work/err"
+if [ -e "$work/absent" ] || ! grep -q 'skipped: no volume' "$work/err" \
+  || [ "$(tr '\n' ' ' <"$work/out")" != "64198 64198 " ]; then
+  echo "root without a volume did not skip and drop to 64198:" >&2
+  cat "$work/out" "$work/err" >&2
+  exit 1
+fi
+
+# As root with a root-owned volume: chowned, then the command runs as 64198 and can write the export path.
+mkdir -p "$work/drop"
+chmod 755 "$work/drop"
+TAPE_VOLUME_ROOT="$work/drop" "$prepare" /bin/sh -c \
+  "id -u; touch '$work/drop/tape-exports/probe'; stat -c %u '$work/drop/tape-exports/probe'" \
+  >"$work/out" 2>"$work/err"
+if [ "$(sed -n 1p "$work/out")" != "64198" ] || [ "$(sed -n 2p "$work/out")" != "64198" ] \
+  || [ "$(stat -c %u "$work/drop/tape-exports")" != "64198" ]; then
+  echo "root with a volume did not chown and drop to 64198:" >&2
+  cat "$work/out" "$work/err" >&2
+  exit 1
+fi
+
+echo "ok  tape volume entrypoint refuses a symlink, chowns with -h and drops to 64198"

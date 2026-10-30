@@ -196,8 +196,13 @@ ENTRYPOINT
 # table in this script's header that does fire. Left as one line for that reason.
 WORKDIR="$(docker inspect --format '{{.Config.WorkingDir}}' "$IMAGE")"
 
+# gh#767: the image starts through its tape-volume wrapper, which execs the rest of the ENTRYPOINT. Strip it
+# here, and only this exact path, so the assembly is still resolved from the dotnet arguments.
+if [ "${#ENTRY[@]}" -ge 1 ] && [ "${ENTRY[0]}" = "/usr/local/bin/prepare-tape-volume.sh" ]; then
+  ENTRY=("${ENTRY[@]:1}")
+fi
 if [ "${#ENTRY[@]}" -lt 2 ] || [ "${ENTRY[0]}" != "dotnet" ] || [[ "${ENTRY[1]}" != *.dll ]]; then
-  die "  UNEXPECTED  ENTRYPOINT is [${ENTRY[*]}], not [dotnet <assembly>.dll]"
+  die "  UNEXPECTED  ENTRYPOINT is [${ENTRY[*]}], not [[/usr/local/bin/prepare-tape-volume.sh] dotnet <assembly>.dll]"
   die "This gate resolves the assembly path from the entrypoint's own arguments and can no longer do so."
   explain
   exit 1

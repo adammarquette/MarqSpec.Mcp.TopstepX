@@ -62,9 +62,10 @@ const EXPORT_KEYS = ["TapeExport__Enabled", "TapeExport__Schedule", "TapeExport_
 const DATA_MOUNT = "/data";
 const EXPORT_PATH = "/data/tape-exports";
 const KEY_PATH = "/data/keys/drive-sa.json";
-// THE flip for gh#767. Until the image chowns the export mount and drops to uid 64198 at startup, any export-on
-// shape (TapeExport__Enabled=true, an export volume, RAILWAY_RUN_UID on the recorder) fails, in every environment.
-// #767's PR sets this to true, which re-enables the whole-shape rules below for production.
+// THE export flip. gh#767 ships the image side (the entrypoint chowns /data and drops to uid 64198), but the
+// deployed image must contain it and #765 first, so this stays false until the config change that enables
+// export. Until then any export-on shape (TapeExport__Enabled=true, an export volume, RAILWAY_RUN_UID on the
+// recorder) fails, in every environment. Setting it true re-enables the whole-shape rules below for production.
 const EXPORT_UNBLOCKED = false;
 const ints = (lo, hi) => (v) => /^\d+$/.test(v) && Number(v) >= lo && Number(v) <= hi;
 const TRADING = Object.fromEntries([
@@ -404,7 +405,7 @@ for (const s of exporters) if (s.name !== "recorder") fail(`${s.name}: only the 
 for (const s of services) for (const [k, m] of Object.entries(s.volumeAttachments ?? {}))
   if (!(s.name === "postgres" && m.mountPath === PG_MOUNT) && !(s.name === "recorder" && m.mountPath === DATA_MOUNT)) fail(`${s.name}: unexpected volume ${k} at ${m.mountPath}`);
 if (recorder && !EXPORT_UNBLOCKED && (exportOn(recorder) || exportMounted(recorder) || recorder.variables?.RAILWAY_RUN_UID))
-  fail(`[export-blocked] recorder: the tape export is blocked on gh#767 (the image must chown ${DATA_MOUNT} and drop to uid 64198 first); no TapeExport__Enabled=true, export volume or RAILWAY_RUN_UID until EXPORT_UNBLOCKED is flipped`);
+  fail(`[export-blocked] recorder: the tape export is blocked until the deployed image has the gh#767 entrypoint (it chowns ${DATA_MOUNT} and drops to uid 64198); no TapeExport__Enabled=true, export volume or RAILWAY_RUN_UID until EXPORT_UNBLOCKED is flipped`);
 if (recorder) {
   const env = recorder.variables ?? {};
   if (environment === "production" && (exportOn(recorder) || exportMounted(recorder))) {

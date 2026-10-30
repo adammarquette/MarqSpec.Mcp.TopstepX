@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.7.0] - 2026-10-30
 
-`v0.6.0` was published as a pre-release tagged on `develop` and never got a section here, so this
+`v0.6.0` was published as a pre-release tagged on `develop` and never got a section in `CHANGELOG.md`, so this
 section covers everything since `[0.5.0]`. gh#843 is not in this release; it is planned for 0.7.1.
 
 ### Added
@@ -27,91 +27,27 @@ section covers everything since `[0.5.0]`. gh#843 is not in this release; it is 
   Export on Railway stays blocked by the template until `EXPORT_UNBLOCKED` is flipped in a config change.
 
 - **Five gated order tools, with a durable idempotency claim** (gh#750). `place_order`, `modify_order`,
-  `cancel_order`, `close_position` and `partial_close_position` call `TradingRiskGate` only. They are
-  registered only when `Trading__Enabled` is true, and each method still refuses when it is false.
-  Before a send the gate writes an `Unknown` audit row keyed by account, tool and idempotency key. A unique
-  index makes that claim survive a restart, a redeploy and a second replica. The migration that creates it
-  temporarily disables the append-only update trigger, reclassifies duplicate Unknown rows, and re-enables
-  the trigger. A throw during the send, including a timeout, or an audit write that fails after an ack,
-  returns structured `OutcomeUnknown` and does not rethrow. Only a fault the gate classified as before the
-  send is a retryable error. Anything thrown after the send has started, including a daily-cap unlock or a
-  telemetry listener, is `OutcomeUnknown`. Those two disposals catch, log a constant line and count the
-  failure. The disposal itself does not throw. After the send, the gate raises a failed unlock into the
-  post-send handler, which returns structured `OutcomeUnknown`. The gate is scoped. Send-started state is per call, and a second
-  operation on the same instance throws before any vendor call. Only `PreSendFaultException` is retryable.
-  The tool catch-all is defensive: any other exception is `OutcomeUnknown` with no refusal and result code
-  `-1`. A replay ignores a `Refused`
-  row written before the claim, and a later refusal with a different request hash. A refusal recorded after
-  the claim with the same hash is replayed as that refusal. The master switch is read through
-  `IOptionsMonitor`, so turning trading off, the kill switch, the denylist, the allowlist and the contract
-  caps take effect without a restart. A reload into an invalid configuration refuses and does not keep the
-  last good values. The five tools stay listed or unlisted as they were at process start until a restart.
-  A key longer than 256 characters
-  is `idempotency_key_too_long` and writes no row. Modify charges the full new size. When trading is enabled,
-  an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel and close; that
-  block is pending Adam's decision.
-
-### Removed
-
-- **AWS CDK deployment infrastructure.** The `infra/` CDK application, OIDC deploy workflows, and related CI
-  gates are gone. **`release.yml` ends at the GHCR push** (no post-publish deploy jobs). Run published images
-  with the root `Dockerfile` and `docker-compose.yml` ([`documentation/deployment.md`](documentation/deployment.md)).
-  ADR-0023 is superseded.
-
-### Changed
-
-- **A swallowed daily-cap release follows the same post-send rule** (gh#780). When the coordinator reports
-  `LastReleaseFailed` and no cleanup exception was stored, a send that has already started is
-  `OutcomeUnknown` and is not safe to retry. The result keeps the acked broker order id and the parsed
-  stage in the outcome-unknown cases, and leaves the id null when nothing was sent. The id is not kept
-  when the send throws, or when the audit write fails after the ack.
-  A release that fails before the send leaves the refusal that was already decided.
-
-- **Railway staging deploy and production promotion** (gh#758). These are manual workflows and have not run
-  yet. `railway-staging` deploys a GHCR tag+digest to disposable staging (template checks, saved plan,
-  `/health` identity, synthetic seed), then records the digest that passed. `railway-promote` deploys only
-  such a digest to production, behind the `production` environment. `railway-staging-preflight` reports what
-  staging is missing (names only), and `railway-seed-check` keeps the seed in step with the migrations.
-- **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
-  `postgres` (Timescale pg17, pinned by digest), a public OAuth `server`, and a private single-replica
-  `recorder`. Both server roles run one pinned image, and `/health` reports its tag and digest. Production
-  keeps Postgres on a volume; staging and other environments are disposable, with no volume and no export.
-  Secrets are Railway shared variables. A new `railway-template` CI job checks the template offline for every
-  environment name; it is not a required check yet. `no-order-path` now refuses any `Trading__Enabled` in
-  `.railway/` that is not the literal `"false"`. Nothing is deployed by this change. ADR-0025 (Railway as the
-  target) is a draft; retention keys are proposed names only, pending their own ADR. See
-  [`documentation/deployment.md`](documentation/deployment.md#railway-gh758).
-  The gh#755 tape export stays off everywhere until the image contains #765 and drops root itself (#767); the
-  check already enforces the #765 contract for when it is enabled. Both checks read env keys the way .NET does
-  (case-insensitive, `:` equals `__`) and refuse colon keys, colliding keys and miscased known keys.
-
-- **Tape export uploads hold a session lock, not a transaction lock** (gh#755, gh#767, gh#774).
-  `pending` commits before the Drive call and the file id commits after, on one direct connection for
-  the pass. That connection is not pooled, sets `lock_timeout` and TCP socket keepalive (not Npgsql's
-  keepalive query), and a drop fails that file without aborting the rest. `IdentityBusy` and `LockLost`
-  record a span and a counter. A lock lost after the bytes land is not counted as uploaded. A deadline
-  during backoff records `Timeout` with reason `upload_timeout` and continues.
-  Transient retries honour `Retry-After` up to 30 seconds. The Google client's own 503 backoff is off.
-  Railway allows one volume per service, mounted at `/data`. Export there is deferred until gh#767;
-  the template (gh#774) blocks it. The start command that gh#767 will move into the image refuses
-  symlinks, uses `chown -h`, and does not `chown -R` the volume. An unwritable path inside the application
-  is still logged and skipped. Do not set `RAILWAY_RUN_UID=0` or enable the export on Railway until then.
-- **`no-order-path` now gates the order path instead of forbidding it** (gh#718, ADR-0024). The required
-  check of the same name changes meaning: from "no order path exists" (ADR-0002) to a tripwire for "orders
-  only through `TradingRiskGate` -> `IExecutionGateway`, `Trading__Enabled` off by default, Practice accounts
-  only". It discovers product projects (any csproj without a test SDK / `IsTestProject`), fails on any search it could not run, confines order names and the
-  gateway to the seam (Program.cs to its `AddScoped` registrations), checks the master-switch default across
-  options, code (including `nameof(Enabled)` and `["Enabled"]` key idioms), appsettings, compose, Dockerfile and `.env.example`, requires the gate at
-  `Configuration/TradingRiskGate.cs` with the disabled/halted check first in every member, and requires
-  `Gate=ADR-0024` tests that actually execute. Railway variables are outside what CI can see.
-  New: `scripts/check-no-order-path-selftest.sh`, `scripts/check-gate-tests-ran.sh`, CODEOWNERS entries for the
-  allowlisted files.
-
-- **Default `MarketData__Instruments` includes the common micros.** The shipped list is
-  `ES,NQ,MES,MNQ,MGC,MCL` — the same string in `MarketDataOptions`, `.env.example` and compose —
-  so MES / MNQ / MGC / MCL no longer return "Unknown instrument" out of the box (gh#694).
-
-### Added
+  `cancel_order`, `close_position` and `partial_close_position` call `TradingRiskGate` only. They are registered
+  only when `Trading__Enabled` is true, and each method still refuses when it is false. Before a send the gate
+  writes an `Unknown` audit row keyed by account, tool and idempotency key. A unique index makes that claim
+  survive a restart, a redeploy and a second replica. The migration that creates it temporarily disables the
+  append-only update trigger, reclassifies duplicate Unknown rows, and re-enables the trigger. A throw during
+  the send, including a timeout, or an audit write that fails after an ack, returns structured `OutcomeUnknown`
+  and does not rethrow. Only a fault the gate classified as before the send is a retryable error. Anything
+  thrown after the send has started, including a daily-cap unlock or a telemetry listener, is `OutcomeUnknown`.
+  Those two disposals catch, log a constant line and count the failure. The disposal itself does not throw.
+  After the send, the gate raises a failed unlock into the post-send handler, which returns structured
+  `OutcomeUnknown`. The gate is scoped. Send-started state is per call, and a second operation on the same
+  instance throws before any vendor call. Only `PreSendFaultException` is retryable. The tool catch-all is
+  defensive: any other exception is `OutcomeUnknown` with no refusal and result code `-1`. A replay ignores a
+  `Refused` row written before the claim, and a later refusal with a different request hash. A refusal recorded
+  after the claim with the same hash is replayed as that refusal. The master switch is read through
+  `IOptionsMonitor`, so turning trading off, the kill switch, the denylist, the allowlist and the contract caps
+  take effect without a restart. A reload into an invalid configuration refuses and does not keep the last good
+  values. The five tools stay listed or unlisted as they were at process start until a restart. A key longer
+  than 256 characters is `idempotency_key_too_long` and writes no row. Modify charges the full new size. When
+  trading is enabled, an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel
+  and close; that block is pending Adam's decision.
 
 - **`get_recorder_health` and `GET /health/recorder` (gh#756).** Read-only report of `feedConnected`, `feed`,
   `database`, `lastTickUtc`, `gaps`, `contractId`, `session`, `cachedAtUtc` and `ageMs` for the configured
@@ -178,8 +114,6 @@ section covers everything since `[0.5.0]`. gh#843 is not in this release; it is 
   `TapeExport__Schedule`, `TapeExport__Path` and `TapeExport__Format`, plus the Drive keys above.
   `Retention__*` is not read; dropping raw tape is out of scope and needs its own ADR.
 
-- **`live`, `reason`, `partial` and `dataEndsAt` on `get_footprint` and `get_volume_profile` (gh#728).**
-
 - **`live` and `reason` on `get_footprint` and `get_volume_profile` (gh#728).**
   `live` true means this process is listening, not that the cells are current. `reason` is a closed
   code. A window that is not the ask — a gap at the start, a cut at the end, a hole, or a roll —
@@ -218,6 +152,70 @@ section covers everything since `[0.5.0]`. gh#843 is not in this release; it is 
   smoothed — so a freshly rolled contract carries DI rows for buckets `adx` has none for. A flat series
   reports both DI as absent rather than zero, and a DX with no denominator restarts ADX's warm-up rather than
   resuming a value from before the break (gh#670).
+
+### Removed
+
+- **AWS CDK deployment infrastructure.** The `infra/` CDK application, OIDC deploy workflows, and related CI
+  gates are gone. **`release.yml` ends at the GHCR push** (no post-publish deploy jobs). Run published images
+  with the root `Dockerfile` and `docker-compose.yml` ([`documentation/deployment.md`](documentation/deployment.md)).
+  ADR-0023 is superseded.
+
+### Changed
+
+- **A swallowed daily-cap release follows the same post-send rule** (gh#780). When the coordinator reports
+  `LastReleaseFailed` and no cleanup exception was stored, a send that has already started is
+  `OutcomeUnknown` and is not safe to retry. The result keeps the acked broker order id and the parsed
+  stage in the outcome-unknown cases, and leaves the id null when nothing was sent. The id is not kept
+  when the send throws, or when the audit write fails after the ack.
+  A release that fails before the send leaves the refusal that was already decided.
+
+- **Railway staging deploy and production promotion** (gh#758). These are manual workflows. `railway-staging`
+  succeeded on 2026-10-29 (7:40 and 8:40 PM CT); `railway-promote` has not run against production yet.
+  `railway-staging` deploys a GHCR tag+digest to staging (template checks, saved plan,
+  `/health` identity, synthetic seed), then records the digest that passed. `railway-promote` deploys only
+  such a digest to production, behind the `production` environment. `railway-staging-preflight` reports what
+  staging is missing (names only), and `railway-seed-check` keeps the seed in step with the migrations.
+- **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
+  `postgres` (Timescale pg17, pinned by digest), a public `server` behind the static bearer token
+  (gh#855), and a private single-replica `recorder`. Both server roles run one pinned image, and `/health` reports its tag and digest. Production
+  and staging keep Postgres on the `postgres-data` volume (gh#846); other environments are disposable, with
+  no volume and no export.
+  Secrets are Railway shared variables. A new `railway-template` CI job checks the template offline for every
+  environment name; it is not a required check yet. `no-order-path` now refuses any `Trading__Enabled` in
+  `.railway/` that is not the literal `"false"`. Nothing is deployed by this change. ADR-0025 (Railway as the
+  target) is a draft; retention keys are proposed names only, pending their own ADR. See
+  [`documentation/deployment.md`](documentation/deployment.md#railway-gh758).
+  The gh#755 tape export stays off everywhere: the image now drops root itself (gh#767, this release), but the
+  template keeps export blocked until `EXPORT_UNBLOCKED` is flipped in a follow-up config PR; the check
+  already enforces the #765 contract for when it is enabled. Both checks read env keys the way .NET does
+  (case-insensitive, `:` equals `__`) and refuse colon keys, colliding keys and miscased known keys.
+
+- **Tape export uploads hold a session lock, not a transaction lock** (gh#755, gh#767, gh#774).
+  `pending` commits before the Drive call and the file id commits after, on one direct connection for
+  the pass. That connection is not pooled, sets `lock_timeout` and TCP socket keepalive (not Npgsql's
+  keepalive query), and a drop fails that file without aborting the rest. `IdentityBusy` and `LockLost`
+  record a span and a counter. A lock lost after the bytes land is not counted as uploaded. A deadline
+  during backoff records `Timeout` with reason `upload_timeout` and continues.
+  Transient retries honour `Retry-After` up to 30 seconds. The Google client's own 503 backoff is off.
+  Railway allows one volume per service, mounted at `/data`. The image entrypoint that
+  prepares it now exists (gh#767, via #860): it refuses symlinks, uses `chown -h`, and does not `chown -R`
+  the volume. An unwritable path inside the application is still logged and skipped. The recorder's
+  tape-export config is still off: the template (gh#774) blocks export until `EXPORT_UNBLOCKED` is flipped
+  in a follow-up config PR.
+- **`no-order-path` now gates the order path instead of forbidding it** (gh#718, ADR-0024). The required
+  check of the same name changes meaning: from "no order path exists" (ADR-0002) to a tripwire for "orders
+  only through `TradingRiskGate` -> `IExecutionGateway`, `Trading__Enabled` off by default, Practice accounts
+  only". It discovers product projects (any csproj without a test SDK / `IsTestProject`), fails on any search it could not run, confines order names and the
+  gateway to the seam (Program.cs to its `AddScoped` registrations), checks the master-switch default across
+  options, code (including `nameof(Enabled)` and `["Enabled"]` key idioms), appsettings, compose, Dockerfile and `.env.example`, requires the gate at
+  `Configuration/TradingRiskGate.cs` with the disabled/halted check first in every member, and requires
+  `Gate=ADR-0024` tests that actually execute. Railway variables are outside what CI can see.
+  New: `scripts/check-no-order-path-selftest.sh`, `scripts/check-gate-tests-ran.sh`, CODEOWNERS entries for the
+  allowlisted files.
+
+- **Default `MarketData__Instruments` includes the common micros.** The shipped list is
+  `ES,NQ,MES,MNQ,MGC,MCL` — the same string in `MarketDataOptions`, `.env.example` and compose —
+  so MES / MNQ / MGC / MCL no longer return "Unknown instrument" out of the box (gh#694).
 
 ### Fixed
 

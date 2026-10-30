@@ -330,7 +330,8 @@ NAMED='[single-server]' expect reject template server-per-region-replicas 'repli
 NAMED='[single-server]' expect reject template server-deploy-num-replicas 'replicas: 1,
     deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT, numReplicas: 3 },'
 expect reject template startup-wait-zero 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: "0"'
-expect reject template restart-retries-zero 'const APP_RESTART_RETRIES = 100;' 'const APP_RESTART_RETRIES = 0;'
+# gh#858: 0 retries is rejected by [app-restart]'s === 100 pin (the old >= 3 floor was dead and is gone).
+NAMED='[app-restart]' expect reject template app-restart-retries-zero 'const APP_RESTART_RETRIES = 100;' 'const APP_RESTART_RETRIES = 0;'
 expect reject template server-records-tape 'MarketData__RecordTape: "false"' 'MarketData__RecordTape: "true"'
 expect reject template recorder-replicas-3 'replicas: 1,
     deploy: {

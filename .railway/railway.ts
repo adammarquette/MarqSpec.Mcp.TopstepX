@@ -41,10 +41,11 @@ const POSTGRES_IMAGE =
 // The mount ROOT is root-owned and holds lost+found, so PGDATA is a subdirectory of it.
 const PG_MOUNT = "/home/postgres/pgdata";
 
-// VOLUME REGION (gh#850). Railway stores a volume's region when it is first attached (staging's postgres-data got
-// us-east4-eqdc4a on 2026-10-29). Unstated, every plan tries "us-east4-eqdc4a -> null", which the apply gate
-// refuses as destructive (run 40975564814). Stated here so the plan has no diff, and so production's volume is
-// created in the same region rather than wherever Railway picks. Changing it moves a volume: never casually.
+// VOLUME REGION (gh#850). Railway stores a volume's region when it is first attached (staging's postgres-data
+// got us-east4-eqdc4a on 2026-10-29). Unstated, every plan tries "us-east4-eqdc4a -> null", which the apply
+// gate refuses as destructive (run 40975564814). Stated here so the plan has no diff, and so production's
+// volume is created in the same region rather than wherever Railway picks. Changing it moves a volume: never
+// casually.
 // KEEP IN SYNC: evaluate-template.mjs [pg-volume] pins this value (its PG_VOLUME_REGION).
 const PG_VOLUME_REGION = "us-east4-eqdc4a";
 
@@ -75,12 +76,12 @@ const SEED_RUN_ID = "REPLACE_WITH_SEED_RUN_ID";
 // a non-default budget for every service would go. server and recorder add APP_RESTART_RETRIES on top.
 const RESTART = {} as const;
 
-// APP RESTART BUDGET (gh#848, option b). Under Store__Required=true server and recorder exit while Postgres is
-// unreachable, so outage recovery is Railway's restart policy. The default 10 restarts give up after roughly
-// 15 minutes (~90 s StartupWait per attempt; Railway documents no backoff, so times are approximate). 100 rides
-// out outages of a couple of hours and is still finite, so a real startup bug ends in a visible crashed state.
-// Only the count is stated: the type stays unset because ON_FAILURE is Railway's default and stating it would
-// drift ([no-default-drift]); ALWAYS would loop forever on a real defect.
+// APP RESTART BUDGET (gh#848, option b). Under Store__Required=true server and recorder exit while Postgres
+// is unreachable, so outage recovery is Railway's restart policy. The default 10 restarts give up after
+// roughly 15 minutes (~90 s StartupWait per attempt; Railway documents no backoff, so times are approximate).
+// 100 rides out outages of a couple of hours and is still finite, so a real startup bug ends in a visible
+// crashed state. Only the count is stated: the type stays unset because ON_FAILURE is Railway's default and
+// stating it would drift ([no-default-drift]); ALWAYS would loop forever on a real defect.
 // KEEP IN SYNC: evaluate-template.mjs [app-restart] pins this value (its APP_RESTART_RETRIES).
 const APP_RESTART_RETRIES = 100;
 

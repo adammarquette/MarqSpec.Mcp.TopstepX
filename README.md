@@ -244,7 +244,8 @@ degrades to a refusal at the point of use ([ADR-0007](documentation/adr/0007-dua
 the process stays up. Set it true only where a failed process is restarted for you. Railway sets it
 on the server and the recorder in production and staging, so a store that never answers, or a
 connection that drops while migrations are applied (a socket reset, or Postgres `57P01` or
-`57P03`), logs an error and exits non-zero instead of
+`57P03`, including when EF wraps that SQLSTATE in `InvalidOperationException`), logs an error and
+exits non-zero instead of
 serving refusals for the life of the container. `reselect-bars`, `export-tape` and `import-tape`
 log that error and return their store exit codes. `/health` does not consult the store either way.
 The startup holder is still set once. Two processes migrating one database share one session

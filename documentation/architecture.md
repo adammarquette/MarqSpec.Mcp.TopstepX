@@ -965,7 +965,8 @@ the database row are load-bearing once this runs somewhere without an operator w
   paragraph above: unreachable degrades, `/health` does not consult the store, and
   `StoreAvailabilityHolder` is set once. True — Railway, on the server and the recorder, in production
   and in staging — logs an error and exits non-zero when the store never answers or the connection
-  drops while migrations are applied — a socket reset, or Postgres `57P01` or `57P03` — so the
+  drops while migrations are applied — a socket reset, or Postgres `57P01` or `57P03`, including
+  the `InvalidOperationException` EF wraps around that SQLSTATE — so the
   orchestrator can restart the process. `reselect-bars`,
   `export-tape` and `import-tape` catch that failure, log their cannot-run line, and return their
   store exit codes. A migration that fails against a database that did answer still fails the

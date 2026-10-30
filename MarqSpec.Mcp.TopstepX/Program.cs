@@ -1085,8 +1085,9 @@ public static class Program
     /// <b>Broken</b> — the database answered and the migration itself failed. That is a defect in this
     /// repository, and it still fails the process. Degrading there would leave the server answering reads
     /// against a schema nobody has verified, which is worse than not starting. A connection that drops
-    /// mid-migration is the unreachable case again: it degrades when the store is not required, and exits
-    /// when it is.
+    /// mid-migration is the unreachable case again. A drop is a socket reset, or Postgres
+    /// <c>57P01</c> (admin shutdown) or <c>57P03</c> (cannot connect now). It degrades when the store
+    /// is not required, and exits when it is.
     /// </para>
     /// <para>
     /// The apply runs under <see cref="MigrationApplyLock"/>, one session advisory lock for the whole
@@ -1154,11 +1155,12 @@ public static class Program
                 app.Lifetime.ApplicationStopping).ConfigureAwait(false);
             return StoreAvailability.Available();
         }
-        catch (Npgsql.NpgsqlException ex) when (ex.InnerException is System.Net.Sockets.SocketException)
+        catch (Npgsql.NpgsqlException ex) when (IsDroppedStoreConnection(ex))
         {
             // The database was there a moment ago and went away mid-migration -- still an environment fact,
-            // not a schema defect. It degrades when the store is optional, and exits when it is required,
-            // so a cold start never stays degraded for the life of the process (gh#843).
+            // not a schema defect. A socket reset, 57P01 and 57P03 are that fact. It degrades when the
+            // store is optional, and exits when it is required, so a cold start never stays degraded for
+            // the life of the process (gh#843).
             StoreAvailability unavailable =
                 StoreAvailability.Unavailable("The connection dropped while applying migrations.");
             ThrowIfRequired(storeOptions, unavailable, logger);
@@ -1189,6 +1191,24 @@ public static class Program
             availability.Explanation);
         throw new StoreRequiredException(
             availability.Explanation ?? "The store is not available.");
+    }
+
+    /// <summary>
+    /// A socket reset, or Postgres shutting the session down (<c>57P01</c>) or refusing it
+    /// (<c>57P03</c>). Those are the store going away, not a schema defect (gh#843).
+    /// </summary>
+    /// <param name="exception">The failure from the apply.</param>
+    /// <returns>Whether startup should degrade or exit instead of crashing.</returns>
+    private static bool IsDroppedStoreConnection(Npgsql.NpgsqlException exception)
+    {
+        if (exception.InnerException is System.Net.Sockets.SocketException)
+        {
+            return true;
+        }
+
+        return exception is Npgsql.PostgresException postgres
+            && postgres.SqlState is Npgsql.PostgresErrorCodes.AdminShutdown
+                or Npgsql.PostgresErrorCodes.CannotConnectNow;
     }
 
     private static async Task<EmbeddingAvailability> ProbeEmbeddingsAsync(

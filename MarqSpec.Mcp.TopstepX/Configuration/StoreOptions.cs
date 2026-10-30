@@ -50,6 +50,7 @@ public sealed class StoreOptions
     /// tools that need a store refuse. True is for an orchestrator that restarts a failed container.
     /// Railway sets it on the server and the recorder in production and staging. A schema defect — the
     /// database answered and the migration itself failed — still fails the process either way.
+    /// A dropped connection includes a socket reset and Postgres <c>57P01</c> and <c>57P03</c>.
     /// </para>
     /// <para>
     /// It does not change <c>/health</c>, and it does not revisit

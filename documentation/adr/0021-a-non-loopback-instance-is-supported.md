@@ -319,9 +319,9 @@ secret on a public hostname, with the defects *Token* above names: no identity, 
 rotation by restart and re-paste. The operator accepted that until a provider exists. Each environment's
 token is its own value, set and rotated by Adam, never by an agent.
 
-**TEMPORARY.** This ends when an OAuth provider is chosen for Railway. ApiaryKeeper's self-hosted Keycloak is
-a candidate to evaluate then; Cognito is no longer assumed, since Railway has no AWS stack to carry it. At that
-point `serverAuth` goes back to OAuth, `[static-token-required]` goes back to requiring OAuth, and
+**TEMPORARY.** This ends when an OAuth provider is chosen for Railway. ApiaryKeeper's self-hosted Keycloak
+is a candidate to evaluate then; Cognito is no longer assumed, since Railway has no AWS stack to carry it. At
+that point `serverAuth` goes back to OAuth, `[static-token-required]` goes back to requiring OAuth, and
 `MCP_HTTP_BEARER_TOKEN` is removed from each environment as it moves.
 
 Assisted-by: grok-bot:sgt-squash

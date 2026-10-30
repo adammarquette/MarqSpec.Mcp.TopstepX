@@ -283,17 +283,20 @@ loopback HTTP — without standing up the composed stack to do it.
 
 ### Use it remotely
 
-Two hostnames, same tool surface, OAuth 2.1 — not the compose stack's shared bearer token:
+Two hostnames, same tool surface. **For now both use a static bearer token**, each environment with its
+own value, until an OAuth provider is chosen
+([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)'s 2026-10-29 update, #855):
 
 | Environment | Origin | MCP resource |
 |---|---|---|
 | Staging | `https://topstepx-mcp.staging.marqspec.com` | `https://topstepx-mcp.staging.marqspec.com/mcp` |
 | Production | `https://topstepx-mcp.marqspec.com` | `https://topstepx-mcp.marqspec.com/mcp` |
 
-A remote client is a **pre-registered** confidential app in that environment's Cognito user pool (the
-`claude-connector` client on authorization-code + PKCE). There is no Dynamic Client Registration and no
-shared secret in this file. Point the connector at the MCP resource; an unauthenticated call returns
-`401` with a `resource_metadata` challenge whose document names the issuer. `/health` answers anyone.
+Point the client at the MCP resource and send `Authorization: Bearer <your token>` on every request. The
+operator hands out each environment's token; it is never written in this repository. A call without it
+returns `401` with a bare `Bearer` challenge, and `/health` answers anyone. This is temporary: the app
+still supports [the OAuth mode](#the-oauth-mode-a-resource-server-for-the-remote-instance) below, and that
+mode comes back once a provider exists.
 
 Published releases only push a container image to GHCR (after the `production` approval on `release.yml`); there
 is no deploy job in that workflow. To run a release on your host, use Docker or compose — see

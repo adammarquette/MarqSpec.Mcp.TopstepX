@@ -216,8 +216,9 @@ expect reject template trading-enabled-only-in-dev 'Trading__Enabled: "false"' '
 expect reject template trading-enabled-in-unnamed-env 'Trading__Enabled: "false"' 'Trading__Enabled: ["staging", "production"].includes(ctx.environment) ? "false" : "true"'
 expect reject template trading-enabled-recorder-override 'MarketData__RecordTape: "true",' 'MarketData__RecordTape: "true", Trading__Enabled: "False",'
 expect reject template allowed-accounts-filled 'Trading__AllowedAccountIds: ""' 'Trading__AllowedAccountIds: "12345"'
-# ADR-0021 exception (2026-10-28; production too since 2026-10-29, gh#851/gh#855): every environment's server runs
-# StaticToken on its own MCP_HTTP_BEARER_TOKEN, until an OAuth provider is chosen. No OAuth path in the template.
+# ADR-0021 exception (2026-10-28; production too since 2026-10-29, gh#851/gh#855): every environment's
+# server runs StaticToken on its own MCP_HTTP_BEARER_TOKEN, until an OAuth provider is chosen. No OAuth path
+# in the template.
 SA='const serverAuth = {
     Mcp__Auth__Mode: "StaticToken",'
 ST='Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,'

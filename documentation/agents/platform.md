@@ -1260,6 +1260,7 @@ found.
 | `required_status_checks` on `protect-develop` / `-staging` / `-main` | every merge gate in the table above; `no-order-path` carries ADR-0002 | `bootstrap.sh` step 3, which reads the contexts back per rung | gh#26, gh#72, gh#114; and gh#125, the one that went the other way — set correctly and recorded in `bootstrap.sh`, but not in the table above |
 | ruleset `enforcement: active` | all of the above | `bootstrap.sh` step 3 | `MarqSpec.Client.ProjectX`, disabled from creation |
 | OAuth deploy-check credentials (`MCP_CHECK_CLIENT_ID`, `MCP_CHECK_CLIENT_SECRET`, `MCP_CHECK_TOKEN_URL`) | [`check-deployment.sh`](../../scripts/check-deployment.sh) `client_credentials` flow against a running HTTPS instance (gh#521) | the self-test in `build & unit tests`; a human run before trusting a new deploy | operator-supplied per host — an empty id or secret fails at `UNSET` before any request; a wrong non-empty secret yields `NO TOKEN … answered 401` after `/health` and `/mcp` anonymous checks pass |
+| Static-token deploy-check token (`MCP_CHECK_AUTH_MODE=StaticToken`, `MCP_CHECK_ENVIRONMENT=staging` or `production`, `MCP_CHECK_BEARER_TOKEN`) | [`check-deployment.sh`](../../scripts/check-deployment.sh) StaticToken mode, the only mode any Railway environment runs now (ADR-0021 2026-10-29 update, gh#855) | the self-test in `build & unit tests`; `railway-staging.yml` after each staging deploy, from the `staging` environment secret `MCP_HTTP_BEARER_TOKEN`; a human run for production | the token comes only from the environment and is never printed; an empty one fails at `UNSET` before any request; a wrong one yields `INITIALIZE REFUSED … is not the server's Mcp__HttpBearerToken`; nothing runs it against production after a promote yet |
 
 ### The release approval gate (gh#108)
 
@@ -1420,6 +1421,16 @@ can connect*.
 ```console
 $ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
     scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
+```
+
+Every Railway environment runs the static token for now (ADR-0021 2026-10-29 update, gh#855), so the run
+that applies today is StaticToken mode. It takes `MCP_CHECK_ENVIRONMENT=staging` or `production`, refuses
+anything else and any `MCP_CHECK_CLIENT_*` beside it, and reads the token only from `MCP_CHECK_BEARER_TOKEN`
+(never printed). `railway-staging.yml` passes the `staging` environment secret `MCP_HTTP_BEARER_TOKEN`:
+
+```console
+$ MCP_CHECK_AUTH_MODE=StaticToken MCP_CHECK_ENVIRONMENT=production MCP_CHECK_BEARER_TOKEN=… \
+    scripts/check-deployment.sh https://topstepx-mcp.marqspec.com 0.4.0
 ```
 
 The two arguments are the **origin** and the release `/health` must report. Deploy-check OAuth credentials

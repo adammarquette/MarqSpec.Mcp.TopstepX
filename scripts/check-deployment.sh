@@ -8,11 +8,12 @@
 #     scripts/check-deployment.sh <base-url> <expected-version>
 #
 #   The second form is ADR-0021's static-token exception and nothing else: staging (2026-10-28) and production
-#   (2026-10-29, gh#855), TEMPORARY until an OAuth provider is chosen. Assertion 2 then requires a bare `Bearer` challenge (and FAILS on an RFC 9728
-#   one, which would mean the instance is not in the mode the caller claims), and assertion 3 presents the
-#   static token instead of minting one. It refuses to run unless MCP_CHECK_ENVIRONMENT is staging or
-#   production, and refuses any OAuth client variable beside it -- exactly one mode, as McpOptions requires of
-#   the server. evaluate-template.mjs requires StaticToken on every Railway server until OAuth returns.
+#   (2026-10-29, gh#855), TEMPORARY until an OAuth provider is chosen. Assertion 2 then requires a bare
+#   `Bearer` challenge (and FAILS on an RFC 9728 one, which would mean the instance is not in the mode the
+#   caller claims), and assertion 3 presents the static token instead of minting one. It refuses to run unless
+#   MCP_CHECK_ENVIRONMENT is staging or production, and refuses any OAuth client variable beside it -- exactly
+#   one mode, as McpOptions requires of the server. evaluate-template.mjs requires StaticToken on every
+#   Railway server until OAuth returns.
 #
 #   e.g.  scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
 #
@@ -131,7 +132,8 @@ usage: MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=�
   MCP_CHECK_TOKEN_URL                             its `client_credentials` token endpoint
 
   Staging or production, ADR-0021 exception (2026-10-28, widened 2026-10-29), instead of the three above:
-  MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging|production  MCP_CHECK_BEARER_TOKEN=<Mcp__HttpBearerToken>
+  MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging|production
+  MCP_CHECK_BEARER_TOKEN=<Mcp__HttpBearerToken>
 
 Credentials are read from the environment and never from arguments: an argument is visible in `ps`.
 USAGE
@@ -277,8 +279,8 @@ esac
 # as a fix: **`${VAR+x}` is how you ask whether a secret is set without asking what it is**, and it removes
 # the need to relax `-u` in a script whose whole subject is what leaks.
 # THE AUTH MODE, stated rather than inferred. OAuth unless the caller says otherwise; StaticToken is the
-# ADR-0021 exception (staging 2026-10-28, production 2026-10-29) and is refused in any other named environment,
-# and beside any OAuth variable.
+# ADR-0021 exception (staging 2026-10-28, production 2026-10-29) and is refused in any other named
+# environment, and beside any OAuth variable.
 AUTH_MODE="${MCP_CHECK_AUTH_MODE:-OAuth}"
 case "$AUTH_MODE" in
   OAuth) ;;
@@ -286,9 +288,9 @@ case "$AUTH_MODE" in
     case "${MCP_CHECK_ENVIRONMENT:-}" in
       staging|production) ;;
       *)
-        die "  STATIC TOKEN OUTSIDE STAGING/PRODUCTION  MCP_CHECK_AUTH_MODE=StaticToken needs MCP_CHECK_ENVIRONMENT=staging or production"
-        die "The static token is ADR-0021's exception for those two environments (2026-10-28, 2026-10-29), until an"
-        die "OAuth provider is chosen. NOTHING HAS BEEN SENT."
+        die "  STATIC TOKEN OUTSIDE STAGING/PRODUCTION  MCP_CHECK_AUTH_MODE=StaticToken needs"
+        die "MCP_CHECK_ENVIRONMENT=staging or production. The static token is ADR-0021's exception for those"
+        die "two environments (2026-10-28, 2026-10-29), until an OAuth provider is chosen. NOTHING HAS BEEN SENT."
         exit 1
         ;;
     esac

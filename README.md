@@ -237,8 +237,16 @@ is the *supported* state, it is simply telling you which one it looked for.
 deployment with no cross-service ordering, where the server can reach the migration before Postgres answers
 and a single probe would degrade it for the life of the task. Compose does not need it either, since its
 `depends_on` is a `pg_isready` health gate. Each retry logs at Information against the same target, the value
-is refused outside `0..600`, and none of it makes the store required — an absent one still degrades to a
-refusal at the point of use ([ADR-0007](documentation/adr/0007-dual-transport.md)).
+is refused outside `0..600`, and on its own none of it makes the store required — an absent one still
+degrades to a refusal at the point of use ([ADR-0007](documentation/adr/0007-dual-transport.md)).
+
+`Store__Required` is that switch, and it defaults to false. Leave it unset locally and under stdio:
+the process stays up. Set it true only where a failed process is restarted for you. Railway sets it
+on the server and the recorder in production and staging, so a store that never answers, or a
+connection that drops while migrations are applied, logs an error and exits non-zero instead of
+serving refusals for the life of the container. `/health` does not consult the store either way.
+The startup holder is still set once. Two processes migrating one database share one session
+advisory lock for the whole apply, so the second waits rather than both creating the same table.
 
 `Migrations__CommandTimeoutSeconds` is how long one migration command may run, in seconds. The default is
 `3600`. Npgsql's own default is 30, which is shorter than a per-chunk index-build migration on a large

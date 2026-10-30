@@ -961,6 +961,14 @@ the database row are load-bearing once this runs somewhere without an operator w
   bound governs the delay between probes, not a probe in flight**, so wall-clock time can exceed it by about
   one probe's duration — measured at 10.6 s against a 10 s bound on PR #548 — which matters when an
   orchestrator's own start-up grace period is sized against this value (gh#551).
+- **`Store__Required` narrows the rule, and only where it is set.** It defaults to false, which is the
+  paragraph above: unreachable degrades, `/health` does not consult the store, and
+  `StoreAvailabilityHolder` is set once. True — Railway, on the server and the recorder, in production
+  and in staging — logs an error and exits non-zero when the store never answers or the connection
+  drops while migrations are applied, so the orchestrator can restart the process. A migration that
+  fails against a database that did answer still fails the process either way (gh#843). Nothing retries
+  the migration in the background. The recorder, when the holder says unavailable at startup, does not
+  claim a lease or record tape, and logs that once; a failure after a run has started is unchanged.
 
 The one thing that still fails hard is a migration that fails against a database which **did** answer. That is
 a defect here, not an environment fact, and serving reads against an unverified schema is worse than not
@@ -970,10 +978,14 @@ orchestrator's health check, which is shorter, because the migration runs before
 ([`deployment.md`](deployment.md)). Npgsql's 30-second default is shorter than a per-chunk index build on a
 large `Trades` hypertable, and a cancel there leaves an invalid index that the next start drops and rebuilds
 under the same cap (gh#756). The previous timeout is restored when the migration returns, including when
-it throws. The five statements
-that build `IX_Trades_Instrument_TradeTimeUtc` share one connection; the session advisory lock and the
-per-chunk mark do not survive a reconnect, and a second replica waits on the lock rather than receiving
-`55P03` — that code is raised only when `lock_timeout` is set, which this migration does not do.
+it throws. The whole apply, not only that index build, also holds its own session advisory lock,
+`pg_advisory_lock(138608641, 843)` (`0x08430001`), on a dedicated unpooled connection, released in a
+finally. EF's history-table lock does not span the gap between migrations, which is how two processes
+both tried to create `TapeLeases`. The second waits, then finds the schema already applied (gh#843).
+The five statements
+that build `IX_Trades_Instrument_TradeTimeUtc` share one connection; that migration's own advisory lock
+and the per-chunk mark do not survive a reconnect, and a second replica waits on that lock rather
+than receiving `55P03` — raised only when `lock_timeout` is set, which this migration does not do.
 `dotnet ef migrations script` emits the Timescale reloption unconditionally, because the skip lives in the
 context interceptor rather than in the script.
 

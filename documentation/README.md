@@ -39,7 +39,7 @@ rather than reword it.
 | Document | ~tok | Read it when |
 |---|---:|---|
 | [`prd.md`](prd.md) | 18.9K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
-| [`architecture.md`](architecture.md) | 28.5K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
+| [`architecture.md`](architecture.md) | 28.8K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
 | [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 29.2K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
 | [`data-dictionary.md`](data-dictionary.md) | 15.1K | You need the data model — the twelve tables, their keys, and why each key is shaped that way. |
 | [`tape-export-reload.md`](tape-export-reload.md) | 0.7K | You are reading an exported tape file with DuckDB or pandas (gh#755). |
@@ -49,7 +49,7 @@ rather than reword it.
 |---|---:|---|
 | [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 14.8K | **Before starting any work.** It grows by *append, don't overwrite* and shrinks by the retirement rule in its own header (gh#254), so this row moves in both directions — correct it in the pull request that moves the file. |
 | [`project-board-workflow.md`](project-board-workflow.md) | 7.2K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
-| [`deployment.md`](deployment.md#railway-gh758) | 11.5K | Release is GHCR publish only (`release.yml`); running an instance — Docker pull/compose, **Railway** (`.railway/railway.ts`: services, shared variables, the headless staging seed service, volume permissions, two-recorder window, dashboard-only steps, proposed retention keys; gh#758, ADR-0025 draft), env vars, `check-deployment.sh`, operator rollback, the migration command timeout against a healthcheck that cannot see a process that is not listening yet (gh#756), vendor DNS on a custom compose network (gh#697). |
+| [`deployment.md`](deployment.md#railway-gh758) | 11.6K | Release is GHCR publish only (`release.yml`); running an instance — Docker pull/compose, **Railway** (`.railway/railway.ts`: services, shared variables, the headless staging seed service, volume permissions, two-recorder window, dashboard-only steps, proposed retention keys; gh#758, ADR-0025 draft), env vars, `check-deployment.sh`, operator rollback, the migration command timeout against a healthcheck that cannot see a process that is not listening yet (gh#756), vendor DNS on a custom compose network (gh#697). |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all five in its own gated `~tok` column (gh#178). Reviewer, Platform and Coordinator contracts **never auto-load**; open them yourself. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 6.3K | Branching, claiming, commits, PRs, and the Definition of Done. |

@@ -77,6 +77,7 @@ difference between the two entry points is a handful of lines.
 | [2026-09-08](#update-2026-09-08--the-cowork-custom-connector-dialog-was-measured-on-this-plan) | The maintainer measured Cowork's custom-connector dialog on this plan — two screens, what each offered, and what was not shown (gh#510) |
 | [2026-10-17](#update-2026-10-17--stdio-binds-no-http-port) | stdio binds no HTTP port; the image-baked 8080 is not an opt-in (gh#696) |
 | [2026-10-23](#update-2026-10-23--the-refusal-line-cannot-be-forged) | The OAuth refusal line escapes controls, line separators, bidi marks and a literal backslash, and caps the escaped text (gh#747) |
+| [2026-10-30](#update-2026-10-30--a-required-store-exits-and-one-lock-covers-the-apply) | `Store__Required` exits instead of degrading, and one session advisory lock covers the whole migration apply (gh#843) |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -1300,3 +1301,34 @@ repository does not document UTC for an update heading, so the heading follows t
 acceptance date in the header is unchanged: 2026-08-21.
 
 The handler filter and the query-string URL note above are unchanged.
+
+## Update (2026-10-30) — a required store exits, and one lock covers the apply
+
+The 2026-08-22 rule stands for every launch that does not ask otherwise. `Store__Required` defaults
+to false. When it is false, an unreachable store, and a connection that drops while migrations are
+applied, still degrade: the process stays up, `/health` stays independent of the store, and the
+tools that need no store still answer. When it is true, those two facts log an error and the
+process exits non-zero, so an orchestrator that restarts a failed container can try again. A
+migration that fails against a database that did answer is still a defect and still fails the
+process either way.
+
+Railway sets `Store__Required=true` on the server and the recorder, in production and in staging.
+Local, stdio, compose and any other environment leave the key unset. `StoreAvailabilityHolder` is
+still set once, on the paths that stay up. Nothing retries the migration in the background, and
+nothing flips the holder after startup.
+
+The recorder reads that holder at startup. While it says unavailable, the recorder does not claim
+a lease and does not subscribe or write the tape, and it logs that once at warning. It does not
+classify a missing table, back off, or exit. A failure after a run has started keeps the handling
+it already had. If the schema disappears after startup — a volume wiped under a process that keeps
+running — that process keeps its existing errors until it is restarted.
+
+`MigrateAsync` holds `pg_advisory_lock(138608641, 843)` on a dedicated unpooled connection for the
+whole apply, and releases it in a finally block. `138608641` is `0x08430001`, distinct from the
+index-build lock inside `AddTradeInstrumentTimeIndex`. EF's history-table lock ends when that
+transaction commits, which is how two processes both tried to create `TapeLeases`. The second
+apply waits, then finds the schema already there. Closing the connection releases the lock if the
+explicit unlock cannot run. The acquire is not cut at Npgsql's 30-second command timeout, because
+the apply it waits on can be a per-chunk index build.
+
+`/health` is unchanged. It still answers without opening a database.

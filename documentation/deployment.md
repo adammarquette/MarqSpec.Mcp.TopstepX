@@ -577,8 +577,9 @@ The healthcheck timeout must satisfy healthcheck timeout ≥ `Store__StartupWait
 `3600`) that is 3900 seconds.
 
 One replica of each service is not enough on its own. The server and the recorder both migrate, and they
-take the same session advisory lock. The two waits overlap. They do not add. Each service's lock wait is
-a single `CALL`, cancelled at `Migrations__CommandTimeoutSeconds` (default 3600) with Postgres error
+take the same session advisory lock. The two waits overlap. They do not add. Each service tries
+the lock and logs once when it has to wait. The wait is a single `CALL`, cancelled at
+`Migrations__CommandTimeoutSeconds` (default 3600) with Postgres error
 `57014`, whatever the healthcheck allows. The second service does not leave a partial index: the create
 is `IF NOT EXISTS` after the lock. If the first service's index-build migration runs close to 3600
 seconds, the second service fails anyway. Redeploy it once the first is healthy.

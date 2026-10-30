@@ -1331,7 +1331,8 @@ whole apply, and releases it in a finally block. `138608641` is `0x08430001`, di
 index-build lock inside `AddTradeInstrumentTimeIndex`. EF's history-table lock ends when that
 transaction commits, which is how two processes both tried to create `TapeLeases`. The second
 apply waits, then finds the schema already there. Closing the connection releases the lock if the
-explicit unlock cannot run. The acquire is not cut at Npgsql's 30-second command timeout, because
+explicit unlock cannot run. The wait tries the lock first and logs once when it has to block.
+It is bounded by `Migrations__CommandTimeoutSeconds`, not by Npgsql's 30-second default, because
 the apply it waits on can be a per-chunk index build.
 
 `/health` is unchanged. It still answers without opening a database.

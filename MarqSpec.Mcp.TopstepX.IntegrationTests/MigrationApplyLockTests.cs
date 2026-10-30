@@ -183,6 +183,53 @@ public sealed class MigrationApplyLockTests
             "the holder releases the session lock when its apply finishes");
     }
 
+    /// <summary>
+    /// A held lock is logged once, then the wait ends at the timeout instead of blocking with none.
+    /// </summary>
+    [Fact]
+    public async Task ApplyUnderLockAsync_WhenTheLockIsHeld_LogsOnceAndTimesOut()
+    {
+        await using NpgsqlConnection holder = new(_fixture.ConnectionString);
+        await holder.OpenAsync();
+        await using (NpgsqlCommand hold = LockCommand(holder, "SELECT pg_advisory_lock(@classId, @objectId)"))
+        {
+            await hold.ExecuteNonQueryAsync();
+        }
+
+        ListLogger logger = new();
+        try
+        {
+            Func<Task> waiting = () => MigrationApplyLock.ApplyUnderLockAsync(
+                _fixture.ConnectionString,
+                _ => Task.CompletedTask,
+                logger,
+                lockWaitTimeoutSeconds: 1,
+                CancellationToken.None);
+
+            await waiting.Should().ThrowAsync<NpgsqlException>();
+            logger.Lines.Should().ContainSingle()
+                .Which.Should().Contain("Waiting up to 1s.");
+            (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(1);
+        }
+        finally
+        {
+            await using NpgsqlCommand unlock = LockCommand(
+                holder,
+                "SELECT pg_advisory_unlock(@classId, @objectId)");
+            await unlock.ExecuteNonQueryAsync();
+        }
+
+        (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(0);
+    }
+
+    private static NpgsqlCommand LockCommand(NpgsqlConnection connection, string sql)
+    {
+        NpgsqlCommand command = new(sql, connection);
+        command.Parameters.Add(new NpgsqlParameter("classId", MigrationApplyLock.ClassId));
+        command.Parameters.Add(new NpgsqlParameter("objectId", MigrationApplyLock.ObjectId));
+        return command;
+    }
+
     private static WebApplication Build(
         string connectionString,
         bool required,
@@ -271,6 +318,27 @@ public sealed class MigrationApplyLockTests
             .ToList())
         {
             sources.Sources.Remove(ambient);
+        }
+    }
+
+    private sealed class ListLogger : ILogger
+    {
+        public List<string> Lines { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull
+            => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Lines.Add(formatter(state, exception));
         }
     }
 

@@ -74,14 +74,23 @@ public sealed class MigrationApplyLockTests
         (await table.ExecuteScalarAsync()).Should().Be(true);
     }
 
+    public static TheoryData<string> DroppedConnections { get; } = ["socket", "57P01", "57P03"];
+
     /// <summary>
     /// The store answered, then the connection dropped during the apply. Required exits. It must not
-    /// come back as an unavailable marker the process would keep serving.
+    /// come back as an unavailable marker the process would keep serving. The drop is a socket reset
+    /// or a real Postgres <c>57P01</c> / <c>57P03</c>.
     /// </summary>
-    [Fact]
-    public async Task MigrateAsync_WhenTheConnectionDropsAndTheStoreIsRequired_Exits()
+    [Theory]
+    [MemberData(nameof(DroppedConnections))]
+    public async Task MigrateAsync_WhenTheConnectionDropsAndTheStoreIsRequired_Exits(string kind)
     {
-        await using WebApplication app = Build(_fixture.ConnectionString, required: true, gate: null);
+        Exception failure = Dropped(kind);
+        await using WebApplication app = Build(
+            _fixture.ConnectionString,
+            required: true,
+            gate: null,
+            failure: failure);
 
         Func<Task> act = () => Program.MigrateAsync(app);
 
@@ -92,12 +101,24 @@ public sealed class MigrationApplyLockTests
     }
 
     /// <summary>
-    /// The same drop with the store optional still degrades, which is ADR-0007's split.
+    /// The same drop with the store optional still degrades, which is ADR-0007's split. <c>57P01</c>
+    /// and <c>57P03</c> are that drop, carrying their real <c>SqlState</c>.
     /// </summary>
-    [Fact]
-    public async Task MigrateAsync_WhenTheConnectionDropsAndTheStoreIsNotRequired_Degrades()
+    [Theory]
+    [MemberData(nameof(DroppedConnections))]
+    public async Task MigrateAsync_WhenTheConnectionDropsAndTheStoreIsNotRequired_Degrades(string kind)
     {
-        await using WebApplication app = Build(_fixture.ConnectionString, required: false, gate: null);
+        Exception failure = Dropped(kind);
+        if (failure is PostgresException postgres)
+        {
+            postgres.SqlState.Should().BeOneOf("57P01", "57P03");
+        }
+
+        await using WebApplication app = Build(
+            _fixture.ConnectionString,
+            required: false,
+            gate: null,
+            failure: failure);
 
         StoreAvailability availability = await Program.MigrateAsync(app);
 
@@ -166,7 +187,8 @@ public sealed class MigrationApplyLockTests
         string connectionString,
         bool required,
         ApplyGate? gate,
-        bool migrate = true)
+        bool migrate = true,
+        Exception? failure = null)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         StripAmbientEnvironment(builder);
@@ -182,7 +204,8 @@ public sealed class MigrationApplyLockTests
         Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
         if (gate is null)
         {
-            builder.Services.Replace(ServiceDescriptor.Singleton<IMigrationApplier>(new DroppingApplier()));
+            builder.Services.Replace(ServiceDescriptor.Singleton<IMigrationApplier>(
+                new DroppingApplier(failure ?? Dropped("socket"))));
         }
         else if (!migrate)
         {
@@ -332,15 +355,35 @@ public sealed class MigrationApplyLockTests
             => gate.EnterAsync();
     }
 
-    /// <summary>The store answered, and the apply then lost the socket.</summary>
-    private sealed class DroppingApplier : IMigrationApplier
+    /// <summary>The store answered, and the apply then failed with <paramref name="failure"/>.</summary>
+    private sealed class DroppingApplier(Exception failure) : IMigrationApplier
     {
         public Task ApplyAsync(
             DatabaseFacade database,
             int commandTimeoutSeconds,
             CancellationToken cancellationToken)
-            => throw new NpgsqlException(
-                "The connection dropped while applying migrations.",
-                new SocketException((int)SocketError.ConnectionReset));
+            => Task.FromException(failure);
     }
+
+    /// <summary>
+    /// A socket reset, or a <see cref="PostgresException"/> whose <c>SqlState</c> is the real
+    /// <c>57P01</c> or <c>57P03</c> code.
+    /// </summary>
+    private static Exception Dropped(string kind) => kind switch
+    {
+        "socket" => new NpgsqlException(
+            "The connection dropped while applying migrations.",
+            new SocketException((int)SocketError.ConnectionReset)),
+        "57P01" => new PostgresException(
+            "terminating connection due to administrator command",
+            "FATAL",
+            "FATAL",
+            "57P01"),
+        "57P03" => new PostgresException(
+            "the database system is starting up",
+            "FATAL",
+            "FATAL",
+            "57P03"),
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown drop."),
+    };
 }

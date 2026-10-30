@@ -188,7 +188,8 @@ before any production deploy. Production deploys stay manual and need Adam's app
   serving. `[pg-wait]` pins it; postgres and the seed have none.
   **Store required ([#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843)):**
   `Store__Required=true` on server and recorder in production and staging (`[store-required]`). An
-  unreachable store, or a connection dropped while applying migrations, logs an error and the process
+  unreachable store, or a connection dropped while applying migrations (a socket reset, or Postgres
+  `57P01` or `57P03`), logs an error and the process
   exits non-zero. `reselect-bars`, `export-tape` and `import-tape` log that error and return their
   store exit codes. `/health` does not consult the store. With the key false (the code default; local and
   any environment that is not production or staging), ADR-0007's degrade is unchanged. The pre-deploy

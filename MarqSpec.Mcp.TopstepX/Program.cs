@@ -99,29 +99,40 @@ public static class Program
         }
 
         // The result is published into DI rather than thrown: the tools that need a store ask it, and the
-        // ones that do not are unaffected.
-        StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
-        app.Services.GetRequiredService<StoreAvailabilityHolder>().Set(store);
-
-        // Probed once, after the store is known, because availability means a key AND somewhere to put the
-        // vector. Doing it lazily would put a database round trip inside a tool call.
-        app.Services.GetRequiredService<EmbeddingAvailabilityHolder>()
-            .Set(await ProbeEmbeddingsAsync(app, store).ConfigureAwait(false));
-
-        if (mcp.Transport == McpTransport.Http)
+        // ones that do not are unaffected. Store__Required is the exception, and it throws inside
+        // MigrateAsync before this publish, so a required store that did not come up never stays served
+        // (gh#843). /health is unchanged either way.
+        try
         {
-            MapHttpTransport(app, mcp);
-        }
+            StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+            app.Services.GetRequiredService<StoreAvailabilityHolder>().Set(store);
 
-        // Both transports run through the same call. The shutdown-during-startup race it absorbs is reachable
-        // from either -- it is a property of the host, not of stdio -- and a second `RunAsync` here is how the
-        // HTTP branch would quietly keep the old behaviour (gh#76).
-        //
-        // Stdio needs no branch of its own. WebApplication still starts GenericWebHostService (gh#76
-        // forbids a second host type). Under stdio that service starts a server that binds nothing
-        // unless the operator named a listener for health or metrics (gh#696). MapMcp stays inside
-        // the HTTP branch; the session runs over stdin and stdout (ADR-0007).
-        return await RunHostAsync(app).ConfigureAwait(false);
+            // Probed once, after the store is known, because availability means a key AND somewhere to put the
+            // vector. Doing it lazily would put a database round trip inside a tool call.
+            app.Services.GetRequiredService<EmbeddingAvailabilityHolder>()
+                .Set(await ProbeEmbeddingsAsync(app, store).ConfigureAwait(false));
+
+            if (mcp.Transport == McpTransport.Http)
+            {
+                MapHttpTransport(app, mcp);
+            }
+
+            // Both transports run through the same call. The shutdown-during-startup race it absorbs is reachable
+            // from either -- it is a property of the host, not of stdio -- and a second `RunAsync` here is how the
+            // HTTP branch would quietly keep the old behaviour (gh#76).
+            //
+            // Stdio needs no branch of its own. WebApplication still starts GenericWebHostService (gh#76
+            // forbids a second host type). Under stdio that service starts a server that binds nothing
+            // unless the operator named a listener for health or metrics (gh#696). MapMcp stays inside
+            // the HTTP branch; the session runs over stdin and stdout (ADR-0007).
+            return await RunHostAsync(app).ConfigureAwait(false);
+        }
+        catch (StoreRequiredException)
+        {
+            // Flush the error line. A verb path disposes in its own finally; this path never reaches one.
+            await app.DisposeAsync().ConfigureAwait(false);
+            return StoreRequiredException.ExitCode;
+        }
     }
 
     /// <summary>Builds the HTTP transport's request pipeline, in the one order that is correct.</summary>
@@ -1065,14 +1076,22 @@ public static class Program
     /// </para>
     /// <para>
     /// <b>Unreachable</b> — nothing answered on the connection string. That is an environment fact, usually
-    /// "Postgres is not running yet", and it is survivable: the server starts, the tool list is real, and the
-    /// tools that need no store still work. Crashing instead would reach an MCP client as a bare transport
-    /// failure, which says nothing about databases.
+    /// "Postgres is not running yet", and it is survivable when <c>Store__Required</c> is false: the server
+    /// starts, the tool list is real, and the tools that need no store still work. Crashing instead would
+    /// reach an MCP client as a bare transport failure, which says nothing about databases. When
+    /// <c>Store__Required</c> is true the same fact logs an error and exits, so an orchestrator can restart
+    /// the process (gh#843). <c>/health</c> is not part of that decision.
     /// </para>
     /// <para>
     /// <b>Broken</b> — the database answered and the migration itself failed. That is a defect in this
     /// repository, and it still fails the process. Degrading there would leave the server answering reads
-    /// against a schema nobody has verified, which is worse than not starting.
+    /// against a schema nobody has verified, which is worse than not starting. A connection that drops
+    /// mid-migration is the unreachable case again: it degrades when the store is not required, and exits
+    /// when it is.
+    /// </para>
+    /// <para>
+    /// The apply runs under <see cref="MigrationApplyLock"/>, one session advisory lock for the whole
+    /// schema. EF's history-table lock does not cover the gap between migrations.
     /// </para>
     /// </remarks>
     public static async Task<StoreAvailability> MigrateAsync(WebApplication app)
@@ -1084,6 +1103,7 @@ public static class Program
         ILogger logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("startup");
         MigrationOptions migrations =
             scope.ServiceProvider.GetRequiredService<IOptions<MigrationOptions>>().Value;
+        StoreOptions storeOptions = scope.ServiceProvider.GetRequiredService<IOptions<StoreOptions>>().Value;
 
         // The probe, the warning that names what it tried, and the bounded retry all live in StoreStartup so
         // the credential-bearing connection string is handled somewhere a unit test can assert the password
@@ -1105,38 +1125,71 @@ public static class Program
         StoreAvailability reached = await StoreStartup.ReachAsync(
             token => database.Database.CanConnectAsync(token),
             database.Database.GetConnectionString(),
-            TimeSpan.FromSeconds(
-                scope.ServiceProvider.GetRequiredService<IOptions<StoreOptions>>().Value.StartupWaitSeconds),
+            TimeSpan.FromSeconds(storeOptions.StartupWaitSeconds),
             scope.ServiceProvider.GetRequiredService<TimeProvider>(),
             logger,
             app.Lifetime.ApplicationStopping).ConfigureAwait(false);
 
         if (!reached.IsAvailable)
         {
+            ThrowIfRequired(storeOptions, reached, logger);
             return reached;
         }
+
+        // Not Database.GetConnectionString(). Npgsql redacts the password from that getter, and the
+        // lock's own connection would then fail authentication after CanConnect had already succeeded.
+        // This is the same string UseNpgsql was given, including the localhost fallback.
+        string connectionString = scope.ServiceProvider.GetRequiredService<IConfiguration>()
+            .GetConnectionString("Default")
+            ?? "Host=localhost;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=changeme-local";
 
         try
         {
             // The same token ReachAsync uses. It cannot fire before the host starts. The comment above
             // is why a later move of this call, to after StartAsync, would still need the stop catch.
-            await scope.ServiceProvider.GetRequiredService<IMigrationApplier>()
-                .ApplyAsync(
-                    database.Database,
-                    migrations.CommandTimeoutSeconds,
-                    app.Lifetime.ApplicationStopping)
-                .ConfigureAwait(false);
+            // The lock is held on its own connection for the whole apply, not only for one migration.
+            await MigrationApplyLock.ApplyUnderLockAsync(
+                connectionString,
+                token => scope.ServiceProvider.GetRequiredService<IMigrationApplier>()
+                    .ApplyAsync(database.Database, migrations.CommandTimeoutSeconds, token),
+                logger,
+                app.Lifetime.ApplicationStopping).ConfigureAwait(false);
             return StoreAvailability.Available();
         }
         catch (Npgsql.NpgsqlException ex) when (ex.InnerException is System.Net.Sockets.SocketException)
         {
             // The database was there a moment ago and went away mid-migration -- still an environment fact,
-            // not a schema defect, so it degrades rather than crashing.
+            // not a schema defect. It degrades when the store is optional, and exits when it is required,
+            // so a cold start never stays degraded for the life of the process (gh#843).
             StoreAvailability unavailable =
                 StoreAvailability.Unavailable("The connection dropped while applying migrations.");
+            ThrowIfRequired(storeOptions, unavailable, logger);
             logger.LogWarning("{Explanation}", unavailable.Explanation);
             return unavailable;
         }
+    }
+
+    /// <summary>
+    /// Exits when <paramref name="options"/> says the store is required and <paramref name="availability"/>
+    /// says it is not.
+    /// </summary>
+    /// <param name="options">The store settings.</param>
+    /// <param name="availability">
+    /// What startup found. Its explanation is logged, not copied into the exception.
+    /// </param>
+    /// <param name="logger">The startup logger.</param>
+    private static void ThrowIfRequired(StoreOptions options, StoreAvailability availability, ILogger logger)
+    {
+        if (!options.Required || availability.IsAvailable)
+        {
+            return;
+        }
+
+        logger.LogError(
+            "Store__Required is true and the store is not available ({Reason}). "
+            + "The process is exiting so it can be restarted.",
+            availability.Explanation);
+        throw new StoreRequiredException();
     }
 
     private static async Task<EmbeddingAvailability> ProbeEmbeddingsAsync(

@@ -77,6 +77,13 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// it is mutable and read at the point of use, because a tape's subscriptions change mid-session.
 /// This card does not pick the front month by volume — that is gh#219.
 /// </para>
+/// <para>
+/// <b>An unavailable store is not a lease attempt</b> (gh#843). When
+/// <see cref="StoreAvailabilityHolder"/> says Unavailable at startup, this service logs that once
+/// and returns. It does not claim, renew, subscribe or write. The holder is still set once, so
+/// this is not a retry loop, and a failure in the middle of a run that did start keeps the
+/// handling it already had.
+/// </para>
 /// </remarks>
 public sealed class TradeTapeRecorder : BackgroundService
 {
@@ -91,6 +98,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     private readonly ILogger<TradeTapeRecorder> _logger;
     private readonly TapeAvailabilityHolder _tape;
     private readonly HostTelemetry _telemetry;
+    private readonly StoreAvailabilityHolder _store;
     private readonly Channel<PendingPrint> _channel;
     private readonly Channel<LifecycleWork> _lifecycle;
     /// <summary>
@@ -158,7 +166,8 @@ public sealed class TradeTapeRecorder : BackgroundService
         TimeProvider clock,
         ILogger<TradeTapeRecorder> logger,
         TapeAvailabilityHolder tape,
-        HostTelemetry telemetry)
+        HostTelemetry telemetry,
+        StoreAvailabilityHolder store)
         : this(
             scopes,
             market,
@@ -169,7 +178,8 @@ public sealed class TradeTapeRecorder : BackgroundService
             tape,
             telemetry,
             DefaultChannelCapacity,
-            TapeLease.DefaultTimeToLive)
+            TapeLease.DefaultTimeToLive,
+            store)
     {
     }
 
@@ -195,6 +205,10 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// How long this process's tape claim stands unrenewed. Tests pass a short one so a takeover
     /// is reachable without waiting out the real value.
     /// </param>
+    /// <param name="store">
+    /// The startup store probe. When it says unavailable this service makes no lease or tape
+    /// attempt. Null is the available default, for a test that does not pass one.
+    /// </param>
     public TradeTapeRecorder(
         IServiceScopeFactory scopes,
         IOptions<MarketDataOptions> market,
@@ -205,7 +219,8 @@ public sealed class TradeTapeRecorder : BackgroundService
         TapeAvailabilityHolder tape,
         HostTelemetry telemetry,
         int channelCapacity,
-        TimeSpan leaseTimeToLive)
+        TimeSpan leaseTimeToLive,
+        StoreAvailabilityHolder? store = null)
     {
         ArgumentNullException.ThrowIfNull(scopes);
         ArgumentNullException.ThrowIfNull(market);
@@ -225,6 +240,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         _logger = logger;
         _tape = tape;
         _telemetry = telemetry;
+        _store = store ?? new StoreAvailabilityHolder();
         _ledger = new TapeCoverageLedger(scopes, clock);
         _lease = new TapeLease(scopes, clock, leaseTimeToLive);
         _channel = Channel.CreateBounded<PendingPrint>(new BoundedChannelOptions(channelCapacity)
@@ -307,6 +323,17 @@ public sealed class TradeTapeRecorder : BackgroundService
                     "Tape recording is off (transport {Transport}, RecordTape {RecordTape}).",
                     _mcp.Transport,
                     _market.RecordTape);
+                return;
+            }
+
+            // Once, at startup. The holder does not change after that, so this is not a backoff and
+            // not an exit. A store that fails after a run has already started still uses the catches
+            // below (gh#843).
+            if (!_store.Value.IsAvailable)
+            {
+                _logger.LogWarning(
+                    "The store is unavailable, so the trade-tape recorder will not claim a lease or "
+                    + "record tape. Restart the process once the store is reachable.");
                 return;
             }
 

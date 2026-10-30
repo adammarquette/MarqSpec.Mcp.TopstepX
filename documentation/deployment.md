@@ -192,6 +192,12 @@ before any production deploy. Production deploys stay manual and need Adam's app
   seed then fails after its 4000 s wait. Staging's volume (gh#846) makes that rarer (an empty database now
   means the first attach or a wipe) but does not remove it; #843's app-side retry is the real fix. Until it
   lands: after a staging postgres redeploy onto an empty volume, redeploy server and recorder.
+  **Restart budget ([#848](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/848)):** under
+  `Store__Required=true` server and recorder exit while Postgres is unreachable, and Railway's default 10
+  restarts give up after roughly 15 minutes (~90 s `StartupWait` each). They state
+  `restartPolicyMaxRetries=100` (type left unset: ON_FAILURE is the default, stating it drifts), which rides
+  out outages of a couple of hours; a real startup bug still ends in a visible crashed state. Railway doesn't
+  document its backoff, so these times are approximate. `[app-restart]` pins it.
 - **Healthcheck:** `/health` with `healthcheckTimeout=3990` on server and recorder. The EF migration runs
   **before** the app listens and may build a per-chunk index on `Trades` under `Migrations__CommandTimeoutSeconds`
   (default 3600, #761); Railway's default ~300 s healthcheck would kill the container mid-migration and retry

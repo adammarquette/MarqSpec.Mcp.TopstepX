@@ -107,8 +107,8 @@ public static class Program
             StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
             app.Services.GetRequiredService<StoreAvailabilityHolder>().Set(store);
 
-            // Probed once, after the store is known, because availability means a key AND somewhere to put the
-            // vector. Doing it lazily would put a database round trip inside a tool call.
+            // Probed once, after the store is known, because availability means a key AND somewhere to
+            // put the vector. Doing it lazily would put a database round trip inside a tool call.
             app.Services.GetRequiredService<EmbeddingAvailabilityHolder>()
                 .Set(await ProbeEmbeddingsAsync(app, store).ConfigureAwait(false));
 
@@ -117,9 +117,9 @@ public static class Program
                 MapHttpTransport(app, mcp);
             }
 
-            // Both transports run through the same call. The shutdown-during-startup race it absorbs is reachable
-            // from either -- it is a property of the host, not of stdio -- and a second `RunAsync` here is how the
-            // HTTP branch would quietly keep the old behaviour (gh#76).
+            // Both transports run through the same call. The shutdown-during-startup race it absorbs
+            // is reachable from either -- it is a property of the host, not of stdio -- and a second
+            // `RunAsync` here is how the HTTP branch would quietly keep the old behaviour (gh#76).
             //
             // Stdio needs no branch of its own. WebApplication still starts GenericWebHostService (gh#76
             // forbids a second host type). Under stdio that service starts a server that binds nothing

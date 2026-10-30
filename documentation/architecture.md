@@ -983,9 +983,8 @@ large `Trades` hypertable, and a cancel there leaves an invalid index that the n
 under the same cap (gh#756). The previous timeout is restored when the migration returns, including when
 it throws. The whole apply, not only that index build, also holds its own session advisory lock,
 `pg_advisory_lock(138608641, 843)` (`0x08430001`), on a dedicated unpooled connection, released in a
-finally. EF's history-table lock does not span the gap between migrations, which is how two processes
-both tried to create `TapeLeases`. The second waits, then finds the schema already applied (gh#843).
-The five statements
+finally. The lock is a guard against concurrent applies. The second waits, then finds the schema
+already applied (gh#843). The five statements
 that build `IX_Trades_Instrument_TradeTimeUtc` share one connection; that migration's own advisory lock
 and the per-chunk mark do not survive a reconnect, and a second replica waits on that lock rather
 than receiving `55P03` — raised only when `lock_timeout` is set, which this migration does not do.

@@ -1091,7 +1091,7 @@ public static class Program
     /// </para>
     /// <para>
     /// The apply runs under <see cref="MigrationApplyLock"/>, one session advisory lock for the whole
-    /// schema. EF's history-table lock does not cover the gap between migrations.
+    /// schema. The lock is a guard against concurrent applies.
     /// </para>
     /// </remarks>
     public static async Task<StoreAvailability> MigrateAsync(WebApplication app)

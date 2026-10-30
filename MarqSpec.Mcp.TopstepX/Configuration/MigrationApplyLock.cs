@@ -10,11 +10,9 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// </summary>
 /// <remarks>
 /// <para>
-/// EF's migration lock is <c>LOCK TABLE</c> on the history table, and it ends when that transaction
-/// commits. Two processes migrating one empty database can both pass that lock and both try to create
-/// the same table. This lock is taken on a <b>dedicated, unpooled</b> connection before the apply and
-/// released in a <see langword="finally"/>, so the second process waits until the first has finished
-/// the whole schema, not merely one migration.
+/// The lock is a guard against concurrent applies. It is taken on a <b>dedicated, unpooled</b>
+/// connection before the apply and released in a <see langword="finally"/>, so a second process
+/// waits until the first has finished the whole schema.
 /// </para>
 /// <para>
 /// The key is <c>pg_advisory_lock(138608641, 843)</c>. <c>138608641</c> is <c>0x08430001</c>, distinct

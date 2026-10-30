@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The image entrypoint prepares the tape volume, then drops to uid 64198** (gh#767). `ENTRYPOINT` is now
+  `scripts/prepare-tape-volume.sh` ahead of `dotnet`. `USER` stays 64198, so every service starts as before
+  and logs one skip line. Started as root (`RAILWAY_RUN_UID=0`), it refuses symlinks, `chown -h`s `/data`
+  and its top-level entries (not recursive), then `setpriv` execs `dotnet` as 64198, keeping it PID 1.
+  Export on Railway stays blocked by the template until `EXPORT_UNBLOCKED` is flipped in a config change.
+
 - **Five gated order tools, with a durable idempotency claim** (gh#750). `place_order`, `modify_order`,
   `cancel_order`, `close_position` and `partial_close_position` call `TradingRiskGate` only. They are
   registered only when `Trading__Enabled` is true, and each method still refuses when it is false.

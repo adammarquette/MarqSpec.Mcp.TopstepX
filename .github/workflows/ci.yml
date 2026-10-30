@@ -60,11 +60,10 @@ jobs:
       - name: Check documentation links
         run: ./scripts/check-doc-links.sh
 
-      # The deferred Railway start command lives in git as scripts/prepare-tape-volume.sh and in
-      # documentation/deployment.md. Ownership is proven as root. The hosted runner is not uid 0,
-      # so this step uses sudo. A symlink is refused, a non-root caller exits 1, and a normal tree
-      # is chowned with -h without following a link out.
-      - name: Check the tape volume start command
+      # The image entrypoint, scripts/prepare-tape-volume.sh (gh#767). Ownership is proven as root.
+      # The hosted runner is not uid 0, so this step uses sudo. A symlink is refused, a non-root
+      # caller skips and runs its command, and a root caller chowns with -h and drops to 64198.
+      - name: Check the tape volume entrypoint
         run: sudo ./scripts/check-tape-volume-prepare.sh
 
       # gh#293. The `-u` on this gate's file-list sort is load-bearing under a conflicted `--cached` index

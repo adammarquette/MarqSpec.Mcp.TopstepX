@@ -64,7 +64,7 @@ front of a plaintext `8080` listener and health-checked `/health`. On Railway:
   Railway has no secret-file mount and one volume per service, so the key file goes on the recorder's volume
   outside `TapeExport__Path`: the volume is mounted at `/data`, and the key is `/data/keys/drive-sa.json`, mode 0400,
   owned by 64198 (deployment.md). Root-side prep sets modes with `find -type f` / `find -type d`, never a root
-  `chmod` that could follow a symlink planted by uid 64198; `chown -R` is fine. CI blocks any export-on setup until #767 flips `EXPORT_UNBLOCKED`.
+  `chmod` that could follow a symlink planted by uid 64198; `chown -R` is fine. CI blocks any export-on setup until `EXPORT_UNBLOCKED` is flipped; #767 ships the image side.
 
 - **Postgres verification:** on the first (manual) production deploy, `initdb` succeeds on the volume, and
   one restart keeps the data.

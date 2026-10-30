@@ -104,9 +104,9 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 
 **Tape export (gh#755, contract from PR #765): deferred.** `TapeExport__Enabled` is the literal `"false"` in every
 environment, and no service has an export volume or `RAILWAY_RUN_UID`. Production turns it on only when both are
-true: the deployed image contains #765, and the image chowns the mount and drops to uid 64198 at startup (#767).
-Today Railway mounts volumes root-owned and the image runs as 64198, so the only config fix would be
-`RAILWAY_RUN_UID=0`, which runs the whole .NET process as root, so it is not used. The key names are provisional
+true: the deployed image contains #765, and the image chowns the mount and drops to uid 64198 at startup (#767,
+[the entrypoint](#recorded-tape-on-a-persistent-host-gh755)). With that entrypoint, `RAILWAY_RUN_UID=0` on the
+recorder only starts the wrapper as root; the .NET process itself runs as 64198. The key names are provisional
 until #765 merges.
 - When it is enabled: the production recorder only gets **one** volume (`tape-exports`), mounted at `/data`, and
   `TapeExport__Enabled=true`, Schedule `06:00` (UTC, HH:mm), Path `/data/tape-exports`, Format `csv.gz+parquet`.
@@ -121,9 +121,9 @@ until #765 merges.
   `TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json`. The file is mode `0400` and its directory
   `0700`, both owned by `64198:64198`. It is placed once over `railway ssh` from stdin, never through a variable
   or the repo, and it persists on the volume; rotation replaces it the same way. The check requires exactly these
-  paths once the export is unblocked; until #767 it fails any export-on setup, including any volume on the
+  paths once the export is unblocked; until `EXPORT_UNBLOCKED` is flipped it fails any export-on setup, including any volume on the
   recorder (`[export-blocked]`, flipped by `EXPORT_UNBLOCKED` in `evaluate-template.mjs`).
-- **Preparing `/data` as root (for #767's entrypoint, and any manual fix).** uid 64198 owns everything under
+- **Preparing `/data` as root (a manual fix; the image entrypoint does its own, non-recursive version).** uid 64198 owns everything under
   `/data`, so it can plant a symlink (`/data/keys/drive-sa.json -> /etc/shadow`), and a root `chmod` follows
   symlinks. Never run `chmod` or `chmod -R` as root on those paths. `chown -R` is fine: it does not follow
   symlinks below the top level, and `-h` covers the top. Set modes with `find`, which matches only real files and
@@ -136,8 +136,8 @@ until #765 merges.
   find /data/keys -type f -exec chmod 0400 {} +
   ```
 
-  The entrypoint runs this before it drops privileges, while no uid-64198 process is running yet, so nothing can
-  swap a file for a link between `find` and `chmod`.
+  Run it while no uid-64198 process is running, as the entrypoint does before it drops privileges, so nothing
+  can swap a file for a link between `find` and `chmod`.
 - The export worker (PR #765 at a186a62) runs only on `TapeExport__Schedule`, while it holds the recorder lease,
   with no pass at startup. Export therefore stays with the recorder, even across a two-recorder overlap.
 - Trading keys: only `TradingExecutionOptions`' seven names are allowed. `MaxContractsPerOrder` is 1..5 and
@@ -438,57 +438,30 @@ under `TapeExport__Path`. It does not create the volume. The image runs as uid *
 (`Dockerfile` `USER 64198`). Railway mounts a volume as root
 ([volume permissions](https://docs.railway.com/volumes#permissions)), so that uid cannot create those
 directories until something has prepared `/data`. The pass logs that the path is not writable
-and skips. Rows stay in Postgres. That skip is the fail-safe for the **application**. It does not
-apply to a start command that exits before `dotnet` runs.
+and skips. Rows stay in Postgres. That skip is the fail-safe for the **application**.
 
-**Export on Railway is deferred.** The Railway template (gh#774, `[export-blocked]`) blocks export
-until gh#767 lands. Do not set `RAILWAY_RUN_UID=0`. Do not set `TapeExport__Enabled=true` on Railway.
-Do not place a Drive key expecting this build to upload. The command below is the shape gh#767 moves
-into the image. It is not a step to apply on the service now.
+**The image prepares the volume itself (gh#767).** The `ENTRYPOINT` is
+[`scripts/prepare-tape-volume.sh`](../scripts/prepare-tape-volume.sh) followed by
+`dotnet MarqSpec.Mcp.TopstepX.dll`. `USER` stays 64198, so by default the script is not root: it logs
+`tape volume prepare skipped: running as uid 64198` and execs `dotnet` unchanged. That is every service
+today (server, recorder, compose, `docker run`). Only a service started as root with `RAILWAY_RUN_UID=0`,
+which the template allows on the production recorder alone once the export is enabled, prepares the volume:
 
-```text
-/bin/sh -c 'set -eu
-if [ "$(id -u)" -ne 0 ]; then
-  echo "tape volume prepare requires uid 0" >&2
-  exit 1
-fi
-for path in /data /data/keys /data/tape-exports /data/keys/drive-sa.json; do
-  if [ -L "$path" ]; then
-    echo "refusing a symlink on the tape volume: $path" >&2
-    exit 1
-  fi
-done
-mkdir -p /data/tape-exports /data/keys
-find /data -maxdepth 0 ! -type l ! -user 64198 -exec chown -h 64198:64198 {} +
-find /data -maxdepth 1 \( -type d -o -type f \) ! -user 64198 -exec chown -h 64198:64198 {} +
-find /data -maxdepth 1 -name keys -type d -exec chmod 0700 {} +
-find /data/keys -maxdepth 1 -name drive-sa.json -type f ! -user 64198 -exec chown -h 64198:64198 {} +
-find /data/keys -maxdepth 1 -name drive-sa.json -type f -exec chmod 0400 {} +
-exec /usr/sbin/runuser -u mcp -- dotnet MarqSpec.Mcp.TopstepX.dll'
-```
+- With no directory at `TAPE_VOLUME_ROOT` (default `/data`) it logs `skipped: no volume` and changes nothing.
+- It refuses a symlink at `/data`, `/data/keys`, `/data/tape-exports` or `/data/keys/drive-sa.json` and exits 1.
+- It creates `/data/tape-exports` and `/data/keys`, chowns `/data` and its top-level entries to
+  `64198:64198`, sets `/data/keys` to `0700` and the key file to `0400`. Not recursive: `chown -R` of the
+  whole volume would include `lost+found` and grow with the export tree. Every ownership change is
+  `chown -h`, and `find -type d` / `-type f` never follow a link.
+- It then execs `setpriv --reuid=64198 --regid=64198 --clear-groups --no-new-privs` with `HOME=/home/mcp`.
+  `setpriv` (util-linux, already in the image) is a plain `execve`, so `dotnet` is PID 1 and receives
+  `SIGTERM` directly, and no root process remains. Root or not, the app never runs as uid 0.
 
-That command is also [`scripts/prepare-tape-volume.sh`](../scripts/prepare-tape-volume.sh), which takes the
-volume root as an argument and defaults to `/data`. gh#767 copies that script into the image. The fence
-above is the `/data` form an operator would paste.
-
-A start command replaces the image entrypoint
+The template still blocks export (`[export-blocked]`, `EXPORT_UNBLOCKED` in `evaluate-template.mjs`). Turning
+it on is a separate config change once the deployed image contains #765 and this entrypoint. Until then do not
+set `RAILWAY_RUN_UID=0`, do not set `TapeExport__Enabled=true` on Railway, and do not place a Drive key. Do not
+install a start command by hand: a start command replaces this entrypoint
 ([start command](https://docs.railway.com/deployments/start-command#configure-the-start-command)).
-`runuser` is already in the runtime image (`util-linux` is Essential). Without
-`RAILWAY_RUN_UID=0` this command runs as uid 64198, the uid check exits 1, and the container
-crash-loops. That is deliberate: falling through to `dotnet` would hide a volume that is still
-root-owned. The app's log-and-skip path never runs, because the process never reaches it.
-
-Only `mkdir`, `find`, `chown`, and `chmod` run as root. `exec /usr/sbin/runuser -u mcp` replaces that shell,
-so no root process remains. `chown -R` of the whole volume is not used: it would include
-`lost+found` and grow with the export tree, and a root `chmod` that follows a symlink can change a
-path outside the volume. `find -type d` and `-type f` do not follow links. Every `chown` in the
-command is `chown -h`, so a symlink is not followed. The command refuses a symlink at `/data`, `/data/keys`,
-`/data/tape-exports`, or `/data/keys/drive-sa.json`.
-
-Until gh#767, the image's non-root guarantee for this path would depend on a Railway start command
-held in service settings, not in git. The image `ENTRYPOINT` stays
-`["dotnet", "MarqSpec.Mcp.TopstepX.dll"]` and `USER` stays 64198. Do not install the command by hand
-to get around the template block.
 
 The key file, once export is unblocked, is `/data/keys/drive-sa.json`, mode `0400`. Its directory is
 mode `0700`. Both are owned by uid 64198. gh#774 places that key once over `railway ssh` from stdin,
@@ -496,7 +469,7 @@ never through a variable, and rotates it the same way. A key placed **after** th
 is created by root as mode `0644` and stays that way until the next start, because `chown` and
 `chmod` run only then. At placement time run `chown -h 64198:64198 /data/keys/drive-sa.json` and
 `chmod 0400 /data/keys/drive-sa.json`, or restart after placing or rotating the key. Do not do either
-until gh#767. Set `TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json` only then.
+until export is unblocked. Set `TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json` only then.
 Inline `TapeExport__Drive__ServiceAccountJson` stays the one to avoid.
 
 `RAILWAY_RUN_UID` is Railway's variable, not a `TapeExport__*` key, and it is not in the committed
@@ -518,7 +491,7 @@ the opposite: empty means the upload is off.
 | `TapeExport__Format` | `csv.gz+parquet` | The only accepted value. Both gzip CSV and Parquet are written. `csv.gz` alone, `parquet` alone, and an empty string are refused. |
 | `TapeExport__Drive__FolderId` | empty | Drive folder id. **Empty disables Drive.** No client is constructed and no network call is made. |
 | `TapeExport__Drive__ServiceAccountJson` | empty | Inline service-account JSON. **Empty is off** unless the path below is set. Never commit a value. A path wins when both are set. **Anyone who can inspect the container can read this value.** Prefer the path. |
-| `TapeExport__Drive__ServiceAccountJsonPath` | empty | Absolute path of a mounted service-account JSON file. **This is the credential to use** once export is unblocked. On Railway that path is `/data/keys/drive-sa.json` (mode `0400`, directory mode `0700`, owned by uid 64198). Do not set it until gh#767. Empty is off unless the inline JSON above is set. A relative path is refused. |
+| `TapeExport__Drive__ServiceAccountJsonPath` | empty | Absolute path of a mounted service-account JSON file. **This is the credential to use** once export is unblocked. On Railway that path is `/data/keys/drive-sa.json` (mode `0400`, directory mode `0700`, owned by uid 64198). Do not set it until export is unblocked. Empty is off unless the inline JSON above is set. A relative path is refused. |
 
 Files on the volume, one pair per contract per day for trades and coverage:
 
@@ -555,8 +528,8 @@ leaves the rows.
 
 Suggested values once the volume is writable by uid 64198 and the database is real, on the recorder
 only: `MarketData__RecordTape=true`, `TapeExport__Enabled=true`,
-`TapeExport__Path=/data/tape-exports`. On Railway those switches wait for gh#767. The Drive path,
-when that lands, is `TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json`.
+`TapeExport__Path=/data/tape-exports`. On Railway those switches wait for `EXPORT_UNBLOCKED` (gh#767 ships the
+entrypoint). The Drive path, when that lands, is `TapeExport__Drive__ServiceAccountJsonPath=/data/keys/drive-sa.json`.
 
 ```yaml
 # Attach on the recorder service only. Railway allows one volume per service.

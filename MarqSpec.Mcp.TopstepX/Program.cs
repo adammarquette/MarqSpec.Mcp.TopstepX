@@ -1189,7 +1189,8 @@ public static class Program
             "Store__Required is true and the store is not available ({Reason}). "
             + "The process is exiting so it can be restarted.",
             availability.Explanation);
-        throw new StoreRequiredException();
+        throw new StoreRequiredException(
+            availability.Explanation ?? "The store is not available.");
     }
 
     private static async Task<EmbeddingAvailability> ProbeEmbeddingsAsync(
@@ -1265,6 +1266,29 @@ public static class Program
     /// </remarks>
     private static ValueTask ShutDownLoggingAsync(WebApplication app) => app.DisposeAsync();
 
+    /// <summary>The <c>reselect-bars</c> line for a store that did not migrate.</summary>
+    /// <param name="logger">The verb logger.</param>
+    /// <param name="reason">The store sentence, or null when the marker carried none.</param>
+    private static void LogReselectStoreStopped(ILogger logger, string? reason)
+    {
+        logger.LogError(
+            "reselect-bars cannot run: the store is unreachable or its migration did not complete "
+            + "({Reason}). This verb only writes, so it stops here rather than degrading; nothing in the "
+            + "window was re-decided. Bring the database up and run it again.",
+            reason);
+    }
+
+    /// <summary>The tape-verb line for a store that did not migrate.</summary>
+    /// <param name="logger">The verb logger.</param>
+    /// <param name="reason">The store sentence, or null when the marker carried none.</param>
+    private static void LogTapeStoreStopped(ILogger logger, string? reason)
+    {
+        logger.LogError(
+            "tape export cannot run: the store is unreachable or its migration did not complete "
+            + "({Reason}). Nothing was written and nothing was deleted.",
+            reason);
+    }
+
     private static async Task<int> RunReselectAsync(WebApplication app, string[] args)
     {
         // Both singletons, so they are taken from the root provider rather than from a scope: this runs
@@ -1298,7 +1322,20 @@ public static class Program
         // the bars' provenance, deletes the rows a new winner does not restate and drops coverage claims.
         // Doing that through a schema this build has not applied is a write nobody can reproduce, or a
         // failure halfway across a window.
-        StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+        //
+        // Store__Required throws instead of returning unavailable. The host path catches that in Main.
+        // This verb has to catch it here, or a railway run of the verb in production crashes with a stack
+        // instead of the exit code this table documents (gh#843).
+        StoreAvailability store;
+        try
+        {
+            store = await MigrateAsync(app).ConfigureAwait(false);
+        }
+        catch (StoreRequiredException required)
+        {
+            LogReselectStoreStopped(logger, required.Explanation);
+            return ReselectExit.Degraded;
+        }
 
         if (!store.IsAvailable)
         {
@@ -1306,12 +1343,7 @@ public static class Program
             // decision about READS -- the server starts, and the tools that need no store still answer. A
             // verb whose only purpose is to write has nothing to offer past this point, and the reason it
             // stopped is the operator's next step.
-            logger.LogError(
-                "reselect-bars cannot run: the store is unreachable or its migration did not complete "
-                + "({Reason}). This verb only writes, so it stops here rather than degrading; nothing in the "
-                + "window was re-decided. Bring the database up and run it again.",
-                store.Explanation);
-
+            LogReselectStoreStopped(logger, store.Explanation);
             return ReselectExit.Degraded;
         }
 
@@ -1384,13 +1416,22 @@ public static class Program
                 return TapeExportCommands.ExitUsage;
             }
 
-            StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+            // The same catch as reselect-bars. Store__Required is set on the Railway environment, so a
+            // verb run there inherits it. The exception has to become ExitStore, not a stack trace.
+            StoreAvailability store;
+            try
+            {
+                store = await MigrateAsync(app).ConfigureAwait(false);
+            }
+            catch (StoreRequiredException required)
+            {
+                LogTapeStoreStopped(logger, required.Explanation);
+                return TapeExportCommands.ExitStore;
+            }
+
             if (!store.IsAvailable)
             {
-                logger.LogError(
-                    "tape export cannot run: the store is unreachable or its migration did not complete "
-                    + "({Reason}). Nothing was written and nothing was deleted.",
-                    store.Explanation);
+                LogTapeStoreStopped(logger, store.Explanation);
                 return TapeExportCommands.ExitStore;
             }
 

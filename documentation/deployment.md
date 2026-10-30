@@ -189,7 +189,8 @@ before any production deploy. Production deploys stay manual and need Adam's app
   **Store required ([#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843)):**
   `Store__Required=true` on server and recorder in production and staging (`[store-required]`). An
   unreachable store, or a connection dropped while applying migrations, logs an error and the process
-  exits non-zero. `/health` does not consult the store. With the key false (the code default; local and
+  exits non-zero. `reselect-bars`, `export-tape` and `import-tape` log that error and return their
+  store exit codes. `/health` does not consult the store. With the key false (the code default; local and
   any environment that is not production or staging), ADR-0007's degrade is unchanged. The pre-deploy
   wait still runs only when server and recorder themselves redeploy. A schema that disappears after
   those processes are already up — a volume wiped underneath them — is not handled in-process: they

@@ -86,6 +86,9 @@ public sealed class MigrationApplyLockTests
         Func<Task> act = () => Program.MigrateAsync(app);
 
         await act.Should().ThrowAsync<StoreRequiredException>();
+        (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(
+            0,
+            "a throwing apply still releases the session lock");
     }
 
     /// <summary>
@@ -100,9 +103,70 @@ public sealed class MigrationApplyLockTests
 
         availability.IsAvailable.Should().BeFalse();
         availability.Explanation.Should().Contain("The connection dropped while applying migrations.");
+        (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(
+            0,
+            "a throwing apply still releases the session lock");
     }
 
-    private static WebApplication Build(string connectionString, bool required, ApplyGate? gate)
+    /// <summary>
+    /// The second apply is cancelled while it is waiting on the lock. Its session must not keep a lock,
+    /// and the holder releases its own when it finishes (gh#843).
+    /// </summary>
+    [Fact]
+    public async Task MigrateAsync_WhenCancelledWhileWaitingForTheLock_ReleasesIt()
+    {
+        string name = "cancel" + Guid.NewGuid().ToString("N");
+        await using TopstepXDbContext created = await _fixture.CreateEmptyDatabaseAsync(name);
+        string connectionString = new NpgsqlConnectionStringBuilder(_fixture.ConnectionString)
+        {
+            Database = name,
+        }.ConnectionString;
+
+        ApplyGate gate = new();
+        await using WebApplication holder = Build(connectionString, required: false, gate, migrate: false);
+        await using WebApplication waiter = Build(connectionString, required: false, gate, migrate: false);
+
+        Task<StoreAvailability> holding = Program.MigrateAsync(holder);
+        try
+        {
+            await gate.FirstEntered.WaitAsync(TimeSpan.FromSeconds(30));
+            Task<StoreAvailability> waiting = Program.MigrateAsync(waiter);
+            bool sawWaiter = await WaitForWaiterAsync(connectionString);
+            sawWaiter.Should().BeTrue(
+                "the second apply has to be blocked on the session lock before it is cancelled");
+
+            waiter.Lifetime.StopApplication();
+
+            Func<Task> cancelled = () => waiting.WaitAsync(TimeSpan.FromSeconds(30));
+            Exception thrown = (await cancelled.Should().ThrowAsync<Exception>()).Which;
+            (thrown is OperationCanceledException
+                || (thrown is PostgresException postgres
+                    && postgres.SqlState == PostgresErrorCodes.QueryCanceled))
+                .Should().BeTrue(
+                    "the stopping token has to end the lock wait, and the failure was "
+                    + thrown.GetType().Name + ": " + thrown.Message);
+
+            (await CountLocksAsync(connectionString, waitingOnly: true)).Should().Be(0);
+            (await CountLocksAsync(connectionString, waitingOnly: false)).Should().Be(
+                1,
+                "the holder still owns the lock after the cancelled waiter has gone");
+        }
+        finally
+        {
+            gate.ReleaseFirst();
+        }
+
+        (await holding).IsAvailable.Should().BeTrue();
+        (await CountLocksAsync(connectionString, waitingOnly: false)).Should().Be(
+            0,
+            "the holder releases the session lock when its apply finishes");
+    }
+
+    private static WebApplication Build(
+        string connectionString,
+        bool required,
+        ApplyGate? gate,
+        bool migrate = true)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         StripAmbientEnvironment(builder);
@@ -119,6 +183,11 @@ public sealed class MigrationApplyLockTests
         if (gate is null)
         {
             builder.Services.Replace(ServiceDescriptor.Singleton<IMigrationApplier>(new DroppingApplier()));
+        }
+        else if (!migrate)
+        {
+            builder.Services.Replace(ServiceDescriptor.Singleton<IMigrationApplier>(
+                new ParkingApplier(gate)));
         }
         else
         {
@@ -249,6 +318,18 @@ public sealed class MigrationApplyLockTests
                 gate.Leave();
             }
         }
+    }
+
+    /// <summary>
+    /// Holds the lock inside the applier and does not migrate. The cancel test only needs the wait.
+    /// </summary>
+    private sealed class ParkingApplier(ApplyGate gate) : IMigrationApplier
+    {
+        public Task ApplyAsync(
+            DatabaseFacade database,
+            int commandTimeoutSeconds,
+            CancellationToken cancellationToken)
+            => gate.EnterAsync();
     }
 
     /// <summary>The store answered, and the apply then lost the socket.</summary>

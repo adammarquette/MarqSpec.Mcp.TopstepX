@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **A required store exits, and one lock covers the migration apply** (gh#843). `Store__Required`
   defaults to false. When it is true, an unreachable store or a dropped migration connection (a
-  socket reset, or Postgres `57P01` or `57P03`) logs an error and the process exits.
+  socket reset, or Postgres `57P01` or `57P03`, including the `InvalidOperationException` EF wraps
+  around that SQLSTATE) logs an error and the process exits.
   `reselect-bars`, `export-tape` and `import-tape` return their store exit codes. The apply holds
   one session advisory lock. The recorder makes no lease or tape attempt while the store is
   unavailable at startup.

@@ -1156,12 +1156,13 @@ public static class Program
                 app.Lifetime.ApplicationStopping).ConfigureAwait(false);
             return StoreAvailability.Available();
         }
-        catch (Npgsql.NpgsqlException ex) when (IsDroppedStoreConnection(ex))
+        catch (Exception ex) when (IsDroppedStoreConnection(ex))
         {
             // The database was there a moment ago and went away mid-migration -- still an environment fact,
-            // not a schema defect. A socket reset, 57P01 and 57P03 are that fact. It degrades when the
-            // store is optional, and exits when it is required, so a cold start never stays degraded for
-            // the life of the process (gh#843).
+            // not a schema defect. A socket reset, 57P01 and 57P03 are that fact. EF's execution strategy
+            // wraps the SQLSTATE in InvalidOperationException; the wrapper is the same fact. It degrades
+            // when the store is optional, and exits when it is required, so a cold start never stays
+            // degraded for the life of the process (gh#843).
             StoreAvailability unavailable =
                 StoreAvailability.Unavailable("The connection dropped while applying migrations.");
             ThrowIfRequired(storeOptions, unavailable, logger);
@@ -1198,18 +1199,31 @@ public static class Program
     /// A socket reset, or Postgres shutting the session down (<c>57P01</c>) or refusing it
     /// (<c>57P03</c>). Those are the store going away, not a schema defect (gh#843).
     /// </summary>
-    /// <param name="exception">The failure from the apply.</param>
+    /// <param name="exception">The failure from the apply, including an outer wrapper.</param>
     /// <returns>Whether startup should degrade or exit instead of crashing.</returns>
-    private static bool IsDroppedStoreConnection(Npgsql.NpgsqlException exception)
+    /// <remarks>
+    /// <c>pg_terminate_backend</c> raises <c>PostgresException</c> <c>57P01</c>. EF's execution
+    /// strategy does not let that out: it throws <see cref="InvalidOperationException"/> ("a
+    /// transient failure") with the <c>PostgresException</c> inside. The SQLSTATE is what decides.
+    /// </remarks>
+    private static bool IsDroppedStoreConnection(Exception exception)
     {
-        if (exception.InnerException is System.Net.Sockets.SocketException)
+        for (Exception? current = exception; current is not null; current = current.InnerException)
         {
-            return true;
+            if (current is System.Net.Sockets.SocketException)
+            {
+                return true;
+            }
+
+            if (current is Npgsql.PostgresException postgres
+                && postgres.SqlState is Npgsql.PostgresErrorCodes.AdminShutdown
+                    or Npgsql.PostgresErrorCodes.CannotConnectNow)
+            {
+                return true;
+            }
         }
 
-        return exception is Npgsql.PostgresException postgres
-            && postgres.SqlState is Npgsql.PostgresErrorCodes.AdminShutdown
-                or Npgsql.PostgresErrorCodes.CannotConnectNow;
+        return false;
     }
 
     private static async Task<EmbeddingAvailability> ProbeEmbeddingsAsync(

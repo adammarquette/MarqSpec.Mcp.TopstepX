@@ -73,7 +73,8 @@ public sealed class MigrationApplyLockTests
         (await table.ExecuteScalarAsync()).Should().Be(true);
     }
 
-    public static TheoryData<string> DroppedConnections { get; } = ["socket", "57P01", "57P03"];
+    public static TheoryData<string> DroppedConnections { get; } =
+        ["socket", "57P01", "57P03", "57P01-wrapped"];
 
     /// <summary>
     /// The store answered, then the connection dropped during the apply. Required exits. It must not
@@ -410,8 +411,9 @@ public sealed class MigrationApplyLockTests
     }
 
     /// <summary>
-    /// A socket reset, or a <see cref="PostgresException"/> whose <c>SqlState</c> is the real
-    /// <c>57P01</c> or <c>57P03</c> code.
+    /// A socket reset, a <see cref="PostgresException"/> whose <c>SqlState</c> is the real
+    /// <c>57P01</c> or <c>57P03</c> code, or the <see cref="InvalidOperationException"/> EF wraps
+    /// around <c>57P01</c> when the applying backend is terminated.
     /// </summary>
     private static Exception Dropped(string kind) => kind switch
     {
@@ -428,6 +430,15 @@ public sealed class MigrationApplyLockTests
             "FATAL",
             "FATAL",
             "57P03"),
+        // What MigrateAsync actually sees when pg_terminate_backend kills the apply: EF's execution
+        // strategy wraps the 57P01 PostgresException in InvalidOperationException.
+        "57P01-wrapped" => new InvalidOperationException(
+            "An exception has been raised that is likely due to a transient failure.",
+            new PostgresException(
+                "terminating connection due to administrator command",
+                "FATAL",
+                "FATAL",
+                "57P01")),
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown drop."),
     };
 }

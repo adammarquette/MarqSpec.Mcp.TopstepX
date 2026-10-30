@@ -1307,7 +1307,8 @@ The handler filter and the query-string URL note above are unchanged.
 The 2026-08-22 rule stands for every launch that does not ask otherwise. `Store__Required` defaults
 to false. When it is false, an unreachable store, and a connection that drops while migrations are
 applied, still degrade. A drop is a socket reset, or Postgres `57P01` (admin shutdown) or `57P03`
-(cannot connect now). The process stays up, `/health` stays independent of the store, and the
+(cannot connect now). EF's execution strategy wraps that SQLSTATE in `InvalidOperationException`;
+the wrapper is the same drop. The process stays up, `/health` stays independent of the store, and the
 tools that need no store still answer. When it is true, those two facts log an error and the
 process exits non-zero, so an orchestrator that restarts a failed container can try again. The
 long-running host returns exit code 1. `reselect-bars`, `export-tape` and `import-tape` catch the

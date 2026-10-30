@@ -1328,10 +1328,10 @@ running — that process keeps its existing errors until it is restarted.
 
 `MigrateAsync` holds `pg_advisory_lock(138608641, 843)` on a dedicated unpooled connection for the
 whole apply, and releases it in a finally block. `138608641` is `0x08430001`, distinct from the
-index-build lock inside `AddTradeInstrumentTimeIndex`. EF's history-table lock ends when that
-transaction commits, which is how two processes both tried to create `TapeLeases`. The second
-apply waits, then finds the schema already there. Closing the connection releases the lock if the
-explicit unlock cannot run. The wait tries the lock first and logs once when it has to block.
+index-build lock inside `AddTradeInstrumentTimeIndex`. The lock is a guard against concurrent
+applies. The second apply waits, then finds the schema already there. Closing the connection
+releases the lock if the explicit unlock cannot run. The wait tries the lock first and logs
+once when it has to block.
 It is bounded by `Migrations__CommandTimeoutSeconds`, not by Npgsql's 30-second default, because
 the apply it waits on can be a per-chunk index build.
 

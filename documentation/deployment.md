@@ -196,7 +196,7 @@ before any production deploy. Production deploys stay manual and need Adam's app
   wait still runs only when server and recorder themselves redeploy. A schema that disappears after
   those processes are already up — a volume wiped underneath them — is not handled in-process: they
   keep their existing errors until they are restarted. `MigrateAsync` holds one session advisory lock
-  for the whole apply, so the two processes cannot both create `TapeLeases`.
+  for the whole apply, as a guard against concurrent applies.
   **Restart budget ([#848](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/848)):** under
   `Store__Required=true` server and recorder exit while Postgres is unreachable, and Railway's default 10
   restarts give up after roughly 15 minutes (~90 s `StartupWait` each). They state

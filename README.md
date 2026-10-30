@@ -248,7 +248,7 @@ connection that drops while migrations are applied (a socket reset, or Postgres 
 serving refusals for the life of the container. `reselect-bars`, `export-tape` and `import-tape`
 log that error and return their store exit codes. `/health` does not consult the store either way.
 The startup holder is still set once. Two processes migrating one database share one session
-advisory lock for the whole apply, so the second waits rather than both creating the same table.
+advisory lock for the whole apply, so the second waits until the first apply has finished.
 
 `Migrations__CommandTimeoutSeconds` is how long one migration command may run, in seconds. The default is
 `3600`. Npgsql's own default is 30, which is shorter than a per-chunk index-build migration on a large

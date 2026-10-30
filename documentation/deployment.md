@@ -186,12 +186,15 @@ before any production deploy. Production deploys stay manual and need Adam's app
   each capped at 3 s, 5 s apart (800 s at worst), within `preDeployTimeoutSeconds=900`. It runs on the
   private network with the service's variables, and a failure stops that deployment, so the old one keeps
   serving. `[pg-wait]` pins it; postgres and the seed have none.
-  **Remaining gap ([#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843)):**
-  the wait runs only when server and recorder themselves redeploy. A postgres-only redeploy (a
-  `POSTGRES_IMAGE` bump, a password change) onto an empty database leaves them running unmigrated, and the
-  seed then fails after its 4000 s wait. Staging's volume (gh#846) makes that rarer (an empty database now
-  means the first attach or a wipe) but does not remove it; #843's app-side retry is the real fix. Until it
-  lands: after a staging postgres redeploy onto an empty volume, redeploy server and recorder.
+  **Store required ([#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843)):**
+  `Store__Required=true` on server and recorder in production and staging (`[store-required]`). An
+  unreachable store, or a connection dropped while applying migrations, logs an error and the process
+  exits non-zero. `/health` does not consult the store. With the key false (the code default; local and
+  any environment that is not production or staging), ADR-0007's degrade is unchanged. The pre-deploy
+  wait still runs only when server and recorder themselves redeploy. A schema that disappears after
+  those processes are already up — a volume wiped underneath them — is not handled in-process: they
+  keep their existing errors until they are restarted. `MigrateAsync` holds one session advisory lock
+  for the whole apply, so the two processes cannot both create `TapeLeases`.
   **Restart budget ([#848](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/848)):** under
   `Store__Required=true` server and recorder exit while Postgres is unreachable, and Railway's default 10
   restarts give up after roughly 15 minutes (~90 s `StartupWait` each). They state
@@ -258,8 +261,10 @@ produce a second **writer**. ADR-0016 wants one recorder.
 **Open for Maker (product):**
 - Does a recorder waiting on the lease report healthy? If not, a redeploy fails its healthcheck while the old
   one holds the lease.
-- `server` and `recorder` both run `MigrateAsync` against one database. EF Core 9+ takes a migration lock, so
-  this should be safe. No option exists to limit migrations to one service.
+- `server` and `recorder` both run `MigrateAsync` against one database. The apply holds a session
+  advisory lock for the whole migration (`pg_advisory_lock(138608641, 843)`), because EF's history-table
+  lock does not cover the gap between migrations (gh#843). No option exists to limit migrations to one
+  service; the lock is what makes the overlap safe.
 
 **Data retention — proposed, pending an ADR.** Not in the template: the schema keeps the trade tape forever on
 purpose (`AddTradeTape` migration, `SchemaTests`). Proposed names are commented in

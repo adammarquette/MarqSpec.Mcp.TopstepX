@@ -162,6 +162,23 @@ section covers everything since `[0.5.0]`. gh#843 is not in this release; it is 
 
 ### Changed
 
+- **MCP clients authenticate with `Authorization: Bearer <token>`** (gh#855, via #856). Both staging and
+  production serve the static bearer token (`Mcp__Auth__Mode=StaticToken`, from the shared
+  `MCP_HTTP_BEARER_TOKEN`) until an OAuth provider is chosen; this is the ADR-0021 exception. OAuth returns
+  with a provider.
+
+- **The GHCR image is private** (gh#849, via #854). Pulling `ghcr.io/adammarquette/marqspec.mcp.topstepx`,
+  on Railway or with `docker pull`, needs a `read:packages` credential. On Railway that is Registry
+  Credentials, which need the Pro plan. `bootstrap.sh` step 5 reports a private package as expected.
+
+- **Server and recorder restart retries go from unset (null) to 100** (gh#848, via #853). Railway restart
+  policy stays ON_FAILURE with `restartPolicyMaxRetries: 100`, so a `Store__Required` exit rides out a
+  Postgres outage of a couple of hours. The first deploy of this release plans `null -> 100` and redeploys
+  both services once. Checked by `[app-restart]`.
+
+- **The `postgres-data` volume region is pinned to `us-east4-eqdc4a`** (gh#850, via #852), so plans stop
+  trying to null it and production's volume is created in the same region. Checked by `[pg-volume]`.
+
 - **A swallowed daily-cap release follows the same post-send rule** (gh#780). When the coordinator reports
   `LastReleaseFailed` and no cleanup exception was stored, a send that has already started is
   `OutcomeUnknown` and is not safe to retry. The result keeps the acked broker order id and the parsed
@@ -176,10 +193,10 @@ section covers everything since `[0.5.0]`. gh#843 is not in this release; it is 
   such a digest to production, behind the `production` environment. `railway-staging-preflight` reports what
   staging is missing (names only), and `railway-seed-check` keeps the seed in step with the migrations.
 - **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
-  `postgres` (Timescale pg17, pinned by digest), a public `server` behind the static bearer token
-  (gh#855), and a private single-replica `recorder`. Both server roles run one pinned image, and `/health` reports its tag and digest. Production
-  and staging keep Postgres on the `postgres-data` volume (gh#846); other environments are disposable, with
-  no volume and no export.
+  `postgres` (Timescale pg17, pinned by digest), a public `server` behind the static bearer token (gh#855),
+  and a private single-replica `recorder`. Both server roles run one pinned image, and `/health` reports its
+  tag and digest. Production and staging keep Postgres on the `postgres-data` volume (gh#846); other
+  environments are disposable, with no volume and no export.
   Secrets are Railway shared variables. A new `railway-template` CI job checks the template offline for every
   environment name; it is not a required check yet. `no-order-path` now refuses any `Trading__Enabled` in
   `.railway/` that is not the literal `"false"`. Nothing is deployed by this change. ADR-0025 (Railway as the

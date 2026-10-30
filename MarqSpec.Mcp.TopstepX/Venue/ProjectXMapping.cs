@@ -114,6 +114,7 @@ public static partial class ProjectXMapping
 
     /// <summary>Maps a gateway account.</summary>
     /// <param name="account">The gateway's account.</param>
+    /// <param name="stageResolver">Shared stage parser for reads and trading gates.</param>
     /// <returns>The venue account.</returns>
     /// <remarks>
     /// The account <b>name</b> is parsed into a stage and then dropped. It is vendor free text on a channel a
@@ -124,12 +125,14 @@ public static partial class ProjectXMapping
     /// account reports <c>simulated: true</c> while a real payout rides on it.
     /// </para>
     /// </remarks>
-    public static VenueAccount ToAccount(TradingAccount account)
+    public static VenueAccount ToAccount(TradingAccount account, IAccountStageResolver stageResolver)
     {
         ArgumentNullException.ThrowIfNull(account);
+        ArgumentNullException.ThrowIfNull(stageResolver);
+
         return new VenueAccount(
             account.Id,
-            ResolveStage(account.Name),
+            stageResolver.ResolveFromAccountName(account.Name),
             account.CanTrade,
             account.IsVisible,
             account.Balance);
@@ -152,7 +155,7 @@ public static partial class ProjectXMapping
     /// and a caller should treat it as such.
     /// </para>
     /// </remarks>
-    public static AccountStage ResolveStage(string? name)
+    internal static AccountStage ResolveStage(string? name)
     {
         if (string.IsNullOrWhiteSpace(name))
         {

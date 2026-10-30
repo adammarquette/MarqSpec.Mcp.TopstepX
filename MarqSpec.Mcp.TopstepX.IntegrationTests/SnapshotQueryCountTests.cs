@@ -98,8 +98,11 @@ public sealed class CountingInterceptor : DbCommandInterceptor
 /// <para>
 /// <b>Measured, before and after.</b> A default call — two resolutions, a hundred bars each, over a warm
 /// series — cost <b>60</b> statements, <b>44</b> of them the indicator block: eleven values plus eleven
-/// separate reads of <c>Bars</c> for each value's contract, twice over. It now costs <b>18</b>, with that
-/// block down to one statement per resolution.
+/// separate reads of <c>Bars</c> for each value's contract, twice over. The indicator block is one statement
+/// per resolution. On the store this fixture empties first, the first call is <b>20</b>. Two of those are
+/// the cold tenure probes in <c>BarCacheService.TenureStartAsync</c>: the latest bucket on a contract other
+/// than the front, and the earliest bucket on the front. A second call on the same context does not send
+/// them, and its ceiling is <b>18</b>.
 /// </para>
 /// <para>
 /// The <c>ContractId</c> read is counted <b>at zero</b> rather than the total being asserted alone, because
@@ -107,8 +110,14 @@ public sealed class CountingInterceptor : DbCommandInterceptor
 /// </para>
 /// </remarks>
 [Collection(SchemaCollection.Name)]
-public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
+public sealed class SnapshotQueryCountTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     private const string Venue = "querycount";
     private const string Contract = "CON.F.US.EP.Z26";
     private const int BarCount = 400;
@@ -116,8 +125,17 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
     /// <summary>What a default call cost before gh#388, measured on this fixture.</summary>
     private const int StatementsBefore = 60;
 
-    /// <summary>And after. Asserted as a ceiling: a cheaper snapshot is never a regression.</summary>
-    private const int StatementsAfter = 18;
+    /// <summary>
+    /// The first call on the store this fixture empties first, including the two cold tenure probes.
+    /// Asserted as a ceiling: a cheaper snapshot is never a regression.
+    /// </summary>
+    private const int StatementsAfter = 20;
+
+    /// <summary>
+    /// A second call on the same context. The two tenure probes are not sent again, so an N+1 that ran on
+    /// every call cannot hide under the cold ceiling.
+    /// </summary>
+    private const int StatementsWarm = 18;
 
     private static DateTimeOffset Start =>
         MarketClock.FromMarket(new DateOnly(2026, 8, 18), new TimeOnly(9, 0)).ToUniversalTime();
@@ -189,10 +207,46 @@ public sealed class SnapshotQueryCountTests(SchemaFixture fixture)
 
         counted.Count.Should().BeLessThanOrEqualTo(
             StatementsAfter,
-            "a default snapshot cost {0} statements before gh#388 and {1} after, on this fixture",
+            "a default snapshot cost {0} statements before gh#388 and {1} on the first call after this "
+            + "fixture empties the store",
             StatementsBefore,
             StatementsAfter);
+
+        // The two statements a warm neighbour used to hide. TenureStartAsync asks them only when a bucket
+        // is missing, once per instrument, and the service memoises the answer for the rest of the call's
+        // context. Named by the SQL they send, not by a raised ceiling.
+        counted.Commands.Count(IsNonFrontTenureProbe).Should().Be(
+            1,
+            "the cold path asks for the latest bucket on a contract other than the front");
+        counted.Commands.Count(IsFrontTenureProbe).Should().Be(
+            1,
+            "the cold path asks for the earliest bucket on the front contract");
+
+        int coldCount = counted.Count;
+        await snapshot.GetMarketSnapshot("ES", null, 100, CancellationToken.None);
+
+        List<string> warm = counted.Commands.Skip(coldCount).ToList();
+        warm.Should().HaveCountLessThanOrEqualTo(
+            StatementsWarm,
+            "the second call on this context must not repeat the two tenure probes, and an N+1 on every "
+            + "call would land here");
+        warm.Count(IsNonFrontTenureProbe).Should().Be(0);
+        warm.Count(IsFrontTenureProbe).Should().Be(0);
     }
+
+    /// <summary>The latest bucket whose contract is not the venue front (<c>TenureStartAsync</c>).</summary>
+    private static bool IsNonFrontTenureProbe(string sql) =>
+        sql.Contains("\"Bars\"", StringComparison.Ordinal)
+        && sql.Contains("\"ContractId\" IS NULL", StringComparison.Ordinal)
+        && sql.Contains("DESC", StringComparison.Ordinal);
+
+    /// <summary>The earliest bucket on the venue front (<c>TenureStartAsync</c>).</summary>
+    private static bool IsFrontTenureProbe(string sql) =>
+        sql.Contains("\"Bars\"", StringComparison.Ordinal)
+        && sql.Contains("\"BucketStart\"", StringComparison.Ordinal)
+        && sql.Contains("\"ContractId\" =", StringComparison.Ordinal)
+        && sql.Contains("LIMIT 1", StringComparison.Ordinal)
+        && !sql.Contains("DESC", StringComparison.Ordinal);
 
     [Fact]
     public async Task TheBatchedReadings_AreTheOnesGetIndicatorAtWouldHaveReturned()

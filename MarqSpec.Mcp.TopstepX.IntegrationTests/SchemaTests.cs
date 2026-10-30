@@ -17,8 +17,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// tier: an in-memory run would go green and prove nothing about hypertables, vector indexes or constraints.
 /// </remarks>
 [Collection(SchemaCollection.Name)]
-public sealed class SchemaTests(SchemaFixture fixture)
+public sealed class SchemaTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     private readonly SchemaFixture _fixture = fixture;
 
     [Fact]
@@ -59,6 +65,8 @@ public sealed class SchemaTests(SchemaFixture fixture)
     [Theory]
     [InlineData("TapeCoverage")]
     [InlineData("FootprintCells")]
+    [InlineData("TradingAuditLog")]
+    [InlineData("TapeExportReceipts")]
     public async Task LedgerAndProjectionTables_AreNotHypertables(string table)
     {
         // TapeCoverage is a listening ledger (like BarCoverage); FootprintCells are a projection

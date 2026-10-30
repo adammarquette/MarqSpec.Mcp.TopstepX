@@ -1,0 +1,252 @@
+using System.Data;
+using System.Data.Common;
+using System.Runtime.ExceptionServices;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+
+namespace MarqSpec.Mcp.TopstepX.Data;
+
+/// <summary>
+/// Sends the per-chunk trade index only when the prepare step marked this session (gh#756).
+/// </summary>
+/// <remarks>
+/// <para>
+/// <c>CREATE INDEX … WITH (timescaledb.transaction_per_chunk)</c> commits once per chunk. Plain Postgres
+/// rejects that reloption, and Timescale will not run it inside the prepare procedure. The migration's
+/// prepare step sets <see cref="SessionSetting"/> to <c>1</c> only when <c>Trades</c> is a hypertable. This
+/// gate then leaves the top-level statement alone. Any other session rewrites it to <c>SELECT 1</c> before
+/// it is sent, which is what keeps a database without Timescale able to start.
+/// </para>
+/// <para>
+/// A failed statement does not release a session advisory lock. This interceptor releases it on that
+/// failure. Npgsql resets a pooled connection with <c>DISCARD ALL</c>, and that reset releases advisory
+/// locks when it is sent. The failure path unlocks here rather than leaving the key for the reset. The
+/// probe and the unlock copy the migration command's timeout, so they are not left on Npgsql's 30-second
+/// default. An unlock that throws <see cref="DbException"/>, <see cref="InvalidOperationException"/>, or
+/// <see cref="TimeoutException"/> is logged and swallowed, so the original command error stays the one
+/// <c>CommandFailed</c> reports. <see cref="OperationCanceledException"/> and fatal exceptions are not in
+/// that set, so they propagate. When the context has no <see cref="ILoggerFactory"/>, the warning goes to
+/// <see cref="NullLogger"/>. A non-fatal failure while resolving that logger or writing the warning is
+/// discarded, so it does not replace the command error. <see cref="OutOfMemoryException"/> and the other
+/// fatal exceptions propagate, including when the logger wraps one.
+/// </para>
+/// </remarks>
+internal sealed class TradeInstrumentIndexBuildInterceptor : DbCommandInterceptor
+{
+    /// <summary>The session flag the prepare procedure sets. <c>1</c> means the next statement builds per chunk.</summary>
+    internal const string SessionSetting = "marqspec.trade_index_per_chunk";
+
+    /// <summary>The reloption plain Postgres rejects. Present only on the top-level build statement.</summary>
+    internal const string PerChunkMarker = "timescaledb.transaction_per_chunk";
+
+    /// <summary>Releases one level of the build lock. A session that does not hold it returns false.</summary>
+    internal const string ReleaseLockSql = "SELECT pg_advisory_unlock(123207681, 190601);";
+
+    /// <inheritdoc />
+    public override InterceptionResult<int> NonQueryExecuting(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result)
+    {
+        Gate(command);
+        return base.NonQueryExecuting(command, eventData, result);
+    }
+
+    /// <inheritdoc />
+    public override async ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        await GateAsync(command, cancellationToken).ConfigureAwait(false);
+        return await base.NonQueryExecutingAsync(command, eventData, result, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public override void CommandFailed(DbCommand command, CommandErrorEventData eventData)
+    {
+        ReleaseIfOurs(command, eventData);
+        base.CommandFailed(command, eventData);
+    }
+
+    /// <inheritdoc />
+    public override async Task CommandFailedAsync(
+        DbCommand command,
+        CommandErrorEventData eventData,
+        CancellationToken cancellationToken = default)
+    {
+        await ReleaseIfOursAsync(command, eventData, cancellationToken).ConfigureAwait(false);
+        await base.CommandFailedAsync(command, eventData, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary><c>1</c> is the only mark that means the per-chunk statement should be sent.</summary>
+    /// <param name="setting">The value of <see cref="SessionSetting"/>, or null when it was never set.</param>
+    /// <returns><see langword="true"/> when the top-level per-chunk statement must run.</returns>
+    internal static bool SessionRequestsPerChunk(object? setting) =>
+        setting is string value && value == "1";
+
+    private static void Gate(DbCommand command)
+    {
+        if (!IsPerChunkStatement(command) || command.Connection is null)
+        {
+            return;
+        }
+
+        using DbCommand probe = command.Connection.CreateCommand();
+        probe.CommandText = "SELECT current_setting('" + SessionSetting + "', true);";
+        probe.CommandTimeout = command.CommandTimeout;
+        probe.Transaction = command.Transaction;
+        if (!SessionRequestsPerChunk(probe.ExecuteScalar()))
+        {
+            command.CommandText = "SELECT 1";
+        }
+    }
+
+    private static async Task GateAsync(DbCommand command, CancellationToken cancellationToken)
+    {
+        if (!IsPerChunkStatement(command) || command.Connection is null)
+        {
+            return;
+        }
+
+        await using DbCommand probe = command.Connection.CreateCommand();
+        probe.CommandText = "SELECT current_setting('" + SessionSetting + "', true);";
+        probe.CommandTimeout = command.CommandTimeout;
+        probe.Transaction = command.Transaction;
+        if (!SessionRequestsPerChunk(await probe.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false)))
+        {
+            command.CommandText = "SELECT 1";
+        }
+    }
+
+    private static bool IsPerChunkStatement(DbCommand command) =>
+        command.CommandText.Contains(PerChunkMarker, StringComparison.Ordinal);
+
+    private static void ReleaseIfOurs(DbCommand command, CommandErrorEventData eventData)
+    {
+        if (!TryOpenOurs(command, out DbConnection connection))
+        {
+            return;
+        }
+
+        using DbCommand unlock = connection.CreateCommand();
+        unlock.CommandText = ReleaseLockSql;
+        unlock.CommandTimeout = command.CommandTimeout;
+        try
+        {
+            unlock.ExecuteScalar();
+        }
+        catch (Exception exception) when (IsRecoverableUnlockFailure(exception))
+        {
+            // The build error is the one startup has to log. A database error, a closed connection, or a
+            // timeout on the unlock must not replace it. Cancellation and fatal exceptions still propagate.
+            LogUnlockFailure(eventData, exception);
+        }
+    }
+
+    private static async Task ReleaseIfOursAsync(
+        DbCommand command,
+        CommandErrorEventData eventData,
+        CancellationToken cancellationToken)
+    {
+        if (!TryOpenOurs(command, out DbConnection connection))
+        {
+            return;
+        }
+
+        await using DbCommand unlock = connection.CreateCommand();
+        unlock.CommandText = ReleaseLockSql;
+        unlock.CommandTimeout = command.CommandTimeout;
+        try
+        {
+            await unlock.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsRecoverableUnlockFailure(exception))
+        {
+            LogUnlockFailure(eventData, exception);
+        }
+    }
+
+    private static bool TryOpenOurs(DbCommand command, out DbConnection connection)
+    {
+        if (command.Connection is { State: ConnectionState.Open } open
+            && (command.CommandText.Contains(PerChunkMarker, StringComparison.Ordinal)
+                || command.CommandText.Contains("marqspec_build_ix_trades_instrument_time", StringComparison.Ordinal)))
+        {
+            connection = open;
+            return true;
+        }
+
+        connection = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// Database, state, and timeout failures are recoverable here. Cancellation and fatal exceptions are
+    /// outside this set, so they propagate.
+    /// </summary>
+    private static bool IsRecoverableUnlockFailure(Exception exception) =>
+        exception is DbException or InvalidOperationException or TimeoutException;
+
+    private static void LogUnlockFailure(CommandErrorEventData eventData, Exception exception)
+    {
+        // No logger is an explicit NullLogger. See the catch below for which failures are discarded.
+        try
+        {
+            ILogger logger = NullLogger<TradeInstrumentIndexBuildInterceptor>.Instance;
+            ILoggerFactory? factory = eventData.Context?.GetService<ILoggerFactory>();
+            if (factory is not null)
+            {
+                logger = factory.CreateLogger<TradeInstrumentIndexBuildInterceptor>();
+            }
+
+            logger.LogWarning(
+                exception,
+                "The trade index build lock was not released. The original command error is unchanged.");
+        }
+        catch (Exception logFailure)
+        {
+            // A non-fatal failure while resolving or writing the warning is discarded. Out of memory and
+            // the other fatal exceptions still propagate. The logger wraps a provider failure, so the
+            // fatal exception is the one inside that wrapper.
+            Exception? fatal = FindFatal(logFailure);
+            if (fatal is not null)
+            {
+                ExceptionDispatchInfo.Capture(fatal).Throw();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The exception to let out of the unlock warning, or null when the failure is safe to discard.
+    /// </summary>
+    private static Exception? FindFatal(Exception exception)
+    {
+        if (exception is OutOfMemoryException or AccessViolationException or InsufficientExecutionStackException)
+        {
+            return exception;
+        }
+
+        if (exception is AggregateException aggregate)
+        {
+            foreach (Exception inner in aggregate.InnerExceptions)
+            {
+                Exception? fatal = FindFatal(inner);
+                if (fatal is not null)
+                {
+                    return fatal;
+                }
+            }
+
+            return null;
+        }
+
+        return exception.InnerException is null ? null : FindFatal(exception.InnerException);
+    }
+}

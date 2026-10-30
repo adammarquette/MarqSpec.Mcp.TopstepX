@@ -38,21 +38,22 @@ rather than reword it.
 
 | Document | ~tok | Read it when |
 |---|---:|---|
-| [`prd.md`](prd.md) | 15.0K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
-| [`architecture.md`](architecture.md) | 23.8K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
-| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 24.7K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
-| [`data-dictionary.md`](data-dictionary.md) | 12.5K | You need the data model — the eleven tables, their keys, and why each key is shaped that way. |
+| [`prd.md`](prd.md) | 18.9K | You need **what is required**, or you are citing an `R-#`. Ids are stable and never renumbered, and a citation that does not resolve here fails CI. |
+| [`architecture.md`](architecture.md) | 28.5K | You need **how the pieces fit** — the cache-aside path, the projection, the transports. |
+| [`mcp-tool-catalogue`](mcp-tool-catalog.md) | 29.2K | You are adding, changing or calling a tool. The tool surface is a contract; this is it. |
+| [`data-dictionary.md`](data-dictionary.md) | 15.1K | You need the data model — the twelve tables, their keys, and why each key is shaped that way. |
+| [`tape-export-reload.md`](tape-export-reload.md) | 0.7K | You are reading an exported tape file with DuckDB or pandas (gh#755). |
 ## Working agreements
 
 | Document | ~tok | Read it when |
 |---|---:|---|
 | [`AGENT-MEMORY.md`](AGENT-MEMORY.md) | 14.8K | **Before starting any work.** It grows by *append, don't overwrite* and shrinks by the retirement rule in its own header (gh#254), so this row moves in both directions — correct it in the pull request that moves the file. |
-| [`project-board-workflow.md`](project-board-workflow.md) | 6.3K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
-| [`deployment.md`](deployment.md) | 13.4K | You are operating a deployed environment — account and region, staging zone lookup (`Z00545362JA49XMTT3U7Q`), pipeline deploy and rollback (gh#520), delete+redeploy after `ROLLBACK_COMPLETE`, Fargate quota 64, secret ARNs (gh#519), cost (gh#527), what pages you (gh#526), WAF lockout (gh#528), Observability (gh#537, gh#646), store restore (gh#522), postgres task stop and remaining-cash tape load (gh#525), which release / rotation / scale-to-zero / failed deploy (gh#523), MCP-host callback allowlist (gh#656). |
+| [`project-board-workflow.md`](project-board-workflow.md) | 7.2K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
+| [`deployment.md`](deployment.md#railway-gh758) | 11.5K | Release is GHCR publish only (`release.yml`); running an instance — Docker pull/compose, **Railway** (`.railway/railway.ts`: services, shared variables, the headless staging seed service, volume permissions, two-recorder window, dashboard-only steps, proposed retention keys; gh#758, ADR-0025 draft), env vars, `check-deployment.sh`, operator rollback, the migration command timeout against a healthcheck that cannot see a process that is not listening yet (gh#756), vendor DNS on a custom compose network (gh#697). |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`agents/README.md`](agents/README.md) | 1.0K | You are wearing a role hat. **This row prices the index, not the route it serves** — each contract behind it is a separate read, and the index prices all five in its own gated `~tok` column (gh#178). Reviewer, Platform and Coordinator contracts **never auto-load**; open them yourself. |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 5.4K | Branching, claiming, commits, PRs, and the Definition of Done. |
-| [`../AGENTS.md`](../AGENTS.md) | 3.0K | Loads automatically. The non-negotiables and the role routing table. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 6.3K | Branching, claiming, commits, PRs, and the Definition of Done. |
+| [`../AGENTS.md`](../AGENTS.md) | 3.2K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)
 

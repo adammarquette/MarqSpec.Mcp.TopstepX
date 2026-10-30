@@ -137,9 +137,9 @@ public sealed class IndicatorPeriodSelectionTests : IAsyncLifetime
         composed.BucketStart.Should().Be(primary.BucketStart);
         composed.ContractId.Should().Be(primary.ContractId);
 
-        // The vocabulary did not widen either: twelve names, whatever the periods are configured to.
+        // The vocabulary did not widen either: fifteen names, whatever the periods are configured to.
         slice.Indicators.Should().HaveCount(
-            12, "additional periods add instances, never keys -- the map's key set is the catalogue's names");
+            15, "additional periods add instances, never keys -- the map's key set is the catalogue's names");
     }
 
     [Fact]

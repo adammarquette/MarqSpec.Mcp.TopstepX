@@ -46,8 +46,14 @@ public sealed class VolumeProfileService(
     /// <param name="start">The start of the ask, inclusive.</param>
     /// <param name="end">The end of the ask, exclusive.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <param name="health">
+    /// The recorder status read once for this call. When set, it wins over
+    /// <see cref="TapeAvailabilityHolder"/>, so the window and the caller's live flag
+    /// cannot be decided from two different instants.
+    /// </param>
     /// <returns>The profile and the window the ledger actually covered.</returns>
-    /// <exception cref="InvalidOperationException">No tape overlaps the ask.</exception>
+    /// <exception cref="NoClosedTapeException">No closed tape overlaps the ask.</exception>
+    /// <exception cref="InvalidOperationException">The ask is entirely before recording began.</exception>
     /// <exception cref="ArgumentException">The covered cells carry no volume.</exception>
     public async Task<VolumeProfileRead> ReadAsync(
         string venue,
@@ -55,10 +61,11 @@ public sealed class VolumeProfileService(
         int resolutionMinutes,
         DateTimeOffset start,
         DateTimeOffset end,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TapeAvailability? health = null)
     {
         FootprintRead cells = await ReadCellsAsync(
-                venue, instrument, resolutionMinutes, start, end, cancellationToken)
+                venue, instrument, resolutionMinutes, start, end, cancellationToken, health)
             .ConfigureAwait(false);
 
         return new VolumeProfileRead(VolumeProfileAggregator.From(cells.Cells), cells.Window);
@@ -74,15 +81,21 @@ public sealed class VolumeProfileService(
     /// <param name="start">The start of the ask, inclusive.</param>
     /// <param name="end">The end of the ask, exclusive.</param>
     /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <param name="health">
+    /// The recorder status read once for this call. When set, a still-open row is coverage
+    /// only while that snapshot is listening — the holder is not read again.
+    /// </param>
     /// <returns>The cells and the window the ledger actually covered.</returns>
-    /// <exception cref="InvalidOperationException">No tape overlaps the ask.</exception>
+    /// <exception cref="NoClosedTapeException">No closed tape overlaps the ask.</exception>
+    /// <exception cref="InvalidOperationException">The ask is entirely before recording began.</exception>
     public async Task<FootprintRead> ReadCellsAsync(
         string venue,
         InstrumentId instrument,
         int resolutionMinutes,
         DateTimeOffset start,
         DateTimeOffset end,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TapeAvailability? health = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(venue);
 
@@ -94,8 +107,15 @@ public sealed class VolumeProfileService(
                 "A bar size must be positive.");
         }
 
+        // Align both ends, then let the ledger confine them. A hole that begins inside
+        // the bar stays at the ledger start; a ledger that ends inside a bar is not extended.
         CoveredTapeWindow window = await ConfineAsync(
-                venue, instrument, start, end, cancellationToken)
+                venue,
+                instrument,
+                AlignAskStart(start, resolutionMinutes),
+                AlignAskEnd(end, resolutionMinutes),
+                cancellationToken,
+                health)
             .ConfigureAwait(false);
 
         DateTimeOffset loadFrom = window.Start.AddMinutes(-resolutionMinutes);
@@ -133,6 +153,108 @@ public sealed class VolumeProfileService(
     }
 
     /// <summary>
+    /// Aggregates the closed window from stored prints. Nothing is written.
+    /// </summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The instrument.</param>
+    /// <param name="resolutionMinutes">The bar size to bucket at.</param>
+    /// <param name="start">The start of the ask, inclusive.</param>
+    /// <param name="end">The end of the ask, exclusive.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <param name="health">
+    /// The recorder status read once for this call. A still-open row is not coverage while
+    /// this snapshot is not listening.
+    /// </param>
+    /// <returns>Cells from <see cref="FootprintAggregator"/> and the ledger window.</returns>
+    /// <remarks>
+    /// The recorder does not write footprint cells as it listens. A process that is not the
+    /// recorder therefore cannot serve the stored projection: it would be stale, partial, or
+    /// absent, and the refusal would tell a stdio caller to project. The tape is the record.
+    /// <see cref="FootprintAggregator.Aggregate"/> is pure, and this method does not call
+    /// <c>SaveChanges</c> (ADR-0016). Volume profile is
+    /// <see cref="VolumeProfileAggregator.From"/> over these same cells.
+    /// The ask is floored and its end is aligned up before the ledger confines it, the
+    /// same rule as the stored-cell path. When coverage reaches those boundaries the edge
+    /// bars are complete and the window reports them. When the ledger begins later or ends
+    /// sooner, the window stays on the ledger. Prints are not filtered to one contract
+    /// first: a bucket whose prints span two contracts is dropped by
+    /// <see cref="FootprintAggregator"/>, the same as the stored projection. The inclusive
+    /// start and the exclusive end are what decide which prints become cells.
+    /// </remarks>
+    /// <exception cref="NoClosedTapeException">No closed tape overlaps the ask.</exception>
+    /// <exception cref="InvalidOperationException">The ask is entirely before recording began.</exception>
+    public async Task<FootprintRead> AggregateClosedCoverageAsync(
+        string venue,
+        InstrumentId instrument,
+        int resolutionMinutes,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken cancellationToken,
+        TapeAvailability health)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+        ArgumentNullException.ThrowIfNull(health);
+
+        if (resolutionMinutes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(resolutionMinutes),
+                resolutionMinutes,
+                "A bar size must be positive.");
+        }
+
+        CoveredTapeWindow window = await ConfineAsync(
+                venue,
+                instrument,
+                AlignAskStart(start, resolutionMinutes),
+                AlignAskEnd(end, resolutionMinutes),
+                cancellationToken,
+                health)
+            .ConfigureAwait(false);
+
+        List<TradeRecord> rows = await _database.Trades
+            .AsNoTracking()
+            .Where(trade => trade.Venue == venue
+                && trade.Instrument == instrument.Symbol
+                && trade.TradeTimeUtc >= window.Start
+                && trade.TradeTimeUtc < window.End)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        List<TradePrint> prints =
+        [
+            .. rows.Select(row => new TradePrint(
+                row.Instrument,
+                row.ContractId,
+                row.TradeTimeUtc,
+                row.Price,
+                row.Size,
+                row.Direction)),
+        ];
+
+        List<FootprintCell> cells = [.. FootprintAggregator.Aggregate(prints, resolutionMinutes)];
+
+        return new FootprintRead(cells, window);
+    }
+
+    /// <summary>
+    /// Floors an ask to the bar that contains it. Confine then runs on that instant, so
+    /// both paths include the opening edge bar when the ledger reaches its open, and a
+    /// ledger that begins later is not pulled backward over a hole.
+    /// </summary>
+    private static DateTimeOffset AlignAskStart(DateTimeOffset start, int resolutionMinutes) =>
+        BarGapDetector.AlignDown(start, TimeSpan.FromMinutes(resolutionMinutes));
+
+    /// <summary>
+    /// Aligns an ask's end up to the bar close. Confine then runs on that instant, so
+    /// both paths include the closing edge bar when the ledger reaches that close, and a
+    /// ledger that ends sooner is not extended past the tape. An end already on a boundary
+    /// is unchanged.
+    /// </summary>
+    private static DateTimeOffset AlignAskEnd(DateTimeOffset end, int resolutionMinutes) =>
+        BarGapDetector.AlignUp(end, TimeSpan.FromMinutes(resolutionMinutes));
+
+    /// <summary>
     /// Confines the ask to the newest contiguous listening run, or refuses when no tape overlaps.
     /// </summary>
     private async Task<CoveredTapeWindow> ConfineAsync(
@@ -140,7 +262,8 @@ public sealed class VolumeProfileService(
         InstrumentId instrument,
         DateTimeOffset start,
         DateTimeOffset end,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TapeAvailability? health)
     {
         IQueryable<TapeCoverageRecord> query = _database.TapeCoverage
             .AsNoTracking()
@@ -148,7 +271,7 @@ public sealed class VolumeProfileService(
                 && c.Instrument == instrument.Symbol
                 && c.RangeStart < end
                 && c.RangeEnd > start);
-        if (!IsListening(instrument))
+        if (!IsListening(instrument, health))
         {
             query = query.Where(c => c.RangeEnd != TapeCoverageRecord.StillListeningEnd);
         }
@@ -159,7 +282,7 @@ public sealed class VolumeProfileService(
 
         if (rows.Count == 0)
         {
-            throw await EmptyTapeRefusalAsync(venue, instrument, cancellationToken)
+            throw await EmptyTapeRefusalAsync(venue, instrument, cancellationToken, health)
                 .ConfigureAwait(false);
         }
 
@@ -176,12 +299,13 @@ public sealed class VolumeProfileService(
     private async Task<InvalidOperationException> EmptyTapeRefusalAsync(
         string venue,
         InstrumentId instrument,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        TapeAvailability? health)
     {
         IQueryable<TapeCoverageRecord> covered = _database.TapeCoverage
             .AsNoTracking()
             .Where(c => c.Venue == venue && c.Instrument == instrument.Symbol);
-        if (!IsListening(instrument))
+        if (!IsListening(instrument, health))
         {
             covered = covered.Where(c => c.RangeEnd != TapeCoverageRecord.StillListeningEnd);
         }
@@ -202,16 +326,25 @@ public sealed class VolumeProfileService(
                 + ". An empty answer here would look like a quiet market.");
         }
 
-        return new InvalidOperationException(
+        return new NoClosedTapeException(
             "A window with no tape cannot produce a footprint or volume profile. There is no "
             + "market-tape backfill, so an empty answer would look like a quiet market.");
     }
 
     /// <summary>
-    /// A still-open row is a taped window only while this instrument is Listening. Without a
-    /// holder — get_key_levels used to construct one that way — the sentinel is never ordinary
+    /// A still-open row is a taped window only while this instrument is Listening. A status
+    /// handed in for this call wins, so a holder that moves between the tool's read and this
+    /// one cannot include the sentinel the tool already decided was not coverage. Without
+    /// either — get_key_levels used to construct one that way — the sentinel is never ordinary
     /// coverage: a leftover during an outage must not bind as a POC of the lookback (gh#221).
     /// </summary>
-    private bool IsListening(InstrumentId instrument) =>
-        _tape is { } holder && holder.For(instrument.Symbol).IsListening;
+    private bool IsListening(InstrumentId instrument, TapeAvailability? health)
+    {
+        if (health is not null)
+        {
+            return health.IsListening;
+        }
+
+        return _tape is { } holder && holder.For(instrument.Symbol).IsListening;
+    }
 }

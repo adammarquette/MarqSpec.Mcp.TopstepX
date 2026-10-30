@@ -1,0 +1,117 @@
+# railway-promote.yml -- promote ONE digest that already passed staging to Railway production (gh#758).
+#
+# workflow_dispatch ONLY: production never auto-deploys. `environment: production` is where Adam's GitHub
+# required-reviewer rule applies (a repository setting, not this file); the job waits for that approval
+# before it can read the production RAILWAY_TOKEN.
+#
+# REFUSES any digest without a successful `staging` GitHub deployment from railway-staging.yml whose payload
+# names that exact version and digest, then deploys exactly that pin. Production keeps the Postgres volume,
+# so the first run is also where initdb-on-the-volume and one restart get verified (deployment.md); until
+# Adam approves otherwise, treat every production run as a manual, watched operation.
+name: railway-promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag that passed staging, X.Y.Z"
+        required: true
+      digest:
+        description: "The exact digest railway-staging recorded, sha256:<64 hex>"
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+  deployments: write
+
+concurrency:
+  group: railway-production
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/adammarquette/marqspec.mcp.topstepx
+  RAILWAY_CLI_VERSION: "5.71.0"
+
+jobs:
+  gate:
+    name: digest passed staging?
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a successful staging record for this digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be X.Y.Z"; exit 1; }
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::digest must be sha256:<64 hex>"; exit 1; }
+          ids="$(gh api --paginate "repos/$GITHUB_REPOSITORY/deployments?environment=staging&per_page=100" \
+                   -q ".[] | select(.payload.digest == \"$DIGEST\" and .payload.version == \"$VERSION\") | .id")"
+          for id in $ids; do
+            state="$(gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses?per_page=1" -q '.[0].state')"
+            if [ "$state" = success ]; then echo "ok: staging deployment $id passed $VERSION@$DIGEST"; exit 0; fi
+          done
+          echo "::error::no successful railway-staging record for $VERSION@$DIGEST; run railway-staging first"
+          exit 1
+
+  deploy:
+    name: deploy (production, manual)
+    needs: gate
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify the tag resolves to the digest
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          actual="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [ "$actual" = "$DIGEST" ] || { echo "::error::$IMAGE:$VERSION is $actual, not $DIGEST"; exit 1; }
+
+      - name: Pin the template (local commit, not pushed)
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          scripts/railway/pin-image.sh "$VERSION" "$DIGEST"
+          git -c user.name=ci -c user.email=ci@invalid commit -q -m "pin $VERSION" .railway/railway.ts
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Template checks (deployable mode; Trading__Enabled literal "false")
+        run: |
+          scripts/check-railway-template.sh --mode deployable
+          scripts/check-no-order-path.sh
+
+      - name: Install the Railway CLI
+        run: npm install -g "@railway/cli@$RAILWAY_CLI_VERSION" && railway --version
+
+      # Root package.json, exact pin + lockfile, checked against scripts/railway (gh#832).
+      - name: Install the Railway SDK
+        run: scripts/railway/install-sdk.sh
+
+      # No --confirm-destructive: a plan that would delete or detach anything in production stops here.
+      - name: Plan (saved)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway config plan --environment production --out railway-plan.json
+
+      - name: Apply exactly that plan
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway config apply --environment production --plan railway-plan.json --yes
+
+      - name: /health reports the promoted image
+        env:
+          BASE_URL: ${{ vars.RAILWAY_PRODUCTION_BASE_URL }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 600

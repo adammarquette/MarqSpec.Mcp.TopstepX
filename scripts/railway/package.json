@@ -1,0 +1,10 @@
+{
+  "name": "topstepx-railway-template-check",
+  "private": true,
+  "type": "module",
+  "description": "CI-only: typechecks and evaluates .railway/railway.ts against a pinned Railway SDK (gh#758).",
+  "devDependencies": {
+    "railway": "3.16.0",
+    "typescript": "7.0.2"
+  }
+}

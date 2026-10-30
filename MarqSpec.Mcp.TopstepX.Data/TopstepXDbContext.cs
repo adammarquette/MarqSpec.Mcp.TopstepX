@@ -78,6 +78,21 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Buy and sell volume per price per bar — a projection over <see cref="Trades"/>.</summary>
     public DbSet<FootprintCellRecord> FootprintCells => Set<FootprintCellRecord>();
 
+    /// <summary>Status of each tape-export file. Not a copy of the tape and not a retention policy.</summary>
+    public DbSet<TapeExportReceipt> TapeExportReceipts => Set<TapeExportReceipt>();
+
+    /// <summary>Append-only ledger of every trading attempt (ADR-0024 §5, gh#709).</summary>
+    public DbSet<TradingAuditLogRecord> TradingAuditLog => Set<TradingAuditLogRecord>();
+
+    /// <inheritdoc />
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        // Every context, including one a test constructs by hand. Without this gate the per-chunk reloption
+        // is sent to plain Postgres and startup fails (ADR-0004, gh#756).
+        optionsBuilder.AddInterceptors(new TradeInstrumentIndexBuildInterceptor());
+        base.OnConfiguring(optionsBuilder);
+    }
+
     /// <inheritdoc />
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -241,8 +256,12 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.Property(t => t.Price).HasColumnType(PriceColumnType);
             entity.Property(t => t.Direction).HasConversion<int>();
 
-            // The shape of every read: one instrument, one contract, a window.
+            // One instrument, one contract, a window — the tape reads.
             entity.HasIndex(t => new { t.Instrument, t.ContractId, t.TradeTimeUtc });
+
+            // Recorder health names the instrument and the session, not the contract. The index above cannot
+            // seek that predicate: ContractId sits between Instrument and TradeTimeUtc (gh#756).
+            entity.HasIndex(t => new { t.Instrument, t.TradeTimeUtc });
         });
 
         modelBuilder.Entity<TapeCoverageRecord>(entity =>
@@ -287,6 +306,35 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.HasIndex(c => new { c.Instrument, c.ResolutionMinutes, c.BucketStart });
         });
 
+        modelBuilder.Entity<TapeExportReceipt>(entity =>
+        {
+            entity.ToTable("TapeExportReceipts");
+            entity.HasKey(receipt => new
+            {
+                receipt.Day,
+                receipt.Kind,
+                receipt.Format,
+                receipt.Venue,
+                receipt.Instrument,
+                receipt.ContractId,
+                receipt.ResolutionMinutes,
+            });
+
+            entity.Property(receipt => receipt.Kind).HasMaxLength(32);
+            entity.Property(receipt => receipt.Format).HasMaxLength(16);
+            entity.Property(receipt => receipt.Venue).HasMaxLength(64);
+            entity.Property(receipt => receipt.Instrument).HasMaxLength(32);
+            entity.Property(receipt => receipt.ContractId).HasMaxLength(64);
+            entity.Property(receipt => receipt.RelativePath).HasMaxLength(512);
+            entity.Property(receipt => receipt.Sha256).HasMaxLength(64);
+            entity.Property(receipt => receipt.DriveFileId).HasMaxLength(128);
+            entity.Property(receipt => receipt.UploadState).HasMaxLength(16);
+            entity.Property(receipt => receipt.FailureType).HasMaxLength(128);
+
+            // The read a later retention decision would make: one day, and whether each file landed.
+            entity.HasIndex(receipt => new { receipt.Day, receipt.UploadState });
+        });
+
         modelBuilder.Entity<ObservationRecord>(entity =>
         {
             entity.ToTable("Observations");
@@ -295,6 +343,31 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.Property(o => o.Kind).HasMaxLength(32);
 
             entity.HasIndex(o => new { o.Instrument, o.RecordedAt });
+        });
+
+        modelBuilder.Entity<TradingAuditLogRecord>(entity =>
+        {
+            entity.ToTable("TradingAuditLog");
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.Id).UseIdentityAlwaysColumn();
+
+            entity.Property(a => a.Tool).HasMaxLength(64);
+            entity.Property(a => a.IdempotencyKey).HasMaxLength(256);
+            entity.Property(a => a.RequestHash).HasMaxLength(64);
+            entity.Property(a => a.Outcome).HasMaxLength(32);
+            entity.Property(a => a.ParsedStage).HasMaxLength(16);
+            entity.Property(a => a.VenueErrorCode).HasMaxLength(64);
+
+            entity.HasIndex(a => new { a.AccountId, a.AttemptedAt });
+            entity.HasIndex(a => a.IdempotencyKey);
+
+            // One pre-send Unknown claim per (account, tool, key). Empty keys stay out so unkeyed gate
+            // callers can still append. A later Live or Failed row is a different outcome and is allowed.
+            // Cap-release Attempted rows are also a different outcome, so a negative charge can still append.
+            entity.HasIndex(a => new { a.AccountId, a.Tool, a.IdempotencyKey })
+                .IsUnique()
+                .HasDatabaseName("IX_TradingAuditLog_AccountId_Tool_IdempotencyKey_Unknown")
+                .HasFilter("\"Outcome\" = 'Unknown' AND \"IdempotencyKey\" <> ''");
         });
 
         // pgvector only maps under Npgsql. Configuring this unconditionally breaks every provider-agnostic

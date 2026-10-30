@@ -379,6 +379,73 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.ToTable("TapeCoverage", (string)null);
                 });
 
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TapeExportReceipt", b =>
+                {
+                    b.Property<DateOnly>("Day")
+                        .HasColumnType("date");
+
+                    b.Property<string>("Kind")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("Format")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Venue")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Instrument")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ContractId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("ResolutionMinutes")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("DriveFileId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTimeOffset>("ExportedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int?>("FailureStatus")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("FailureType")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("RelativePath")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<int>("RowCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Sha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("UploadState")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.HasKey("Day", "Kind", "Format", "Venue", "Instrument", "ContractId", "ResolutionMinutes");
+
+                    b.HasIndex("Day", "UploadState");
+
+                    b.ToTable("TapeExportReceipts", (string)null);
+                });
+
             modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TapeLeaseRecord", b =>
                 {
                     b.Property<string>("Venue")
@@ -446,9 +513,77 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
 
                     b.HasKey("Venue", "Instrument", "ContractId", "TradeTimeUtc", "Sequence");
 
+                    b.HasIndex("Instrument", "TradeTimeUtc");
+
                     b.HasIndex("Instrument", "ContractId", "TradeTimeUtc");
 
                     b.ToTable("Trades", (string)null);
+                });
+
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.TradingAuditLogRecord", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("AccountId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("AttemptedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("ContractCount")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("DryRun")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long?>("OrderId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ParsedStage")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Tool")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("VenueErrorCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IdempotencyKey");
+
+                    b.HasIndex("AccountId", "AttemptedAt");
+
+                    b.HasIndex("AccountId", "Tool", "IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_TradingAuditLog_AccountId_Tool_IdempotencyKey_Unknown")
+                        .HasFilter("\"Outcome\" = 'Unknown' AND \"IdempotencyKey\" <> ''");
+
+                    b.ToTable("TradingAuditLog", (string)null);
                 });
 #pragma warning restore 612, 618
         }

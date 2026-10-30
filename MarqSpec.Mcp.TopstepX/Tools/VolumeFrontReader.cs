@@ -22,10 +22,40 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// rescued by this object.
 /// </para>
 /// </remarks>
-/// <param name="volumeFront">The tape-derived front-month service.</param>
-public sealed class VolumeFrontReader(TapeVolumeFrontService volumeFront)
+public sealed class VolumeFrontReader
 {
-    private readonly TapeVolumeFrontService _volumeFront = volumeFront;
+    private readonly TapeVolumeFrontService? _volumeFront;
+
+    private readonly Func<
+        InstrumentId,
+        CancellationToken,
+        DateTimeOffset?,
+        bool,
+        Task<ToolPayloads.VolumeFrontInfo>>? _probe;
+
+    /// <summary>Creates the production reader.</summary>
+    /// <param name="volumeFront">The tape-derived front-month service.</param>
+    public VolumeFrontReader(TapeVolumeFrontService volumeFront)
+    {
+        _volumeFront = volumeFront;
+    }
+
+    /// <summary>
+    /// Test seam. The probe replaces the service, so a refusal after the cells exist does
+    /// not need a subclass. The test assembly sees this through InternalsVisibleTo, which
+    /// is why this type stays sealed.
+    /// </summary>
+    /// <param name="probe">The read the test wants, including one that throws.</param>
+    internal VolumeFrontReader(
+        Func<
+            InstrumentId,
+            CancellationToken,
+            DateTimeOffset?,
+            bool,
+            Task<ToolPayloads.VolumeFrontInfo>> probe)
+    {
+        _probe = probe;
+    }
 
     /// <summary>Reads both answers for the front month.</summary>
     /// <param name="instrument">The instrument.</param>
@@ -33,16 +63,30 @@ public sealed class VolumeFrontReader(TapeVolumeFrontService volumeFront)
     /// <param name="asOfUtc">The instant to evaluate, or null for the newest.</param>
     /// <param name="resolveGateway">Whether the gateway's live pick is asked for at all.</param>
     /// <returns>The front, as the payload reports it.</returns>
-    public async Task<ToolPayloads.VolumeFrontInfo> ReadAsync(
+    public Task<ToolPayloads.VolumeFrontInfo> ReadAsync(
         InstrumentId instrument,
         CancellationToken cancellationToken,
         DateTimeOffset? asOfUtc = null,
         bool resolveGateway = true)
     {
+        if (_probe is { } probe)
+        {
+            return probe(instrument, cancellationToken, asOfUtc, resolveGateway);
+        }
+
+        return ReadFromServiceAsync(instrument, cancellationToken, asOfUtc, resolveGateway);
+    }
+
+    private async Task<ToolPayloads.VolumeFrontInfo> ReadFromServiceAsync(
+        InstrumentId instrument,
+        CancellationToken cancellationToken,
+        DateTimeOffset? asOfUtc,
+        bool resolveGateway)
+    {
         TapeVolumeFrontRead read;
         try
         {
-            read = await _volumeFront
+            read = await _volumeFront!
                 .ReadAsync(instrument, cancellationToken, asOfUtc, resolveGateway)
                 .ConfigureAwait(false);
         }

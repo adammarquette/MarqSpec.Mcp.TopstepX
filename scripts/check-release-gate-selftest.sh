@@ -11,7 +11,7 @@
 # state gh#108 was filed for, one layer down.
 #
 # So the real script is run against fixtures whose faults are known, on every CI run, and is required to
-# reject each one -- AND against one that is genuinely sound, which it is required to accept. Six rejections
+# reject each one -- AND against one that is genuinely sound, which it is required to accept. Five rejections
 # alone would all be satisfied by `exit 1`, i.e. by a gate that says no to everything, which is exactly as
 # useless as one that says yes to everything and rather harder to notice.
 #
@@ -60,7 +60,7 @@ expect_red() {
   # A CASE WITH NO NEEDLE IS SATISFIED BY EXIT STATUS ALONE, which is the one thing this file's header
   # refuses (gh#586 review). `for needle in "$@"` over zero arguments runs zero iterations and falls straight
   # through to `ok "rejected"` -- so a future case that forgets its needle reports the gate as sound on a
-  # runner where `check-release-gate.sh` exited 1 for "gh is required" and checked nothing. All seven calls
+  # runner where `check-release-gate.sh` exited 1 for "gh is required" and checked nothing. All five rejection calls
   # below pass at least one needle today; this is what keeps it that way, and it fails the SUITE rather than
   # the case, because a self-test that cannot assert is not a result to tally.
   [ $# -ge 1 ] || die "SELF-TEST BROKEN  expect_red \"$label\": no needle.
@@ -165,73 +165,13 @@ expect_red "an unresolved mapping leaking into the next file" \
   "$FIXTURES/leak" \
   'mapping with no `name:` under it'
 
-# 6. Two environments, one of them sound. The shape gh#518 puts the repository in: the deploy workflows name
-#    `production` (the GHCR publish approval, real and protected) AND `aws-production` (the deploy approval),
-#    and until the maintainer runs bootstrap.sh the second does not exist. The gate must name THE ONE THAT
-#    IS MISSING -- not merely go red, and not go red about the one that is fine -- and its count must say one
-#    of two, so a red run on a two-environment workflow set sends the reader to the right setting. Three
-#    needles: the missing one by its whole quoted name, the sound one reported PROTECTED on the same run, and
-#    the tally. A fixture whose second environment EXISTS without a reviewer is the blind spot stated in the
-#    header; this is the nearest shape a fixture can reach without administration: write.
-mkdir -p "$FIXTURES/two"
-cat > "$FIXTURES/two/release.yml" <<'YAML'
-jobs:
-  gate:
-    name: Await release approval
-    runs-on: ubuntu-latest
-    environment: production
-  deploy-production:
-    name: Deploy production
-    runs-on: ubuntu-latest
-    environment: gh518-selftest-second-environment-that-must-not-exist
-YAML
-expect_red "two environments where one is sound and the other does not exist" \
-  "$FIXTURES/two" \
-  'The environment "gh518-selftest-second-environment-that-must-not-exist" does not exist' \
-  'PROTECTED    production' \
-  '1 of 2 environment(s) would not stop an unattended publish'
-
-# 7. A workflow_dispatch *input* named `environment` is not a GitHub Environment (gh#520). deploy.yml
-#    has to call the choice that, and a discovery that treats every `environment:` key as a job
-#    environment reports `<unresolved-mapping>` on the input block — red, for the wrong reason, on
-#    the one workflow the rollback path needs. This fixture has ONLY that input and no job
-#    `environment:` key; the gate must say it found no environment, never an unresolved mapping.
-mkdir -p "$FIXTURES/dispatch-input"
-cat > "$FIXTURES/dispatch-input/deploy.yml" <<'YAML'
-on:
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: Target environment
-        required: true
-        type: choice
-        options:
-          - staging
-          - production
-jobs:
-  deploy-staging:
-    if: inputs.environment == 'staging'
-    runs-on: ubuntu-latest
-YAML
-expect_red "a workflow_dispatch input named environment is not an environment" \
-  "$FIXTURES/dispatch-input" \
-  'no `environment:` key found'
-
-# 8. AND IT MUST STILL SAY YES. A gate that rejects everything is exactly as useless as one that accepts
-#    everything, and every case above is a rejection -- so `exit 1` would satisfy all seven. This one feeds it
+# 6. AND IT MUST STILL SAY YES. A gate that rejects everything is exactly as useless as one that accepts
+#    everything, and every case above is a rejection -- so `exit 1` would satisfy all five. This one feeds it
 #    the mapping form of `environment:` naming the REAL, protected environment and requires a pass, which also
 #    keeps that spelling covered: no workflow in this repo uses it today, so nothing else would notice if it
-#    stopped being understood. The dispatch input named `environment` sits in the same file so a discovery
-#    that still walks every `environment:` key would report an unresolved mapping and reject a sound gate.
+#    stopped being understood.
 mkdir -p "$FIXTURES/mapping"
 cat > "$FIXTURES/mapping/release.yml" <<'YAML'
-on:
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: not a GitHub Environment
-        type: choice
-        options: [staging, production]
 jobs:
   gate:
     name: Await release approval
@@ -268,4 +208,4 @@ if [ "$failures" -gt 0 ]; then
   exit 1
 fi
 
-ok "ok  check-release-gate.sh rejected all 7 bad fixtures, each for its own stated reason, and accepted the sound one."
+ok "ok  check-release-gate.sh rejected all 5 bad fixtures, each for its own stated reason, and accepted the sound one."

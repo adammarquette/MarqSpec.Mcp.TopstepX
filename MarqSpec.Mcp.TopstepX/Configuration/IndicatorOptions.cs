@@ -43,6 +43,16 @@ public sealed class IndicatorOptions : IValidatableObject
     [Range(1, 1_000)]
     public int RsiPeriod { get; init; } = 14;
 
+    /// <summary>
+    /// The ADX / DI period, shared by <c>adx</c>, <c>plus-di</c> and <c>minus-di</c>. Wilder's default is 14.
+    /// </summary>
+    /// <remarks>
+    /// One period for all three: ADX is a smoothing of the spread between the two DI, so a server that
+    /// computed them at different windows would publish an ADX that no pair of its own DI explains.
+    /// </remarks>
+    [Range(1, 1_000)]
+    public int AdxPeriod { get; init; } = 14;
+
     /// <summary>The simple moving average window.</summary>
     [Range(1, 1_000)]
     public int SmaPeriod { get; init; } = 20;
@@ -72,6 +82,9 @@ public sealed class IndicatorOptions : IValidatableObject
 
     /// <summary>Additional RSI periods, comma-separated. Empty when unset.</summary>
     public string? AdditionalRsiPeriods { get; init; }
+
+    /// <summary>Additional ADX / DI periods, comma-separated. Empty when unset.</summary>
+    public string? AdditionalAdxPeriods { get; init; }
 
     /// <summary>Additional SMA periods, comma-separated. Empty when unset.</summary>
     public string? AdditionalSmaPeriods { get; init; }
@@ -105,6 +118,12 @@ public sealed class IndicatorOptions : IValidatableObject
     /// <exception cref="InvalidOperationException">The list fails a rule <see cref="Validate"/> would refuse.</exception>
     public IReadOnlyList<int> RsiPeriods() =>
         BuildPeriods(nameof(AdditionalRsiPeriods), AdditionalRsiPeriods, RsiPeriod, 1, 1_000);
+
+    /// <summary>The configured ADX / DI periods: <see cref="AdxPeriod"/> first, then the additional ones.</summary>
+    /// <returns>The configured periods.</returns>
+    /// <exception cref="InvalidOperationException">The list fails a rule <see cref="Validate"/> would refuse.</exception>
+    public IReadOnlyList<int> AdxPeriods() =>
+        BuildPeriods(nameof(AdditionalAdxPeriods), AdditionalAdxPeriods, AdxPeriod, 1, 1_000);
 
     /// <summary>The configured SMA periods: <see cref="SmaPeriod"/> first, then the additional ones, in order.</summary>
     /// <returns>The configured periods.</returns>
@@ -173,6 +192,7 @@ public sealed class IndicatorOptions : IValidatableObject
     {
         yield return (nameof(AdditionalAtrPeriods), AdditionalAtrPeriods, AtrPeriod, 1, 1_000);
         yield return (nameof(AdditionalRsiPeriods), AdditionalRsiPeriods, RsiPeriod, 1, 1_000);
+        yield return (nameof(AdditionalAdxPeriods), AdditionalAdxPeriods, AdxPeriod, 1, 1_000);
         yield return (nameof(AdditionalSmaPeriods), AdditionalSmaPeriods, SmaPeriod, 1, 1_000);
         yield return (nameof(AdditionalEmaPeriods), AdditionalEmaPeriods, EmaPeriod, 1, 1_000);
         yield return (nameof(AdditionalMacdSlowPeriods), AdditionalMacdSlowPeriods, MacdSlowPeriod, 13, 1_000);

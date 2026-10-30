@@ -1,7 +1,8 @@
 # MCP tool catalogue
 
 **Status:** Living · **Date:** 2026-08-23 · **Relates to:** PRD `R-5` ·
-[ADR-0002](adr/0002-read-only-venue-boundary.md) (read-only) ·
+[ADR-0024](adr/0024-gated-trading-actions-practice-v1.md) (gated writes) ·
+[ADR-0002](adr/0002-read-only-venue-boundary.md) (superseded for the five order tools) ·
 [ADR-0008](adr/0008-numeric-only-tool-payloads.md) (numeric-only) ·
 [ADR-0007](adr/0007-dual-transport.md) (transports) ·
 [ADR-0011](adr/0011-contract-roll-boundary.md) (contract rolls)
@@ -18,14 +19,18 @@ page against either**, so check it against the code, never against another docum
 
 ## Rules that apply to every tool
 
-- **Read-only against the venue.** Nothing here transmits an order. Not behind a flag.
+- **Reads do not transmit.** The five tools under [Orders](#orders) are the only venue writes, and each one
+  calls `TradingRiskGate` and nothing else. `Trading__Enabled` defaults to false and turns every one of them
+  off, including cancel and close. The kill switch blocks those same calls. Nothing else on this surface
+  places, modifies, cancels or closes.
 - **Over HTTP, every call is authenticated, in one of two modes** — and the tool surface is identical under
   both. `Mcp__Auth__Mode=StaticToken`, the compose stack and the plain `dotnet run` recipe, is one shared
   secret in `Authorization: Bearer …`. `OAuth`, the deployed instance
   ([ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md)), is a Cognito-issued access token carrying
   the `topstepx-mcp/read` scope, and a call without one gets a `401` naming the protected-resource metadata
   the connector reads to find the issuer. Which mode a deployment runs is its environment's `Mcp__Auth__Mode`;
-  `/health` answers without a credential under both (ADR-0007, gh#512).
+  `/health` answers without a credential under both (ADR-0007, gh#512). `GET /health/recorder` is not that
+  probe: it is the same report as `get_recorder_health` and stays behind the gate (R-5.14, gh#756).
 - **Numeric-only payloads.** Every field is a number, a timestamp, a boolean, or an enum name from a closed set
   this repository defines. No vendor free text is echoed back.
 - **An unknown instrument is an error**, and it names what would have been valid. A wrong symbol and a quiet
@@ -279,7 +284,8 @@ The workhorse. Cache-aside: served from the store, with only genuinely missing b
 
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
-history: { selection, unresolved: [expiryCode] } }`.
+history: { selection, unresolved: [expiryCode] },
+available: { earliest, latest } }`.
 
 `fetchedBuckets` and `venueRequests` are both in the response, and **they answer different questions.** Only
 one of them is evidence of a round trip.
@@ -361,11 +367,28 @@ minute of deliberate delay on top of the round trips, and a *narrow* read pays o
 just spent the allowance (`R-1.10`). A read served from the store issues no venue request at all and so cannot
 be paced.
 
+#### `available` — the range this call actually returned (`R-1.16`, gh#695)
+
+**Not the window asked for.** `available.earliest` and `available.latest` are the first and last bar open in
+the series that came back. Both keys are omitted when the series is empty — never whether they equal `null`;
+the `available` object itself is always there, as `{}` on an empty answer. Compare `available.earliest` to
+`fromUtc`: a later earliest means the vendor (and this store) have no bars before that instant.
+
+That is the shape of Simulated-tier **minute** history: a rolling window of about nine weeks, measured
+2026-09-06 as 63 days on every contract alike, with empty pages and no error past the edge. Hourly history
+reaches about a year. The numbers live on the
+[gateway wiki](wiki/pages/projectx-gateway-api.md#expired-contracts-and-history-depth--measured-2026-09-06-on-the-simulated-tier)
+and they age; the timestamps are the measurement. Paging at the silent 1000-bar cap (`R-1.4`) and pacing at
+50 requests / 30 seconds (`R-1.10`) were already how a wider window is walked — they cannot invent bars the
+vendor does not hold.
+
 ### `get_latest_bars(symbol, resolutionMinutes, count)`
 The recent window, which is what an agent actually asks for. Same shape as `get_bars`, anchored on the last
-**closed** bucket. `count` is bounded by `MaxRows`. The look-back is four bar spans per bar wanted **plus
+**closed** bucket — `contracts`, `history` and `available` included, and those mean what they mean there.
+`count` is bounded by `MaxRows`. The look-back is four bar spans per bar wanted **plus
 four days** (`ToolGuards.LookbackWindow`), and a coarse resolution with a large `count` is refused for
-reaching back past the start of the calendar — one of the cross-axis pairs above.
+reaching back past the start of the calendar — one of the cross-axis pairs above. Read `available.earliest`
+before treating a short series as a quiet market.
 
 ### `get_session_bars(symbol, session, fromUtc, toUtc)`
 One OHLCV bar per **whole** trading session over a window — the day, the overnight, or any named slice of it.
@@ -379,7 +402,8 @@ description trying to describe both.
 Returns `{ symbol, session, baseResolutionMinutes, bars: [{ tradeDate, t, closeUtc, o, h, l, c, v }],
 absent: [{ tradeDate, reason, expectedBuckets, missingBuckets }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
-history: { selection, unresolved: [expiryCode] } }`.
+history: { selection, unresolved: [expiryCode] },
+available: { earliest, latest } }`.
 
 `tradeDate` is the CME trade date and the key to join the two lists on. `t` is when the session opened — the
 same thing `t` means on every other series here — and `closeUtc` when it closed, exclusive, carried beside it
@@ -545,7 +569,8 @@ operator's configured periods on exactly the terms `get_indicators` states, refu
 `macd`, `macd-signal` and `macd-histogram` it is the **SLOW** length.
 
 **The session vocabulary is `get_indicators`' minus `vwap`** — `atr`, `rsi`, `sma`, `ema`, `macd`,
-`macd-signal`, `macd-histogram`, `bb-upper`, `bb-middle`, `bb-lower`, `vwap-rolling`. **Asking for `vwap` is
+`macd-signal`, `macd-histogram`, `bb-upper`, `bb-middle`, `bb-lower`, `vwap-rolling`, `adx`, `plus-di`,
+`minus-di`. **Asking for `vwap` is
 an error naming `vwap-rolling`**, not an empty series: session-anchored VWAP weights a session's own volume
 distribution and a session that *is* one bar has none, and
 [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) requires the surface say so rather than omit
@@ -624,8 +649,15 @@ how much of the window has bars underneath it.
 
 `indicator` is a **closed vocabulary**, held in `IndicatorCatalog` and named in full by the tool's own
 description — `atr`, `rsi`, `sma`, `ema`, `macd`, `macd-signal`, `macd-histogram`, `vwap`, `vwap-rolling`,
-`bb-upper`, `bb-middle`, `bb-lower`. An unknown name **errors and lists the known ones** rather than returning
-an empty series — a typo must not read as "no data".
+`bb-upper`, `bb-middle`, `bb-lower`, `adx`, `plus-di`, `minus-di`. An unknown name **errors and lists the
+known ones** rather than returning an empty series — a typo must not read as "no data".
+
+**`adx` is direction-blind, and the two `-di` legs are what carry the side.** ADX rises on a strong move
+either way, so a collapse and a melt-up score alike and reading it alone as bullish is the classic misuse.
+All three share one period — ADX is a smoothing of the spread between the DI, so computing them at different
+windows would publish an ADX no pair of this server's own DI explains (`gh#670`). **`adx` warms up twice
+over**: it smooths a value that is itself smoothed, so its first value lands at `2 × period − 1` where the DI
+land at `period`, and a caller reaching back only as far as the DI need reads the difference as a hole.
 
 **`vwap-rolling` is the volume-weighted average price over the trailing `period` bars**, and it is a separate
 member rather than `vwap` at a period because it is a different calculation: `vwap` is anchored to the
@@ -879,7 +911,7 @@ only goes forward from when recording began.
 Returns `{ symbol, resolutionMinutes, cells: [{ t, p, buy, sell }], covered: { start, end, narrowed },
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
 front: { used, agree, tapeContractId?, tapeSessionDate?, gatewayContractId?,
-changeover?: { sessionDate, flippedAtUtc?, fromContractId, toContractId } } }`.
+changeover?: { sessionDate, flippedAtUtc?, fromContractId, toContractId } }, live, reason }`.
 
 **`covered` is the ledger window, not the ask.** A roll or listening hole narrows to the newest contiguous
 run of the contract in front and sets `narrowed`. `contracts.span` is always `SingleContract` — a profile
@@ -887,32 +919,80 @@ or footprint is never computed across a roll (`R-9.4`). Segment `firstBucket` / 
 times from the cells**, not the exclusive coverage end — that range stays on `covered`.
 
 **A window before recording began is refused** and names the earliest covered time. **A covered window
-whose stored tape has prints the cells do not yet reflect is projected on this read** — no vendor
+whose stored tape has prints the cells do not yet reflect is projected on this read while this
+process is the recorder** — no vendor
 call, the same trigger as indicators
 ([ADR-0014](adr/0014-indicators-are-projected-on-read-too.md) shape, gh#366). Completeness is
 whether the cells match the tape, not whether two `RecordedAt` clocks agree (gh#377).
 If the tape still produces no cell (a roll inside the bar, or prints that do not count) the tool
-**refuses** rather than returning empty `cells`. **When that instrument's live tape is not
-listening the tool refuses** with a sentence naming the fix — an empty answer and an absent tape must not
-look the same (gh#218). Another symbol's subscribe does not make this one healthy. Top-level fields are
-always present. **`front` is a new object, not a replacement for `contracts`.** `used` is `tape-volume`
+**refuses** rather than returning empty `cells`. **When this process is not the recorder** for that
+instrument, the closed window is aggregated from stored prints in memory and `live` is false
+(gh#728). Nothing is written. `reason` is a closed code (`listening`, `never_started`,
+`held_by_another_recorder`; the refusing states have codes too and still refuse). `live` true
+means this process is listening, not that the cells are current. A gap at the start, a cut at
+the end, a hole, or a roll sets `covered.narrowed`. That is the only short-window flag.
+`covered.end` is when the data ends. The ask is floored to the bar open before the ledger
+confines it, on both paths. When coverage reaches that open, the edge bar is complete and
+`covered.start` is that open; the floor itself is not a narrowing. When the ledger begins
+later in the bar, `covered.start` stays the ledger start, so a hole is not backdated. The
+end is aligned up to the bar close before the ledger confines it, on both paths. When
+coverage reaches that close, the edge bar is complete and `covered.end` is that close; the
+alignment itself is not a narrowing. When the ledger ends sooner, `covered.end` stays the
+ledger end.
+A still-open sentinel is not that coverage.
+**A window with no closed tape still refuses** with a sentence naming the fix — under stdio, run a
+separate HTTP recorder on the same database; the sentence does not say to stop a recorder. An empty
+answer and an absent tape must not look the same (gh#218). When this
+process is the recorder but that instrument is reconnecting, not subscribed, or stopped, or its
+claim was taken over or lapsed, the tool still refuses with a sentence naming the fix. Those last
+two are their own reason codes, not "another recorder holds the claim". A session conflict stops
+the recorder (gh#757). The refusal names the trading platform and
+`MarketData__StopOnSessionConflict`, and it says the recorder will not reconnect the hub and will
+not call loginKey. The one-way stop latches only on a documented hub name, HTTP 401,
+`InvalidSession`, or `SessionNotFound`. A missing token stops the recorder and does not close login
+for these tools. The held token is renewed with `POST /api/Auth/validate` whenever the venue client
+is configured, not `loginKey`. A latched stop posts no further validate. An expired token, or one
+inside its refresh window after a failed renewal, may post a budgeted loginKey. That login
+disconnects any live session on the account, including a healthy trading platform. A failed login
+waits before it tries again. With the switch off, replicas (gh#772) kick each other about once per
+54-minute cycle. Tools may keep using the token already held until it ages out. Another
+symbol's subscribe does not make this one healthy and does not make its closed history read as live.
+A read that is actually returned with `live` false is counted, tagged with `reason`. A refusal is not.
+Top-level fields are always present, `live` and `reason` included. **`front` is a new object, not a replacement for `contracts`.** `used` is `tape-volume`
 or `none` — never a silent prefer of the gateway. `tapeContractId`, `tapeSessionDate`,
 `gatewayContractId` and `changeover` are omitted when that answer does not exist. No `why` sentence
 (ADR-0008). `contracts` stays the newest listening run from cells and `TapeCoverage`.
 
 ### `get_volume_profile(symbol, resolutionMinutes, fromUtc, toUtc)`
-Volume by price, the point of control, and the 70% value area — an aggregate over the same stored cells
-`get_footprint` reads (`R-9`). Same covered-window and contract-provenance rules, same forward-only
-refusal, same on-read projection when the stored tape has prints the cells do not yet reflect (gh#366,
-gh#377).
+Volume by price, the point of control, and the 70% value area — an aggregate over the same cells
+`get_footprint` reads (`R-9`). When this process is not the recorder those cells are aggregated
+from the closed tape in memory, the same prints, and nothing is written. Same covered-window and
+contract-provenance rules, same forward-only refusal, same on-read projection while this process
+is the recorder and the stored tape has prints the cells do not yet reflect (gh#366, gh#377).
 
 Returns `{ symbol, resolutionMinutes, byPrice: [{ p, v }], pointOfControl, valueAreaLow, valueAreaHigh,
-valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts, front }`.
+valueAreaVolume, totalVolume, covered: { start, end, narrowed }, contracts, front, live, reason }`.
 
-Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). **When that instrument's live tape
-is not listening the tool refuses** with a sentence naming the fix — an empty profile and an absent tape
-must not look the same (gh#218). Another symbol's subscribe does not make this one healthy. Top-level
-fields are always present. **`front` is the same object `get_footprint` returns** — tape volume-front
+Coverage without volume **refuses** rather than returning an empty profile (`R-9.6`). **When this process
+is not the recorder**, the profile is derived from that in-memory aggregation and `live` is false
+(gh#728). `reason` and `covered.narrowed` mean what they mean on `get_footprint`. `live` true means
+this process is listening, not that the cells are current. A gap at the start or a cut at the end
+sets `covered.narrowed`.
+A window with no closed tape still **refuses** with a sentence naming the fix — an empty profile and an
+absent tape must not look the same, and the sentence does not say to stop the recorder (gh#218).
+When this process is the recorder but that instrument is reconnecting, not subscribed, or stopped,
+or its claim was taken over or lapsed, the tool still refuses with a sentence naming the fix.
+A session conflict stops the recorder (gh#757). The refusal names the trading platform and
+`MarketData__StopOnSessionConflict`, and it says the recorder will not reconnect the hub and will
+not call loginKey. The one-way stop latches only on a documented hub name, HTTP 401,
+`InvalidSession`, or `SessionNotFound`. A missing token stops the recorder and does not close login
+for these tools. The held token is renewed with `POST /api/Auth/validate` whenever the venue client
+is configured, not `loginKey`. A latched stop posts no further validate. An expired token, or one
+inside its refresh window after a failed renewal, may post a budgeted loginKey. That login
+disconnects any live session on the account, including a healthy trading platform. A failed login
+waits before it tries again. With the switch off, replicas (gh#772) kick each other about once per
+54-minute cycle. Tools may keep using the token already held until it ages out.
+Another symbol's subscribe does not make this one healthy. Top-level fields are always present. **`front` is the same object `get_footprint` returns** — tape volume-front
 and the gateway pick as separate fields; `contracts` is still the listening-run cut.
 
 ### `get_contract_roll(symbol, asOfUtc?)`
@@ -946,6 +1026,42 @@ An unknown instrument is an error (`R-5.3`), not an empty roll.
 **`asOfUtc` defaults to now** and is bounded like `get_market_session`'s `atUtc` (`R-5.4`):
 past the last instant the session rules can be expressed at, the tool refuses naming both
 that instant and the horizon, rather than faulting below the boundary.
+
+### `get_recorder_health()`
+
+Whether this process's recorder is doing its job (R-5.14, gh#756). A dead recorder used to surface only in
+an end-of-day job. The same payload is served to a monitor at `GET /health/recorder`, behind the bearer
+gate. `/health` stays the unauthenticated liveness probe and does not open a database connection.
+
+Returns `{ asOfUtc, feedConnected, feed, database, session?, contracts, gaps?, cachedAtUtc?, ageMs? }`.
+
+`feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
+subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
+
+`database` is `Available` or `Unavailable` from a live probe. That probe does not replace the startup
+`StoreAvailability` the other tools use, and a failure carries no connection target.
+
+`contracts` lists every configured symbol. A `contractId` is present only when that contract printed or was
+covered inside the elapsed session. A rolled-off contract, and a symbol that is not configured, are absent:
+neither becomes a row, so neither shows up as a session-long gap or keeps the report degraded. `listening`
+and `tape` are that symbol's tape health. `contractId` is omitted when the symbol has no contract active in
+the session. `lastTickUtc` is omitted when that contract has no print inside the session — a missing print
+time is not filled in.
+
+`session` is the product session in progress, or the one that most recently closed when the market is shut.
+It is omitted when the calendar cannot name one. A declared early close (`MarketData__EarlyCloses`) applies
+only to this report's session: it ends that session at the declared Central time, and the afternoon after it
+is not a hole here. It does not change bar expectation. `gaps` are the
+`TapeCoverage` holes in the elapsed part of that session. An open listen counts through `asOfUtc` only while
+that symbol is still listening; a still-open row while it is not listening is not coverage. An empty array
+means the elapsed window is covered. The array is omitted when the ledger could not be read, which is a
+different statement from "no holes". Time still in the future of an open session is not a hole. The database
+check has a short deadline; exceeding it leaves `database` Unavailable and counts `timeout`, which is not
+the same as the caller cancelling. This process keeps a built report for five seconds. A reply that was just
+built omits `cachedAtUtc` and `ageMs`. A reply reused from that memo includes `cachedAtUtc`, when it was
+stored, and `ageMs`, how old it is at this read. A build the caller cancelled is not stored.
+
+A down feed is still HTTP 200 on `GET /health/recorder`. The tool only reads.
 
 ## Account reads
 
@@ -1021,6 +1137,118 @@ usefully carried is already parsed into `stage`.
 
 > `Order/search` and `Trade/search` take `startTimestamp`/`endTimestamp` while bar retrieval takes
 > `startTime`/`endTime`. Sending the wrong pair does not error: the gateway drops the field and returns nothing.
+
+## Orders
+
+Five write tools, one type (`TradingOrderTools`), separate from the account reads (ADR-0017, ADR-0024,
+gh#750). Each call goes through `TradingRiskGate`. The tool does not take the vendor client or
+`IExecutionGateway`. `scripts/check-no-order-path.sh` was not given a new allowlist entry for them: the C#
+methods are named `Submit*` and the published names below are the MCP `Name`.
+
+**`Trading__Enabled` defaults to false.** While it is false at process start the five tools are not
+registered, so a model does not see them. Whether they are listed is fixed at startup: turning the flag on
+does not register them until restart, and turning it off refuses every call immediately but leaves them
+listed until restart. A call that still reaches a method refuses with `trading_disabled` before the vendor
+client is touched. That refusal writes no audit row, charges no daily cap and calls no gateway method.
+The gate reads `Trading__Enabled`, `Trading__KillSwitch`, `Trading__KillSwitchFile`, `Trading__DeniedSymbols`,
+`Trading__AllowedAccountIds` and the two contract caps from
+`IOptionsMonitor<TradingExecutionOptions>.CurrentValue` on every check, so a configuration reload changes
+them without a process restart. A reload that fails validation throws from the options monitor rather than
+publishing the invalid document, and the next check refuses with `trading_configuration_invalid`. The last
+good values are not kept. A disable before the claim writes no row.
+A disable after the claim records the refusal and does not send.
+The kill switch refuses with `kill_switch` on the same five tools. Cancel and close have no carve-out.
+**Pending Adam:** that block stays until he decides whether a halt may still flatten. v1 does not add a carve-out.
+
+When `Trading__Enabled` is true, startup fails if `Trading__AllowedAccountIds` is empty.
+
+**These tools write on a live practice account and the stakes are real.** A non-practice account is refused.
+Use a fresh `idempotencyKey` for each order. Never retry OutcomeUnknown; reconcile via `get_orders`,
+`get_positions` and `get_trades`.
+
+**Every call emits the gate's telemetry.** The span is `execution.<tool>` and the counter is
+`mcp.execution.writes`, tagged `operation`, `refusal` and `replay`. A replay is `replay=true` and is not a
+new outcome. The gate owns both. The tools do not open a second span or counter.
+
+**`idempotencyKey` is required.** It is scoped per account and per tool, and `TradingAuditClaims.MaxKeyLength`
+is 256, the same width as the audit column. A replay of the same account, tool and request hash returns the
+stored transmit and does not send again. The claim is the pre-send `Unknown` audit row, unique in Postgres,
+so a restart, a redeploy or another replica still sees it (gh#712). A refusal written before the claim is
+not replayed: an allowlist miss, or a `trading_disabled` refusal, does not become a send — and does not
+turn a later unknown transmit into `SafeToRetry` — after the condition is fixed. A `Refused` row written
+after the claim with the same request hash is what a later replay of that key returns. A later refusal
+with a different hash, including an idempotency conflict, does not override `Unknown` or `Live`. A preview
+is not a claim. The same key with a different request hash, including a different `dryRun`, is
+`idempotency_conflict` and does not transmit. A blank key is `idempotency_key_required` and is audited. A
+key longer than 256 characters is `idempotency_key_too_long` and writes no row. The master switch is
+checked first, so a blank or over-long key while trading is disabled is `trading_disabled`. The claim is
+taken after that check.
+
+**`retrySafety` is the retry signal.** `SafeToRetry` is a refusal, a preview, a venue rejection, or a fault
+the gate classified as before the send (`PreSendFaultException` only). `NotSafeToRetry` is a broker
+acknowledgment (`status: Live`). `OutcomeUnknown` is returned when the send may have happened: a throw from
+the send, including a timeout during the send, an audit write that fails after an ack, a daily-cap unlock
+or a telemetry listener that fails after the send has started, or a broker success that carried no order id.
+The tool catch-all is defensive. Any other exception that reaches the tool is `OutcomeUnknown`, the refusal
+is omitted, and `resultCode` is `-1` (`UnclassifiedFaultResultCode`). That code is not a venue error and is
+never `SafeToRetry`. A structured `OutcomeUnknown` from the gate omits both the refusal and the result code.
+The gate is registered scoped and serves one order operation per instance; send-started state is
+per call, and a second operation on that instance throws before any vendor call. A throw before the gate's
+telemetry try can report a false `OutcomeUnknown` when the vendor was not called, and that throw emits no
+span and no counter. That report is
+conservative: reconcile, do not send again. The unlock and the telemetry dispose catch their own failures, log one constant line, and
+count them. The disposal itself does not throw. After the send, the gate raises a failed unlock into the
+post-send handler, which returns structured `OutcomeUnknown` and does not mark the call safe to retry.
+When the broker had already assigned an order id, a post-send cleanup or bookkeeping fault keeps that id
+and the parsed stage. The id is not kept when the send throws, or when the audit write fails after the ack.
+`Live` is only a broker acknowledgment.
+`refusalCode`, `resultCode` and `orderId` are omitted when the call has nothing to report
+for them — they are fields, so the test is key presence. The unclassified catch-all is the exception:
+it omits the refusal and sets `resultCode` to `-1`.
+
+**Validation runs before any audit row.** `size` must be greater than 0 (`size_not_positive`). A limit needs
+a positive `limitPrice`, a stop needs a positive `stopPrice`, a stop-limit needs both, and a trailing stop
+needs a positive `trailPrice` (`price_required`, `price_not_positive`). Any supplied price must be positive.
+`modify_order` runs the per-order and daily caps when `size` is supplied, charges that full new size against
+the daily cap, and does not treat a missing size as zero. `partial_close_position` is refused when `size` is
+not positive or exceeds the open position (`size_not_positive`, `partial_close_exceeds_position`), before
+the cap, so a non-positive size cannot lower it. `accountId` is the venue id from `list_accounts`, and only
+a practice account is accepted.
+
+**Which refusals write an audit row.** Validation refusals and `trading_disabled` before the claim write
+none. The kill switch, stage, allowlist, denylist, caps, a blank key, an idempotency conflict, a gateway
+refusal, and `trading_disabled` after the claim write `Refused`. A preview writes `Preview`.
+
+**`dryRun: true` runs the same gates and returns `Preview`.** It does not transmit.
+
+**Not on this slice.** `place_order` does not take bracket ticks or bracket types (gh#713 still open for
+that). `confirm_trading_action` is not registered (gh#717). HTTP OAuth still authorises the whole server
+with `topstepx-mcp/read`; the distinct `topstepx-mcp/trade` scope is gh#719.
+
+### `place_order` · `modify_order` · `cancel_order` · `close_position` · `partial_close_position`
+
+Shared on every call: `accountId`, `idempotencyKey`, and `dryRun` (omit for false).
+
+| Tool | What else it takes |
+|---|---|
+| `place_order` | `contractId`, `orderType`, `side`, `size`, and `limitPrice` / `stopPrice` / `trailPrice` when the type uses them |
+| `modify_order` | `orderId`, and `size` / `limitPrice` / `stopPrice` when changing them |
+| `cancel_order` | `orderId` |
+| `close_position` | `contractId` |
+| `partial_close_position` | `contractId`, `size` |
+
+`orderType` is `Limit · Market · Stop · StopLimit · TrailingStop · JoinBid · JoinAsk`. `side` is `Buy` or
+`Sell`; `Unknown` is refused. Prices are decimals. `customTag` is not accepted (ADR-0008).
+
+Returns `{ status, retrySafety, parsedStage, refusalCode?, resultCode?, orderId? }`.
+
+`status` is `Preview · Refused · Live · Failed · Unknown`. `retrySafety` is `SafeToRetry · NotSafeToRetry ·
+OutcomeUnknown`. `parsedStage` is the stage vocabulary `list_accounts` already uses; a refusal that never
+fetched an account reports `Unknown`.
+
+Practice accounts only. Evaluation, funded and unknown stages are refused from a fresh account fetch, and
+the allowlist does not bypass that check. A modify whose order is not on the fresh order list is
+`order_not_found` and does not transmit.
 
 ## Composed
 

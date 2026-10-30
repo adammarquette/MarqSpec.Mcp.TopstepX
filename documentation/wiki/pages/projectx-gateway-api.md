@@ -6,7 +6,7 @@
 > https://gateway.docs.projectx.com/docs/intro
 > **Access:** vendor docs are public, no auth wall; behavioural claims below were observed against a live
 > practice login. Nothing is reproduced verbatim.
-> **Informs:** `R-1` (incl. `R-1.10`), `R-4`, `R-5`, `R-7`, `R-8`, `Q-1`, `Q-3`
+> **Informs:** `R-1` (incl. `R-1.10`, `R-1.16`), `R-4`, `R-5`, `R-7`, `R-8`, `Q-1`, `Q-3`
 >
 > *Addition, 2026-08-23 (gh#43):* **[Rate limits](#rate-limits)** added. Read from the vendor's own
 > documentation that day and marked **documented, not observed** — no 429 has ever been provoked from this
@@ -195,6 +195,11 @@ Three things to know:
 1. **One call caps at 1000 bars, and the excess is silently truncated** rather than reported. A wider window
    must be walked in pages of `1000 × barSize`, or the answer is quietly short — and those pages must be
    **paced**, because this endpoint carries the gateway's tightest limit. See [Rate limits](#rate-limits).
+   This server already does both (`R-1.4`, `R-1.10`). A window that is *short* after that walk is vendor
+   depth, not a missed page: past the edge the same call returns **empty with no error**. See
+   [history depth](#expired-contracts-and-history-depth--measured-2026-09-06-on-the-simulated-tier). Bar
+   tools report the range that actually came back as `available.earliest` / `available.latest` (`R-1.16`,
+   gh#695) so a caller can tell that edge from a quiet market.
 2. **`includePartialBar: false` is not sufficient.** Drop still-forming bars on the client side as well
    (`OpenTime + barSize <= now`). A half-formed bar stored as final is indistinguishable from data, and
    corrupts everything derived from it.
@@ -340,7 +345,16 @@ record the trade tape** — see [ADR-0016](../../adr/0016-subscribe-to-the-marke
 doc's *What is deliberately absent*. ADR-0007 is the stdio/HTTP transport record and says nothing about this
 hub. There is still no REST quote endpoint, so live bid/ask remains stream-only; quote and depth recording are
 out of Phase 5. The recorder (gh#216) writes prints to `Trades` under HTTP when
-`MarketData__RecordTape` is on; Client#86/#87 landed in 3.0.0.
+`MarketData__RecordTape` is on; Client#86/#87 landed in 3.0.0. It stops itself when the hub names a
+documented validate error, or `POST /api/Auth/validate` reports `InvalidSession`, `SessionNotFound`,
+or HTTP 401, and it does not call `loginKey` to reconnect
+(`MarketData__StopOnSessionConflict`, default on; gh#757, ADR-0016). A held token is renewed with
+validate whenever the venue client is configured, not only while the recorder is running, and not
+with `loginKey`. A latched stop posts no further validate. An expired token may post a budgeted
+`loginKey`, which disconnects any live session on the account. A failed login waits before it
+tries again. A drop
+that is not one of those signals stops the recorder and leaves
+REST login open. `AutoReconnect` stays off for both hubs while the recorder is alive.
 
 > One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
 > root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream

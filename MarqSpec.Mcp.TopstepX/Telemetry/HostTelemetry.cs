@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.Telemetry;
 
@@ -79,8 +81,48 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A tape-claim hand-off (ADR-0016).</summary>
     public const string TapeLeaseChangesInstrument = "mcp.tape.lease.changes";
 
+    /// <summary>One recorder-health report (gh#756, R-5.14).</summary>
+    public const string RecorderHealthReadsInstrument = "mcp.recorder.health.reads";
+
+    /// <summary>A session conflict that stopped the recorder (gh#757).</summary>
+    public const string TapeSessionConflictsInstrument = "mcp.tape.session_conflicts";
+
+    /// <summary>A renewal or login that was refused (gh#757).</summary>
+    public const string SessionRenewalRefusalsInstrument = "mcp.session.renewal_refusals";
+
+    /// <summary>A held session that was opened for a recovery login (gh#757).</summary>
+    public const string SessionRenewalReopensInstrument = "mcp.session.renewal_reopens";
+
+    /// <summary>One budgeted recovery login (gh#757).</summary>
+    public const string SessionRecoveryLoginsInstrument = "mcp.session.recovery_logins";
+    /// <summary>
+    /// A footprint or volume-profile read served with <c>live</c> false (gh#728).
+    /// </summary>
+    public const string TapeClosedReadsInstrument = "mcp.tape.closed.reads";
+
     /// <summary>Indicator values a projection pass wrote.</summary>
     public const string IndicatorProjectionsInstrument = "mcp.indicator.projections";
+
+    /// <summary>One gated execution write, refused or transmitted (ADR-0024, gh#710).</summary>
+    public const string ExecutionWritesInstrument = "mcp.execution.writes";
+
+    /// <summary>
+    /// A bookkeeping failure after a trading attempt: the daily-cap unlock or the execution-write telemetry
+    /// itself. Untagged. It must not decide the trading outcome (gh#750).
+    /// </summary>
+    public const string BookkeepingFaultsInstrument = "mcp.execution.bookkeeping.faults";
+
+    /// <summary>Logged when bookkeeping fails. Constant, so a connection string cannot land in the line.</summary>
+    private const string BookkeepingFaultMessage = "Trading bookkeeping failed.";
+
+    /// <summary>A scheduled tape-export outcome, by what the pass did with a day or its rows (gh#755).</summary>
+    public const string TapeExportsInstrument = "mcp.tape.exports";
+
+    /// <summary>How long one tape export or import pass took, in seconds.</summary>
+    public const string TapeExportDurationInstrument = "mcp.tape.export.duration";
+
+    /// <summary>A Drive upload of one export file (gh#755).</summary>
+    public const string TapeUploadsInstrument = "mcp.tape.uploads";
 
     /// <summary>Which cache-aside series a read was of. Values: <see cref="CacheSeries"/>.</summary>
     public const string SeriesTag = "series";
@@ -110,6 +152,15 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Which venue read this was. Values: <see cref="VenueOperation"/>.</summary>
     public const string OperationTag = "operation";
 
+    /// <summary>Why an execution write stopped before or at the venue. Values: <see cref="ExecutionWriteRefusal"/>.</summary>
+    public const string RefusalTag = "refusal";
+
+    /// <summary>
+    /// Whether this execution-write measurement is a replay of a stored transmit. Values:
+    /// <see cref="ExecutionWriteReplay"/>. A sum of new outcomes filters <see cref="ExecutionWriteReplay.False"/>.
+    /// </summary>
+    public const string ReplayTag = "replay";
+
     /// <summary>Why a range was outstanding. Values: <see cref="GapReason"/>.</summary>
     public const string ReasonTag = "reason";
 
@@ -118,6 +169,9 @@ public sealed class HostTelemetry : IDisposable
 
     /// <summary>What happened to a tape claim. Values: <see cref="TapeLeaseChange"/>.</summary>
     public const string ChangeTag = "change";
+
+    /// <summary>Where a session conflict was seen. Values: <see cref="SessionConflictSource"/>.</summary>
+    public const string SourceTag = "source";
 
     /// <summary>The indicator's stable lowercase name, from the catalogue.</summary>
     public const string IndicatorTag = "indicator";
@@ -130,17 +184,31 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapeTicks;
     private readonly Counter<long> _tapeReconnects;
     private readonly Counter<long> _tapeLeaseChanges;
+    private readonly Counter<long> _recorderHealthReads;
+    private readonly Counter<long> _tapeSessionConflicts;
+    private readonly Counter<long> _sessionRenewalRefusals;
+    private readonly Counter<long> _sessionRenewalReopens;
+    private readonly Counter<long> _sessionRecoveryLogins;
+    private readonly Counter<long> _tapeClosedReads;
     private readonly Counter<long> _indicatorProjections;
+    private readonly Counter<long> _executionWrites;
+    private readonly Counter<long> _bookkeepingFaults;
+    private readonly ILogger<HostTelemetry>? _logger;
+    private readonly Counter<long> _tapeExports;
+    private readonly Histogram<double> _tapeExportDuration;
+    private readonly Counter<long> _tapeUploads;
 
     /// <summary>Creates the meter and the activity source.</summary>
+    /// <param name="logger">Optional. A bookkeeping failure logs one constant line through it.</param>
     /// <remarks>
     /// <b>The meter carries this instance as its <c>Scope</c>.</b> That is what lets a test collect from the
     /// instance it built rather than from every meter in the process that happens to share the name — the
     /// unit tier constructs one of these per test, and without a scope <c>MetricCollector</c> would match
     /// them all and read a number another test produced.
     /// </remarks>
-    public HostTelemetry()
+    public HostTelemetry(ILogger<HostTelemetry>? logger = null)
     {
+        _logger = logger;
         _meter = new Meter(new MeterOptions(Name) { Scope = this });
         Activities = new ActivitySource(Name);
 
@@ -179,10 +247,82 @@ public sealed class HostTelemetry : IDisposable
             unit: "{change}",
             description: "Tape-claim hand-offs, by instrument and by what happened to the claim.");
 
+        _recorderHealthReads = _meter.CreateCounter<long>(
+            RecorderHealthReadsInstrument,
+            unit: "{read}",
+            description: "Recorder-health reports, by whether the recorder was ok, degraded or unavailable.");
+
+        _tapeSessionConflicts = _meter.CreateCounter<long>(
+            TapeSessionConflictsInstrument,
+            unit: "{conflict}",
+            description: "Session conflicts that stopped the tape recorder, by where the signal was seen.");
+
+        _sessionRenewalRefusals = _meter.CreateCounter<long>(
+            SessionRenewalRefusalsInstrument,
+            unit: "{refusal}",
+            description: "Held-session renewals and logins that were refused, by why.");
+
+        _sessionRenewalReopens = _meter.CreateCounter<long>(
+            SessionRenewalReopensInstrument,
+            unit: "{reopen}",
+            description: "Held sessions opened for a recovery login, by why.");
+
+        _sessionRecoveryLogins = _meter.CreateCounter<long>(
+            SessionRecoveryLoginsInstrument,
+            unit: "{login}",
+            description: "Budgeted recovery logins, by whether a new bearer was stored.");
+        _tapeClosedReads = _meter.CreateCounter<long>(
+            TapeClosedReadsInstrument,
+            unit: "{read}",
+            description: "Footprint and volume-profile reads served from closed coverage, by why live is false.");
+
         _indicatorProjections = _meter.CreateCounter<long>(
             IndicatorProjectionsInstrument,
             unit: "{value}",
             description: "Indicator values a projection pass wrote, by indicator.");
+
+        _executionWrites = _meter.CreateCounter<long>(
+            ExecutionWritesInstrument,
+            unit: "{write}",
+            description: "Gated execution writes, by operation and by refusal reason.");
+
+        _bookkeepingFaults = _meter.CreateCounter<long>(
+            BookkeepingFaultsInstrument,
+            unit: "{fault}",
+            description: "Daily-cap unlock or execution-write telemetry failures. Untagged.");
+
+        _tapeExports = _meter.CreateCounter<long>(
+            TapeExportsInstrument,
+            unit: "{event}",
+            description: "Tape-export outcomes, by whether a day was archived, verified or refused.");
+
+        _tapeExportDuration = _meter.CreateHistogram<double>(
+            TapeExportDurationInstrument,
+            unit: "s",
+            description: "How long one tape export or import pass took.");
+
+        _tapeUploads = _meter.CreateCounter<long>(
+            TapeUploadsInstrument,
+            unit: "{upload}",
+            description: "Drive uploads of one export file, by outcome, operation, and reason.");
+    }
+
+    /// <summary>
+    /// Counts one bookkeeping failure, then logs a constant line. The counter is incremented first so a
+    /// throwing logger still leaves the measurement. Never throws: a listener on this counter must not
+    /// replace the trading outcome.
+    /// </summary>
+    public void RecordBookkeepingFault()
+    {
+        try
+        {
+            _bookkeepingFaults.Add(1);
+            _logger?.LogError(BookkeepingFaultMessage);
+        }
+        catch (Exception)
+        {
+            // The count is the signal. A listener that throws while it is recorded must not escape.
+        }
     }
 
     /// <summary>The spans this repository names. Children of the SDK's <c>tools/call</c> span.</summary>
@@ -256,6 +396,11 @@ public sealed class HostTelemetry : IDisposable
     /// request, not by the answer.
     /// </remarks>
     public VenueCallScope VenueCall(string operation) => new(this, operation);
+
+    /// <summary>Opens a span for one gated execution write and counts it when the scope closes.</summary>
+    /// <param name="operation">Which write, from <see cref="ExecutionOperation"/>.</param>
+    /// <returns>A scope the caller disposes when the write has settled, however it settled.</returns>
+    public ExecutionWriteScope ExecutionWrite(string operation) => new(this, operation);
 
     /// <summary>Opens a span for one cache-aside read.</summary>
     /// <param name="series">Which series, from <see cref="CacheSeries"/>.</param>
@@ -358,6 +503,88 @@ public sealed class HostTelemetry : IDisposable
     public void TapeReconnect(string transition) =>
         _tapeReconnects.Add(1, new KeyValuePair<string, object?>(TransitionTag, transition));
 
+    /// <summary>
+    /// Records one session conflict that stopped the recorder, as a counter and a span.
+    /// </summary>
+    /// <param name="source">Where it was seen, from <see cref="SessionConflictSource"/>.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    /// <remarks>
+    /// <b>The source only, never the vendor's sentence.</b> A hub close message is free text. Putting it on
+    /// the span would be a new series per distinct sentence, and a place a credential can land. The log line
+    /// in the recorder names the reason in this server's own words.
+    /// </remarks>
+    public Activity? SessionConflict(string source)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(source);
+
+        Activity? span = Activities.StartActivity("tape.session_conflict", ActivityKind.Internal);
+        span?.SetTag(SourceTag, source);
+
+        _tapeSessionConflicts.Add(1, new KeyValuePair<string, object?>(SourceTag, source));
+        return span;
+    }
+
+    /// <summary>
+    /// Records one renewal or login refusal, as a counter and a span.
+    /// </summary>
+    /// <param name="reason">Why it was refused, from <see cref="SessionRenewalRefusal"/>.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    /// <remarks>
+    /// <b>The reason only.</b> A validate body, a bearer, and a vendor sentence are not tags. The log line
+    /// names the outcome in this server's own words.
+    /// </remarks>
+    public Activity? SessionRenewalRefusal(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+
+        Activity? span = Activities.StartActivity("session.renewal_refusal", ActivityKind.Internal);
+        span?.SetTag(ReasonTag, reason);
+
+        _sessionRenewalRefusals.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+        return span;
+    }
+
+    /// <summary>
+    /// Records one moment login was opened so a dead held session can recover, as a counter and a span.
+    /// </summary>
+    /// <param name="reason">Why it opened, from <see cref="SessionRenewalReopen"/>.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    /// <remarks>
+    /// <b>The reason only.</b> A validate body, a bearer, and a vendor sentence are not tags.
+    /// <see cref="SessionRenewalReopen.Expired"/> and <see cref="SessionRenewalReopen.Exhausted"/> are
+    /// opens, not refusals.
+    /// </remarks>
+    public Activity? SessionRenewalReopen(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+
+        Activity? span = Activities.StartActivity("session.renewal_reopen", ActivityKind.Internal);
+        span?.SetTag(ReasonTag, reason);
+
+        _sessionRenewalReopens.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+        return span;
+    }
+
+    /// <summary>
+    /// Records one budgeted recovery login, as a counter and a span.
+    /// </summary>
+    /// <param name="outcome">What the attempt did, from <see cref="SessionRecoveryLogin"/>.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    /// <remarks>
+    /// <b>The outcome only.</b> The bearer is not a tag. A match against the rejected bearer is
+    /// <see cref="SessionRecoveryLogin.CachedToken"/>, which is a failed attempt.
+    /// </remarks>
+    public Activity? SessionRecoveryLogin(string outcome)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outcome);
+
+        Activity? span = Activities.StartActivity("session.recovery_login", ActivityKind.Internal);
+        span?.SetTag(ReasonTag, outcome);
+
+        _sessionRecoveryLogins.Add(1, new KeyValuePair<string, object?>(ReasonTag, outcome));
+        return span;
+    }
+
     /// <summary>Counts one tape-claim hand-off.</summary>
     /// <param name="symbol">The venue-neutral instrument symbol the claim is over.</param>
     /// <param name="change">What happened, from <see cref="TapeLeaseChange"/>.</param>
@@ -366,6 +593,81 @@ public sealed class HostTelemetry : IDisposable
             1,
             new KeyValuePair<string, object?>(SymbolTag, symbol),
             new KeyValuePair<string, object?>(ChangeTag, change));
+
+    /// <summary>Counts one recorder-health report.</summary>
+    /// <param name="outcome">What the report found, from <see cref="RecorderHealthOutcome"/>.</param>
+    /// <remarks>
+    /// Once per report that was actually built. A cached reply is not a second report, and a build the caller
+    /// cancelled is not a report. Cancellation records
+    /// nothing: a poll that gave up is not a statement about the recorder, and it is not a
+    /// <see cref="RecorderHealthOutcome.Timeout"/>. Not tagged by symbol or contract — one hub, one number,
+    /// or the series splits by however many instruments the deployment happens to list.
+    /// </remarks>
+    public void RecorderHealthRead(string outcome) =>
+        _recorderHealthReads.Add(1, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+
+    /// <summary>Counts one tape-export outcome.</summary>
+    /// <param name="outcome">What happened, from <see cref="TapeExportOutcome"/>.</param>
+    /// <param name="count">Days or rows. Zero records nothing, so a quiet pass is not a series.</param>
+    /// <remarks>
+    /// Tagged only with <see cref="OutcomeTag"/>. A day, a path or a contract id would be a new series
+    /// per value, and a counter keeps one accumulator per tag set for the life of the process.
+    /// </remarks>
+    public void TapeExport(string outcome, int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        _tapeExports.Add(count, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+    }
+
+    /// <summary>Records how long one export or import pass took.</summary>
+    /// <param name="seconds">Elapsed seconds. Not tagged: one series for the pass, not one per day.</param>
+    public void TapeExportDuration(double seconds) => _tapeExportDuration.Record(seconds);
+
+    /// <summary>Counts one Drive upload outcome.</summary>
+    /// <param name="outcome">What happened, from <see cref="TapeUploadOutcome"/>.</param>
+    /// <param name="count">Files, or retries. Zero records nothing.</param>
+    /// <param name="operation">Which step, from <see cref="TapeUploadOperation"/>.</param>
+    /// <param name="reason">Why, from <see cref="TapeUploadReason"/>. Matches the receipt when there is one.</param>
+    /// <remarks>
+    /// Tagged with <see cref="OutcomeTag"/>, <see cref="OperationTag"/>, and <see cref="ReasonTag"/>.
+    /// A file id or a contract id would be a new series per value. The span <c>tape.upload</c> is the
+    /// trace; this counter is the aggregate. The pass opens that span before the upload, so it covers
+    /// the retries and parents the Drive HTTP spans, and sets the terminal tags when the span ends.
+    /// One file has one terminal measurement. A lock lost after the bytes land, or after a Drive failure, is
+    /// <see cref="TapeUploadReason.LockLost"/>, not <see cref="TapeUploadOutcome.Uploaded"/> and not a
+    /// second <see cref="TapeUploadOutcome.Failed"/> for the Drive error. The span carries
+    /// <c>drive.failure_type</c> for the Drive error that receipt replaced. That name is not a counter
+    /// tag. The uploader records retries only.
+    /// </remarks>
+    public void TapeUpload(string outcome, int count, string operation, string reason)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        _tapeUploads.Add(
+            count,
+            new KeyValuePair<string, object?>(OutcomeTag, outcome),
+            new KeyValuePair<string, object?>(OperationTag, operation),
+            new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+    /// <summary>Counts one footprint or volume-profile read served with <c>live</c> false.</summary>
+    /// <param name="symbol">The venue-neutral instrument symbol.</param>
+    /// <param name="reason">Why live is false, from <see cref="TapeClosedReadReason"/>.</param>
+    /// <remarks>
+    /// Recorded only when the read is served. A refusal — reconnecting, stopped, a claim this
+    /// process lost — is not a closed read and is not counted here.
+    /// </remarks>
+    public void ClosedTapeRead(string symbol, string reason) =>
+        _tapeClosedReads.Add(
+            1,
+            new KeyValuePair<string, object?>(SymbolTag, symbol),
+            new KeyValuePair<string, object?>(ReasonTag, reason));
 
     /// <summary>Counts the values a projection pass wrote for one indicator.</summary>
     /// <param name="indicator">The indicator's stable lowercase name.</param>
@@ -489,6 +791,75 @@ public sealed class HostTelemetry : IDisposable
             _span?.Dispose();
         }
     }
+
+    /// <summary>One gated execution write, from entry to refusal or transmit.</summary>
+    public sealed class ExecutionWriteScope : IDisposable
+    {
+        private readonly HostTelemetry _telemetry;
+        private readonly string _operation;
+        private readonly Activity? _span;
+        private string? _refusal;
+        private string _replay = ExecutionWriteReplay.False;
+        private bool _closed;
+
+        internal ExecutionWriteScope(HostTelemetry telemetry, string operation)
+        {
+            _telemetry = telemetry;
+            _operation = operation;
+
+            _span = telemetry.Activities.StartActivity("execution." + operation, ActivityKind.Internal);
+            _span?.SetTag(OperationTag, operation);
+        }
+
+        /// <summary>Sets the outcome tag recorded when the scope closes.</summary>
+        /// <param name="outcomeTag">A stable code from <see cref="ExecutionWriteRefusal"/>.</param>
+        public void Outcome(string outcomeTag) => _refusal = outcomeTag;
+
+        /// <summary>
+        /// Marks this measurement as a replay of a stored transmit. A dashboard that counts new outcomes
+        /// excludes <see cref="ExecutionWriteReplay.True"/>.
+        /// </summary>
+        public void MarkReplay() => _replay = ExecutionWriteReplay.True;
+
+        /// <summary>
+        /// True when closing this scope threw. The gate reads it after dispose. Disposal itself does not
+        /// throw and does not replace the trading result.
+        /// </summary>
+        public bool BookkeepingFailed { get; private set; }
+
+        /// <inheritdoc />
+        public void Dispose()
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            _closed = true;
+
+            try
+            {
+                string refusal = _refusal ?? ExecutionWriteRefusal.Error;
+                _span?.SetTag(RefusalTag, refusal);
+                _span?.SetTag(ReplayTag, _replay);
+
+                _telemetry._executionWrites.Add(
+                    1,
+                    new KeyValuePair<string, object?>(OperationTag, _operation),
+                    new KeyValuePair<string, object?>(RefusalTag, refusal),
+                    new KeyValuePair<string, object?>(ReplayTag, _replay));
+
+                _span?.Dispose();
+            }
+            catch (Exception)
+            {
+                // A synchronous MeterListener or ActivityListener runs on this thread. It must not escape:
+                // the trading result is already decided, and a throw here used to become SafeToRetry.
+                BookkeepingFailed = true;
+                _telemetry.RecordBookkeepingFault();
+            }
+        }
+    }
 }
 
 /// <summary>Which cache-aside series a read was of — the <c>series</c> tag's closed vocabulary.</summary>
@@ -556,6 +927,165 @@ public static class VenueOperation
         [ResolveContracts, FindContract, GetBars, GetAccounts, GetPositions, GetOrders, GetTrades];
 }
 
+/// <summary>Which venue write a gated execution call was — separate from read vocabulary (gh#710).</summary>
+/// <remarks>
+/// The five names are defined once, on <see cref="TradingMcpTools"/>. These constants alias that definition
+/// so a telemetry tag and a published tool name cannot drift.
+/// </remarks>
+public static class ExecutionOperation
+{
+    /// <summary>Placing an order.</summary>
+    public const string PlaceOrderOperation = TradingMcpTools.PlaceOrderOperation;
+
+    /// <summary>Modifying an open order.</summary>
+    public const string ModifyOrderOperation = TradingMcpTools.ModifyOrderOperation;
+
+    /// <summary>Canceling an order.</summary>
+    public const string CancelOrderOperation = TradingMcpTools.CancelOrderOperation;
+
+    /// <summary>Flattening a position.</summary>
+    public const string ClosePositionOperation = TradingMcpTools.ClosePositionOperation;
+
+    /// <summary>Partially closing a position.</summary>
+    public const string PartialClosePositionOperation = TradingMcpTools.PartialClosePositionOperation;
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [
+            PlaceOrderOperation,
+            ModifyOrderOperation,
+            CancelOrderOperation,
+            ClosePositionOperation,
+            PartialClosePositionOperation,
+        ];
+}
+
+/// <summary>Why an execution write stopped — the <c>refusal</c> tag's closed vocabulary (gh#710).</summary>
+public static class ExecutionWriteRefusal
+{
+    /// <summary>The gate permitted the write and the adapter reached the venue.</summary>
+    public const string Transmitted = "transmitted";
+
+    /// <summary>Master enable is off (<c>Trading__Enabled=false</c>).</summary>
+    public const string TradingDisabled = "trading_disabled";
+
+    /// <summary>The kill switch is engaged.</summary>
+    public const string KillSwitch = "kill_switch";
+
+    /// <summary>The account id is not on the optional allowlist.</summary>
+    public const string AccountNotAllowlisted = "account_not_allowlisted";
+
+    /// <summary>The symbol is on the denylist.</summary>
+    public const string SymbolDenied = "symbol_denied";
+
+    /// <summary>The requested size exceeds the per-order cap.</summary>
+    public const string OrderSizeExceedsLimit = "order_size_exceeds_limit";
+
+    /// <summary>The day total would exceed the daily cap.</summary>
+    public const string DailyContractLimitExceeded = "daily_contract_limit_exceeded";
+
+    /// <summary>The account id was not returned by a fresh account fetch.</summary>
+    public const string AccountNotFound = "account_not_found";
+
+    /// <summary>The parsed stage is not practice.</summary>
+    public const string NonPracticeAccount = "non_practice_account";
+
+    /// <summary>The account name matched no known stage family.</summary>
+    public const string UnknownAccountStage = "unknown_account_stage";
+
+    /// <summary>The venue marks the account inactive or not tradable.</summary>
+    public const string AccountNotActive = "account_not_active";
+
+    /// <summary>The contract id is not a usable venue contract id.</summary>
+    public const string MalformedContractId = "malformed_contract_id";
+
+    /// <summary>The contract product is not mapped to a served instrument.</summary>
+    public const string ContractProductNotMapped = "contract_product_not_mapped";
+
+    /// <summary>Trading configuration failed validation.</summary>
+    public const string TradingConfigurationInvalid = "trading_configuration_invalid";
+
+    /// <summary>The modify target order was not found on a fresh fetch.</summary>
+    public const string OrderNotFound = "order_not_found";
+
+    /// <summary>Risk checks passed in dry-run; nothing was transmitted.</summary>
+    public const string Preview = "preview";
+
+    /// <summary>The call failed with an unhandled exception before a stable outcome was recorded.</summary>
+    public const string Error = "error";
+
+    /// <summary>The venue rejected the write with a definitive client error.</summary>
+    public const string VenueRejected = "venue_rejected";
+
+    /// <summary>The transmit outcome could not be classified safely for retry.</summary>
+    public const string OutcomeUnknown = "outcome_unknown";
+
+    /// <summary>The caller did not supply a usable idempotency key.</summary>
+    public const string IdempotencyKeyRequired = "idempotency_key_required";
+
+    /// <summary>The idempotency key is longer than the audit column. Refused before any audit row.</summary>
+    public const string IdempotencyKeyTooLong = "idempotency_key_too_long";
+
+    /// <summary>The idempotency key is already stored for a different request.</summary>
+    public const string IdempotencyConflict = "idempotency_conflict";
+
+    /// <summary>Size was not a positive contract count, so no audit row was written.</summary>
+    public const string SizeNotPositive = "size_not_positive";
+
+    /// <summary>A limit or stop order was missing the price that type requires.</summary>
+    public const string PriceRequired = "price_required";
+
+    /// <summary>A supplied price was zero or negative.</summary>
+    public const string PriceNotPositive = "price_not_positive";
+
+    /// <summary>A partial close asked for more contracts than the open position holds.</summary>
+    public const string PartialCloseExceedsPosition = "partial_close_exceeds_position";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [
+            Transmitted,
+            TradingDisabled,
+            KillSwitch,
+            AccountNotAllowlisted,
+            SymbolDenied,
+            OrderSizeExceedsLimit,
+            DailyContractLimitExceeded,
+            AccountNotFound,
+            NonPracticeAccount,
+            UnknownAccountStage,
+            AccountNotActive,
+            MalformedContractId,
+            ContractProductNotMapped,
+            TradingConfigurationInvalid,
+            OrderNotFound,
+            Preview,
+            Error,
+            VenueRejected,
+            OutcomeUnknown,
+            IdempotencyKeyRequired,
+            IdempotencyKeyTooLong,
+            IdempotencyConflict,
+            SizeNotPositive,
+            PriceRequired,
+            PriceNotPositive,
+            PartialCloseExceedsPosition,
+        ];
+}
+
+/// <summary>Whether an execution-write measurement replays a stored transmit — the <c>replay</c> tag.</summary>
+public static class ExecutionWriteReplay
+{
+    /// <summary>This measurement is a replay. It is not a new outcome.</summary>
+    public const string True = "true";
+
+    /// <summary>This measurement is the attempt itself.</summary>
+    public const string False = "false";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [True, False];
+}
+
 /// <summary>Why a bar range was outstanding — the <c>reason</c> tag's closed vocabulary.</summary>
 public static class GapReason
 {
@@ -602,4 +1132,260 @@ public static class TapeLeaseChange
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Acquired, Refused, Lost];
+}
+
+/// <summary>
+/// What a recorder-health report found — the <c>outcome</c> tag on <c>mcp.recorder.health.reads</c>.
+/// </summary>
+/// <remarks>
+/// The tag key is the one <see cref="HostTelemetry.OutcomeTag"/> already declares. These values are this
+/// instrument's vocabulary, not the cache hit/miss/partial set (gh#756).
+/// </remarks>
+public static class RecorderHealthOutcome
+{
+    /// <summary>The hub is up, every reported contract is listening, and the elapsed session has no hole.</summary>
+    public const string Ok = "ok";
+
+    /// <summary>The report was readable and the recorder is not fully healthy, or the session could not be named.</summary>
+    public const string Degraded = "degraded";
+
+    /// <summary>The database did not answer, so the ledger is unknown.</summary>
+    public const string Unavailable = "unavailable";
+
+    /// <summary>
+    /// The database check exceeded its deadline. The wire still says the store is unavailable. A caller who
+    /// cancelled is not this value — that records nothing.
+    /// </summary>
+    public const string Timeout = "timeout";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Ok, Degraded, Unavailable, Timeout];
+}
+
+/// <summary>Where a session conflict was seen — the <c>source</c> tag's closed vocabulary (gh#757).</summary>
+public static class SessionConflictSource
+{
+    /// <summary>The market hub's close message named another session.</summary>
+    public const string Hub = "hub";
+
+    /// <summary>Session validate returned <c>InvalidSession</c> or <c>SessionNotFound</c>.</summary>
+    public const string Api = "api";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Hub, Api];
+}
+
+/// <summary>
+/// Why a held-session renewal or a <c>loginKey</c> was refused — the <c>reason</c> tag's closed vocabulary
+/// for <see cref="HostTelemetry.SessionRenewalRefusalsInstrument"/> (gh#757).
+/// </summary>
+public static class SessionRenewalRefusal
+{
+    /// <summary>The stop was already latched, so validate was not posted.</summary>
+    public const string Latched = "latched";
+
+    /// <summary>Validate failed while the held token was still fresh. Login stays closed.</summary>
+    public const string Outage = "outage";
+
+    /// <summary>Validate reported another session. Login stays closed when the switch is on.</summary>
+    public const string Conflict = "conflict";
+
+    /// <summary>A <c>loginKey</c> was refused because a hub drop is still unresolved.</summary>
+    public const string ClosedSuspecting = "closed_suspecting";
+
+    /// <summary>A <c>loginKey</c> was refused because a validate probe is in flight.</summary>
+    public const string ClosedProbe = "closed_probe";
+
+    /// <summary>A <c>loginKey</c> was refused because a renewal or recovery backoff is in effect.</summary>
+    public const string ClosedBackoff = "closed_backoff";
+
+    /// <summary>A <c>loginKey</c> was refused because the stop is latched.</summary>
+    public const string ClosedLatched = "closed_latched";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [Latched, Outage, Conflict, ClosedSuspecting, ClosedProbe, ClosedBackoff, ClosedLatched];
+}
+
+/// <summary>
+/// Why login was opened for a dead held session — the <c>reason</c> tag's closed vocabulary for
+/// <see cref="HostTelemetry.SessionRenewalReopensInstrument"/> (gh#757). These are opens, not refusals.
+/// </summary>
+public static class SessionRenewalReopen
+{
+    /// <summary>Validate reported <c>ExpiredToken</c>. The bearer can never become valid.</summary>
+    public const string Expired = "expired";
+
+    /// <summary>Validate failed and the held token is inside its refresh window.</summary>
+    public const string Exhausted = "exhausted";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Expired, Exhausted];
+}
+
+/// <summary>
+/// What one budgeted recovery login did — the <c>reason</c> tag's closed vocabulary for
+/// <see cref="HostTelemetry.SessionRecoveryLoginsInstrument"/> (gh#757).
+/// </summary>
+public static class SessionRecoveryLogin
+{
+    /// <summary>The venue client threw. The next attempt waits out the backoff.</summary>
+    public const string Failed = "recovery_failed";
+
+    /// <summary>The client returned the bearer this process already rejected.</summary>
+    public const string CachedToken = "recovery_cached_token";
+
+    /// <summary>A different bearer was stored.</summary>
+    public const string Succeeded = "recovery_succeeded";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Failed, CachedToken, Succeeded];
+}
+
+/// <summary>What a tape-export pass did — the <c>outcome</c> tag's vocabulary for <c>mcp.tape.exports</c>.</summary>
+public static class TapeExportOutcome
+{
+    /// <summary>The UTC day has not ended, or an open listen still covers it. Local rows stay.</summary>
+    public const string SkippedOpen = "skipped_open";
+
+    /// <summary>A day whose receipt hash matches the file, so the pass did not read its rows.</summary>
+    public const string SkippedReceipt = "skipped_receipt";
+
+    /// <summary>A day whose files verified.</summary>
+    public const string DaysExported = "days_exported";
+
+    /// <summary>Rows written into a verified day.</summary>
+    public const string RowsExported = "rows_exported";
+
+    /// <summary>The files did not match the manifest. Local rows stay.</summary>
+    public const string VerificationFailed = "verification_failed";
+
+    /// <summary>Rows inserted by an import. A conflict inserts nothing.</summary>
+    public const string RowsImported = "rows_imported";
+
+    /// <summary>An import refused a day whose files did not verify.</summary>
+    public const string ImportRefused = "import_refused";
+
+    /// <summary>Another process holds the path lock. Nothing was written.</summary>
+    public const string LockHeld = "lock_held";
+
+    /// <summary>The day threw before a verified file was committed to the volume.</summary>
+    public const string ExportFailed = "export_failed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [
+            SkippedOpen,
+            SkippedReceipt,
+            DaysExported,
+            RowsExported,
+            VerificationFailed,
+            RowsImported,
+            ImportRefused,
+            LockHeld,
+            ExportFailed,
+        ];
+}
+
+/// <summary>What a Drive upload did — the <c>outcome</c> tag's vocabulary for <c>mcp.tape.uploads</c>.</summary>
+public static class TapeUploadOutcome
+{
+    /// <summary>The folder or the service account is unset. Recorded once per pass, not once per file.</summary>
+    public const string Disabled = "drive_disabled";
+
+    /// <summary>How many transient attempts were repeated before the final outcome. One measurement per file.</summary>
+    public const string Retried = "drive_retried";
+
+    /// <summary>The file is the Drive object for that identity.</summary>
+    public const string Uploaded = "drive_uploaded";
+
+    /// <summary>Transient attempts were exhausted. The local file and the local rows stay.</summary>
+    public const string Failed = "drive_failed";
+
+    /// <summary>The error will not succeed on another try: bad credentials, or HTTP 400, 401, 403, or 404.</summary>
+    public const string Permanent = "drive_permanent";
+
+    /// <summary>Receipts still <c>pending</c> at the start of a pass. A crash left them. The pass retries the file.</summary>
+    public const string OrphanPending = "drive_orphan_pending";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Disabled, Retried, Uploaded, Failed, Permanent, OrphanPending];
+}
+
+/// <summary>Which step a tape-upload measurement is — the <c>operation</c> tag on <c>mcp.tape.uploads</c>.</summary>
+public static class TapeUploadOperation
+{
+    /// <summary>The Drive attempt, including a pass that never called Drive.</summary>
+    public const string Upload = "upload";
+
+    /// <summary>The identity lock. The receipt is failed and the bytes are not counted as uploaded.</summary>
+    public const string Lock = "lock";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Upload, Lock];
+}
+
+/// <summary>Why a tape-upload measurement has its outcome — the <c>reason</c> tag on <c>mcp.tape.uploads</c>.</summary>
+public static class TapeUploadReason
+{
+    /// <summary>The receipt is <c>uploaded</c>. The lock was still held after the bytes landed.</summary>
+    public const string Uploaded = "uploaded";
+
+    /// <summary>How many transient attempts were repeated before the final outcome.</summary>
+    public const string Retried = "retried";
+
+    /// <summary>The two-minute deadline fired, including during a backoff wait.</summary>
+    /// <remarks>
+    /// Not <c>timeout</c>: that value already belongs to <see cref="RecorderHealthOutcome.Timeout"/>, and
+    /// two vocabularies cannot share a value.
+    /// </remarks>
+    public const string Timeout = "upload_timeout";
+
+    /// <summary>The error will not succeed on another try.</summary>
+    public const string Permanent = "permanent";
+
+    /// <summary>Transient attempts were exhausted, and the reason is not a deadline or a lock.</summary>
+    public const string Failed = "failed";
+
+    /// <summary>The folder or the service account is unset.</summary>
+    public const string Disabled = "disabled";
+
+    /// <summary>Receipts still pending at the start of a pass.</summary>
+    public const string OrphanPending = "orphan_pending";
+
+    /// <summary>The identity lock was still busy after <c>lock_timeout</c>.</summary>
+    public const string IdentityBusy = "identity_busy";
+
+    /// <summary>The lock connection dropped. The receipt is failed even if Drive returned a file id.</summary>
+    public const string LockLost = "lock_lost";
+
+    /// <summary>
+    /// The lock session threw something that is not a dropped connection. The receipt is failed,
+    /// the pass counts <see cref="TapeExportOutcome.ExportFailed"/>, and the remaining files continue.
+    /// </summary>
+    public const string LockFault = "lock_fault";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+        [Uploaded, Retried, Timeout, Permanent, Failed, Disabled, OrphanPending, IdentityBusy, LockLost, LockFault];
+}
+
+/// <summary>
+/// Why a footprint or volume-profile read was served with <c>live</c> false — the
+/// <c>reason</c> tag on <see cref="HostTelemetry.TapeClosedReadsInstrument"/>.
+/// </summary>
+/// <remarks>
+/// Only the states that serve closed coverage. A recorder that is reconnecting, stopped,
+/// or that lost its own claim refuses the read and is not a value here.
+/// </remarks>
+public static class TapeClosedReadReason
+{
+    /// <summary>This process never started recording — stdio, the switch off, or no venue client.</summary>
+    public const string NeverStarted = "never_started";
+
+    /// <summary>Another process holds the claim, so this one reads that recorder's closed runs.</summary>
+    public const string HeldByAnotherRecorder = "held_by_another_recorder";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [NeverStarted, HeldByAnotherRecorder];
 }

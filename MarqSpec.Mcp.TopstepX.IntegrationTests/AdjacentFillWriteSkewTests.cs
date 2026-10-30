@@ -52,8 +52,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class AdjacentFillWriteSkewTests(SchemaFixture fixture)
+public sealed class AdjacentFillWriteSkewTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     /// <summary>The bucket the two ranges meet at. A fills up to it; B fills from it.</summary>
     private const int Seam = 20;
 

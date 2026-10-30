@@ -1,6 +1,6 @@
 # ADR-0023: The AWS deployment topology — Fargate behind one load balancer per environment, Timescale on EFS, CDK in C#, Cognito as the issuer, OIDC deploys
 
-**Status:** Accepted · **Date:** 2026-09-06 · **Deciders:** Adam (operator)
+**Status:** Superseded (2026-10-17) — deployment is Docker via the repository [`Dockerfile`](../../Dockerfile) and GHCR; see [`deployment.md`](../deployment.md). This record is kept for history. · **Date:** 2026-09-06 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-5.1`, `R-7.1` · [architecture](../architecture.md) *Transports* ·
 the infrastructure under [ADR-0021](0021-a-non-loopback-instance-is-supported.md), which decided the shape
 and named this record as the one that carries it · rests on
@@ -490,6 +490,14 @@ its own reason, not a drift.
   The rate-limit 403 and a week of count-mode logs wait on a hostname.
 
 ## Decision log
+
+## Update (2026-10-17) — superseded; deployment is Docker via GHCR
+
+The AWS CDK application (`infra/`), OIDC deploy workflows, and related CI gates were removed from the
+repository. `release.yml` now stops after the GHCR push — no `deploy-staging` / `deploy-production` jobs and
+no job outputs feeding them. Operators run the container this repository publishes — built from the root
+`Dockerfile`, exercised in CI — with Docker or `docker-compose.yml`. Operational steps live in
+[`deployment.md`](../deployment.md). This ADR remains as historical context for gh#509 and related work.
 
 Dated `## Update` entries land below this heading, oldest first, one per settings-only choice or measured
 decision the cards above own: the region, hostname spelling, OIDC read-back and EnvironmentStack
@@ -1417,6 +1425,31 @@ entry does not point a laptop at production credentials.
 
 The next staging deploy that picks up the new default is what starts listening. Quote
 `describe-task-definition` on gh#660 when that task is running.
+
+Assisted-by: Cursor Grok 4.6 (Cursor)
+
+## Update (2026-09-12) — live staging RecordTape is on (gh#660 leftover)
+
+The 2026-09-11 entry said the next staging deploy that picks up the default starts
+listening. `v0.5.0` / `sha256:ea0b23b998edd9be2bdc8ac7924163d2ed98bb4641ce39ff7cdac71ac5065732`
+landed on `topstepx-mcp-staging-server:13` with CloudFormation `RecordTape=false`:
+`deploy-environment.sh` passes only `ImageDigest` and `Version`, so the 23:32Z
+value was retained. The CDK `RecordTapeDefault` was already `true`.
+
+2026-09-12 `update-stack --use-previous-template` set `RecordTape=true` and kept
+the same digest and `Version=0.5.0`. Quoted
+`aws ecs describe-task-definition --task-definition topstepx-mcp-staging-server:14`:
+
+```
+Deployment__Version = 0.5.0
+Deployment__ImageDigest = sha256:ea0b23b998edd9be2bdc8ac7924163d2ed98bb4641ce39ff7cdac71ac5065732
+ProjectX__DataTier = Simulated
+MarketData__WarmIndicators = false
+MarketData__RecordTape = true
+```
+
+Local compose stays `false`. Production was not touched. The silent retain in
+`deploy-environment.sh` is noted on gh#660; this card did not change the script.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 

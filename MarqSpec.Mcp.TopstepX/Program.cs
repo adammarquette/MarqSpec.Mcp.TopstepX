@@ -1,4 +1,6 @@
 using System.Reflection;
+using MarqSpec.Client.ProjectX.Authentication;
+using MarqSpec.Client.ProjectX.Configuration;
 using MarqSpec.Client.ProjectX.DependencyInjection;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -8,8 +10,12 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
@@ -24,11 +30,6 @@ namespace MarqSpec.Mcp.TopstepX;
 public static class Program
 {
     /// <summary>
-    /// Where the stdio transport listens when nothing names an address: loopback, port assigned by the OS.
-    /// </summary>
-    private const string StdioLoopbackAddress = "http://127.0.0.1:0";
-
-    /// <summary>
     /// The MCP SDK's own activity source and meter — one name, carrying both.
     /// </summary>
     /// <remarks>
@@ -42,14 +43,6 @@ public static class Program
 
     /// <summary>Npgsql's meter. Its activity source is subscribed by the driver's own extension.</summary>
     private const string NpgsqlTelemetryName = "Npgsql";
-
-    /// <summary>
-    /// The health probe's path — the one request not worth a span.
-    /// </summary>
-    /// <remarks>
-    /// A path name rather than a reference to an endpoint, because there is no endpoint yet: gh#513 owns it.
-    /// </remarks>
-    private const string HealthProbePath = "/health";
 
     /// <summary>Runs the server, or a CLI verb.</summary>
     /// <param name="args">Command-line arguments.</param>
@@ -95,6 +88,16 @@ public static class Program
             return await ReselectBarsAsync(app, args).ConfigureAwait(false);
         }
 
+        // Beside the other verbs. export-tape and import-tape both migrate: an empty database has to be
+        // able to receive a restore, and an export that writes through an unapplied schema is not the
+        // archive a later import can read (gh#755).
+        if (args.Length > 0
+            && (string.Equals(args[0], TapeExportCommands.ExportVerb, StringComparison.Ordinal)
+                || string.Equals(args[0], TapeExportCommands.ImportVerb, StringComparison.Ordinal)))
+        {
+            return await RunTapeExportAsync(app, args).ConfigureAwait(false);
+        }
+
         // The result is published into DI rather than thrown: the tools that need a store ask it, and the
         // ones that do not are unaffected.
         StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
@@ -114,10 +117,10 @@ public static class Program
         // from either -- it is a property of the host, not of stdio -- and a second `RunAsync` here is how the
         // HTTP branch would quietly keep the old behaviour (gh#76).
         //
-        // Stdio needs no branch of its own -- and NOT because the host never starts a listener. It does:
-        // `WebApplication` always adds Kestrel as a hosted service and always starts it, under both
-        // transports. Under stdio Kestrel is simply not the transport, nothing is mapped in front of it, and
-        // the session runs over stdin and stdout (ADR-0007).
+        // Stdio needs no branch of its own. WebApplication still starts GenericWebHostService (gh#76
+        // forbids a second host type). Under stdio that service starts a server that binds nothing
+        // unless the operator named a listener for health or metrics (gh#696). MapMcp stays inside
+        // the HTTP branch; the session runs over stdin and stdout (ADR-0007).
         return await RunHostAsync(app).ConfigureAwait(false);
     }
 
@@ -143,7 +146,8 @@ public static class Program
         // BEFORE MapMcp, so the gate sits in front of the endpoint rather than beside it. Options validation
         // already refuses to start the HTTP transport with no mode configured, or with both; this is what
         // makes that requirement mean something at request time (ADR-0007). The gate is global in both
-        // modes, and the only things past it are the terminal branches above it.
+        // modes. The terminal branches above it are the only unauthenticated paths. Endpoints mapped after
+        // it — `/mcp` and `GET /health/recorder` — stay behind it.
         if (mcp.Auth.Mode == McpAuthMode.OAuth)
         {
             // The RFC 9728 document the 401 names; a connector reads it before it has a token, so it is the
@@ -157,6 +161,12 @@ public static class Program
         }
 
         app.MapMcp(McpOptions.McpEndpointPath);
+
+        // AFTER the gate, and a mapped endpoint rather than a terminal branch, so it stays authenticated.
+        // `/health` is the probe and reaches nothing. This path opens a database connection, which is why
+        // it is not on the 30 s probe, and it is worth a span: IsTraced excludes only the exact probe path
+        // (gh#756, R-5.14).
+        app.MapRecorderHealth();
     }
 
     /// <summary>Runs the built host, treating a shutdown asked for during startup as a shutdown.</summary>
@@ -451,14 +461,14 @@ public static class Program
     /// same search results and on the same bill as the tool calls somebody is looking for.
     /// </para>
     /// <para>
-    /// <b>Matched on the exact path, not a prefix.</b> A prefix match would silently swallow a future
-    /// <c>/health/detail</c> — an endpoint whose whole purpose would be to be worth reading. gh#513 owns the
-    /// endpoint itself and has not landed; this lands on the path name now so it is already in place when the
-    /// endpoint arrives, rather than being the thing everyone forgets afterwards.
+    /// <b>The same ordinal comparison the probe uses.</b> <see cref="HealthEndpoint.IsProbePath"/> is the one
+    /// match. A prefix would swallow <c>/health/recorder</c>. A case-insensitive match would stop tracing
+    /// <c>/Health</c> while the gate still answers it 401 — two policies for one path. Keeping this
+    /// case-sensitive does not unauthenticate anything: the probe itself stays an exact <c>GET /health</c>.
     /// </para>
     /// </remarks>
-    private static bool IsTraced(HttpContext context) =>
-        !context.Request.Path.Equals(HealthProbePath, StringComparison.OrdinalIgnoreCase);
+    internal static bool IsTraced(HttpContext context) =>
+        !HealthEndpoint.IsProbePath(context.Request.Path);
 
     /// <summary>The <c>service.version</c> resource attribute.</summary>
     /// <returns>The assembly's informational version, without build metadata.</returns>
@@ -494,38 +504,34 @@ public static class Program
     }
 
     /// <summary>
-    /// Gives the stdio transport an ephemeral loopback address, unless one has been named explicitly.
+    /// Under stdio, binds no HTTP port unless the operator named a listener for health or metrics.
     /// </summary>
     /// <param name="builder">The host builder.</param>
     /// <param name="transport">The transport that was selected.</param>
     /// <remarks>
     /// <para>
-    /// <b>Kestrel still starts.</b> ADR-0007 settled that and gh#76 rejected not starting it; this changes
-    /// which address it takes, not whether it takes one. Under stdio the listener serves nothing —
-    /// <c>MapMcp</c> is inside the HTTP branch and the session runs over stdin and stdout — but it was still
-    /// holding the framework default <c>http://localhost:5000</c>, exclusively, for the life of the process.
+    /// <b>The host still starts.</b> ADR-0007's one-host decision and gh#76 still stand:
+    /// <see cref="WebApplication"/> always adds <c>GenericWebHostService</c>, and avoiding it would fork
+    /// the composition root. What changed (gh#696) is the <i>server</i> that service starts. Under stdio
+    /// with no operator-named address, that server binds nothing — the session is the pipe,
+    /// <c>MapMcp</c> is inside the HTTP branch, and a listener that serves nothing is a collision
+    /// waiting for a second instance.
     /// </para>
     /// <para>
-    /// So a second session could not start (gh#392): <c>IOException: Failed to bind to address
-    /// http://127.0.0.1:5000: address already in use</c>, raised before any tool was reachable and saying
-    /// nothing about stdio. That is an ordinary thing to do here — this repository runs parallel agent
-    /// sessions by design — and :5000 is contended by a great many other dev servers besides.
+    /// gh#392 stopped two host processes colliding on the framework default <c>:5000</c> by giving
+    /// stdio an ephemeral loopback address. That default never applied inside the image:
+    /// <c>mcr.microsoft.com/dotnet/aspnet:10.0</c> bakes <c>ASPNETCORE_HTTP_PORTS=8080</c>,
+    /// <c>HasOperatorNamedListener</c>'s predecessor treated it as an explicit address, and a stdio
+    /// container bound every interface on 8080. Two containers sharing a network namespace — host
+    /// networking, or a second <c>docker run</c> against the same stack — then died on
+    /// <c>AddressInUse</c> before any tool was reachable.
     /// </para>
     /// <para>
-    /// Port <b>0</b> rather than another well-known number, because any fixed choice is the same bug at a
-    /// different address; loopback rather than any interface, because nothing should reach this listener.
-    /// </para>
-    /// <para>
-    /// <b>An explicitly named address still wins</b>, under either transport — <c>ASPNETCORE_URLS</c>,
-    /// <c>ASPNETCORE_HTTP_PORTS</c> and <c>ASPNETCORE_HTTPS_PORTS</c> (which <c>docker-compose.yml</c> uses
-    /// to place the composed server on 8443, over TLS, since gh#416 — it named <c>ASPNETCORE_HTTP_PORTS</c>
-    /// and 8080 until then). A default that overrode any of them would not be a default.
-    /// </para>
-    /// <para>
-    /// Worth knowing while reading the three variables above: <c>mcr.microsoft.com/dotnet/aspnet:10.0</c>
-    /// sets <c>ASPNETCORE_HTTP_PORTS=8080</c> in the image, so inside the container an address is <i>always</i>
-    /// named and this method's stdio default never applies. Outside it — a client launching
-    /// <c>dotnet run</c> — nothing names one and the ephemeral loopback address is what gh#392 needs.
+    /// Clearing the variable in the <c>Dockerfile</c> was measured and rejected (ADR-0007, 2026-09-03):
+    /// under HTTP it drops Kestrel to <c>localhost:5000</c>, unreachable from outside the container.
+    /// So the image keeps the inherited port for the HTTP transport, and this method ignores it
+    /// under stdio. An operator who wants a health or metrics listener under stdio names one with
+    /// <c>ASPNETCORE_URLS</c> or <c>ASPNETCORE_HTTPS_PORTS</c>.
     /// </para>
     /// </remarks>
     public static void ConfigureDefaultBinding(WebApplicationBuilder builder, McpTransport transport)
@@ -533,27 +539,74 @@ public static class Program
         ArgumentNullException.ThrowIfNull(builder);
 
         // The HTTP transport is the one that is meant to be reachable, and it is told where to listen by
-        // configuration. Leave the framework's own defaulting alone.
+        // configuration — including the aspnet image's inherited 8080. Leave the framework's own
+        // defaulting alone. Clearing HTTP_PORTS here is the change ADR-0007 measured and rejected.
         if (transport == McpTransport.Http)
         {
             return;
         }
 
-        if (HasExplicitAddress(builder.Configuration))
+        if (HasOperatorNamedListener(builder.Configuration))
         {
             return;
         }
 
-        builder.WebHost.UseUrls(StdioLoopbackAddress);
+        SuppressStdioListener(builder);
     }
 
-    /// <summary>Whether an address has been named by any of the ways the framework reads one.</summary>
+    /// <summary>
+    /// Whether the operator named a listener, as distinct from the aspnet image naming one.
+    /// </summary>
     /// <param name="configuration">The configuration to read.</param>
-    /// <returns><see langword="true"/> when the operator has named an address.</returns>
-    private static bool HasExplicitAddress(IConfiguration configuration)
+    /// <returns>
+    /// <see langword="true"/> when <c>ASPNETCORE_URLS</c> or <c>ASPNETCORE_HTTPS_PORTS</c> is set.
+    /// <c>ASPNETCORE_HTTP_PORTS</c> is not this: the base image always sets it to 8080.
+    /// </returns>
+    private static bool HasOperatorNamedListener(IConfiguration configuration)
         => !string.IsNullOrWhiteSpace(configuration[WebHostDefaults.ServerUrlsKey])
-            || !string.IsNullOrWhiteSpace(configuration[WebHostDefaults.HttpPortsKey])
             || !string.IsNullOrWhiteSpace(configuration[WebHostDefaults.HttpsPortsKey]);
+
+    /// <summary>
+    /// Replaces Kestrel with a server that binds nothing, and clears the inherited HTTP port so a
+    /// later re-registration cannot pick it up.
+    /// </summary>
+    /// <param name="builder">The host builder.</param>
+    private static void SuppressStdioListener(WebApplicationBuilder builder)
+    {
+        builder.WebHost.UseSetting(WebHostDefaults.HttpPortsKey, string.Empty);
+        builder.WebHost.UseSetting(WebHostDefaults.ServerUrlsKey, string.Empty);
+        builder.Services.Replace(ServiceDescriptor.Singleton<IServer, SilentServer>());
+    }
+
+    /// <summary>
+    /// An <see cref="IServer"/> that starts and stops without opening a socket.
+    /// </summary>
+    /// <remarks>
+    /// <c>GenericWebHostService</c> still starts — that is gh#76 — and calls <see cref="StartAsync{TContext}"/>.
+    /// Completing immediately, including when the token is already cancelled, is what a stdio
+    /// <c>docker run</c> without <c>-i</c> needs: there is no <c>BindAsync</c> to throw.
+    /// </remarks>
+    private sealed class SilentServer : IServer
+    {
+        public IFeatureCollection Features { get; } = CreateFeatures();
+
+        private static IFeatureCollection CreateFeatures()
+        {
+            FeatureCollection features = new();
+            features.Set<IServerAddressesFeature>(new ServerAddressesFeature());
+            return features;
+        }
+
+        public Task StartAsync<TContext>(IHttpApplication<TContext> application, CancellationToken cancellationToken)
+            where TContext : notnull
+            => Task.CompletedTask;
+
+        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public void Dispose()
+        {
+        }
+    }
 
     /// <summary>Registers everything the server needs.</summary>
     /// <param name="builder">The host builder.</param>
@@ -567,6 +620,13 @@ public static class Program
 
         services.AddOptions<MarketDataOptions>()
             .Bind(builder.Configuration.GetSection(MarketDataOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        // Scheduled tape export (gh#755). Off by default. The destination is a mounted-volume path;
+        // validation refuses an object-storage URI. Drive stays off until a folder and a credential are set.
+        services.AddOptions<TapeExportOptions>()
+            .Bind(builder.Configuration.GetSection(TapeExportOptions.SectionName))
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
@@ -602,6 +662,50 @@ public static class Program
             .Bind(builder.Configuration.GetSection(StoreOptions.SectionName))
             .ValidateDataAnnotations()
             .ValidateOnStart();
+
+        // Longer than Npgsql's 30-second default, and only for the migration. A per-chunk index build that
+        // is cancelled leaves an invalid index, and the next start drops it and builds it again under the
+        // same cap (gh#756). Validated on start like its siblings. The previous timeout is restored.
+        services.AddOptions<MigrationOptions>()
+            .Bind(builder.Configuration.GetSection(MigrationOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddSingleton<IMigrationApplier, MigrationApplier>();
+
+        // Trading write controls (ADR-0024 v1, gh#708). Default Trading__Enabled=false. Order tools call
+        // TradingRiskGate only. Idempotency is the pre-send Unknown audit row, unique per account, tool
+        // and key, so a restart or a second replica replays from the store.
+        services.AddOptions<TradingExecutionOptions>()
+            .Configure<IConfiguration>(TradingExecutionOptionsConfiguration.Bind)
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddSingleton<IOptionsChangeTokenSource<TradingExecutionOptions>>(
+            new ConfigurationChangeTokenSource<TradingExecutionOptions>(builder.Configuration));
+
+        // Two public constructors. The container treats that as ambiguous, so these factories are the ones
+        // that read IOptionsMonitor. The IOptions constructors exist for the stage tests on develop.
+        services.AddSingleton(sp => new TradingKillSwitch(
+            sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>()));
+        services.AddSingleton<ITradingKillSwitch>(sp => sp.GetRequiredService<TradingKillSwitch>());
+        // Two public constructors, both three arguments. The container treats that as ambiguous, so this
+        // factory is the one that reads IOptionsMonitor. The IOptions constructor exists for the stage
+        // tests on develop, which still call new TradingExecutionGate(Options.Create(...), ...).
+        services.AddSingleton(sp => new TradingExecutionGate(
+            sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>(),
+            sp.GetRequiredService<ITradingKillSwitch>(),
+            sp.GetRequiredService<IAccountStageResolver>()));
+        services.AddSingleton<ITradingUnknownStageRefusalSignal, NullTradingUnknownStageRefusalSignal>();
+        services.AddSingleton<IAccountStageResolver, ProjectXAccountStageResolver>();
+        services.AddScoped<ITradingAuditLogWriter, TradingAuditLogWriter>();
+        services.AddScoped<ITradingDailyCapCoordinator, TradingDailyCapCoordinator>();
+        services.AddScoped(sp => new TradingContractDenylist(
+            sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>(),
+            sp.GetRequiredService<InstrumentRegistry>()));
+        services.AddScoped<TradingWriteVenueAccountCache>();
+        // Scoped, and one order operation per instance. TradingRiskGate throws if a second operation
+        // reuses it: the send-started flags would otherwise be cleared and a live send could be
+        // reported as safe to retry.
+        services.AddScoped<TradingRiskGate>();
 
         // Under HTTP, exactly one authentication mode, complete — the token for StaticToken, the issuer,
         // client ids and resource URL for OAuth — and both directions of "both" refused, each naming its
@@ -644,7 +748,10 @@ public static class Program
         services.AddSingleton(sp =>
         {
             MarketDataOptions options = sp.GetRequiredService<IOptions<MarketDataOptions>>().Value;
-            return BarSessionCalendar.Parse(options.SessionCloseCentral, options.HolidayList());
+            return BarSessionCalendar.Parse(
+                options.SessionCloseCentral,
+                options.HolidayList(),
+                earlyCloses: options.EarlyCloseList());
         });
 
         // After the calendar, because it is stated against one: every definition is re-checked here against
@@ -743,7 +850,45 @@ public static class Program
 
         if (venue.IsConfigured && venue.DataTier != ProjectXDataTier.Unspecified)
         {
+            // Order POSTs must not use transport-level retries — a duplicate would land before
+            // the execution gateway can report TransmittedOutcomeUnknown (ADR-0024, gh#710).
             services.AddProjectXApiClient(builder.Configuration);
+            services.SuppressTransportRetriesOnVenueWrites();
+
+            // The recorder's session probe and the login gate in front of the venue client (gh#757).
+            // Registered only beside the venue client. The concrete AuthenticationService is removed so
+            // a resolve cannot skip the gate: the inner instance is constructed here and held only by
+            // GatedAuthenticationService. The probe and the renewer read HeldSession and post validate.
+            // They do not call GetAccessTokenAsync. The gated service is what SignalR's
+            // AccessTokenProvider and the REST handler both resolve.
+            services.AddSingleton<HeldSession>();
+            services.AddSingleton<SessionLoginGate>();
+            services.RemoveAll<AuthenticationService>();
+            services.RemoveAll<IAuthenticationService>();
+            services.AddSingleton(static serviceProvider => new GatedAuthenticationService(
+                CreateVenueAuthentication(serviceProvider),
+                serviceProvider.GetRequiredService<HeldSession>(),
+                serviceProvider.GetRequiredService<SessionLoginGate>(),
+                serviceProvider.GetRequiredService<TimeProvider>(),
+                serviceProvider.GetRequiredService<HostTelemetry>()));
+            services.AddSingleton<IAuthenticationService>(static serviceProvider =>
+                serviceProvider.GetRequiredService<GatedAuthenticationService>());
+            services.AddHttpClient(ProjectXSessionConflictProbe.HttpClientName, (serviceProvider, client) =>
+            {
+                ProjectXOptions projectX = serviceProvider.GetRequiredService<IOptions<ProjectXOptions>>().Value;
+                client.BaseAddress = new Uri(projectX.BaseUrl);
+                client.Timeout = TimeSpan.FromSeconds(10);
+            });
+            services.AddSingleton(serviceProvider => new ProjectXSessionConflictProbe(
+                serviceProvider.GetRequiredService<HeldSession>(),
+                serviceProvider.GetRequiredService<IHttpClientFactory>(),
+                serviceProvider.GetRequiredService<ILogger<ProjectXSessionConflictProbe>>(),
+                serviceProvider.GetRequiredService<TimeProvider>()));
+            services.AddSingleton<ISessionConflictProbe>(static serviceProvider =>
+                serviceProvider.GetRequiredService<ProjectXSessionConflictProbe>());
+            services.AddSingleton<HeldSessionRenewer>();
+            services.AddHostedService(static serviceProvider =>
+                serviceProvider.GetRequiredService<HeldSessionRenewer>());
 
             // SINGLETON, while the gateway consuming it is scoped. The vendor's 50-requests-per-30-seconds
             // allowance on History/retrieveBars is counted against the CREDENTIAL, so it has to be shared
@@ -751,10 +896,12 @@ public static class Program
             // independently and none of them would know (gh#43).
             services.AddSingleton(sp => VenueRequestPacer.ForHistory(sp.GetRequiredService<TimeProvider>()));
             services.AddScoped<IMarketDataGateway, ProjectXMarketDataGateway>();
+            services.AddScoped<IExecutionGateway, ProjectXExecutionGateway>();
         }
         else
         {
             services.AddScoped<IMarketDataGateway, UnconfiguredMarketDataGateway>();
+            services.AddScoped<IExecutionGateway, UnconfiguredExecutionGateway>();
         }
 
         string connection = builder.Configuration.GetConnectionString("Default")
@@ -787,13 +934,42 @@ public static class Program
         // switch — ExecuteAsync returns immediately unless the transport is HTTP and
         // MarketData__RecordTape is on. It takes no scoped venue client in the constructor;
         // every operation opens a scope (the captive-dependency case, ADR-0016).
-        services.AddHostedService<TradeTapeRecorder>();
+        services.AddSingleton<TradeTapeRecorder>();
+        services.AddHostedService(sp => sp.GetRequiredService<TradeTapeRecorder>());
 
         // Indicator warmup. Same shape: HTTP and an explicit switch, both. Always registered
         // so the container does not change with MarketData__WarmIndicators; ExecuteAsync
         // returns immediately unless the transport is HTTP and the switch is on. The
         // rebuilder is scoped, so the pass opens a scope (gh#350, ADR-0014).
         services.AddHostedService<IndicatorWarmup>();
+
+        // Tape export. Always registered so the container shape does not depend on the daily-copy switch.
+        // ExecuteAsync returns immediately unless the transport is HTTP and the switch is on. The pass
+        // is scoped because it takes the DbContext, so the worker opens a scope (gh#755). Drive is a
+        // singleton: the disabled implementation is used until a folder and a service account are both set.
+        services.AddSingleton<ITapeDriveUploader>(sp =>
+        {
+            TapeExportOptions export = sp.GetRequiredService<IOptions<TapeExportOptions>>().Value;
+            HostTelemetry telemetry = sp.GetRequiredService<HostTelemetry>();
+            if (!export.Drive.IsConfigured)
+            {
+                return new DisabledTapeDriveUploader();
+            }
+
+            return new RetryingTapeDriveUploader(
+                new GoogleTapeDriveClient(
+                    export.Drive,
+                    sp.GetRequiredService<ILogger<GoogleTapeDriveClient>>(),
+                    sp.GetRequiredService<TimeProvider>()),
+                telemetry,
+                sp.GetRequiredService<ILogger<RetryingTapeDriveUploader>>(),
+                new TapeDriveRetryTiming(),
+                sp.GetRequiredService<TimeProvider>());
+        });
+        services.AddSingleton<ITapeExportSchedulerGate, RecorderLeaseGate>();
+        services.AddScoped<TapeExportPass>();
+        services.AddScoped<ITapeExportPass>(sp => sp.GetRequiredService<TapeExportPass>());
+        services.AddHostedService<TapeExportWorker>();
 
         // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which
         // series it has already found complete, and the scope is one request. A singleton would remember the
@@ -829,23 +1005,44 @@ public static class Program
         services.AddScoped<TapeTools>();
         services.AddScoped<ContractRollTools>();
         services.AddScoped<AccountTools>();
+        services.AddScoped<TradingOrderTools>();
         services.AddScoped<SnapshotTools>();
         services.AddScoped<ObservationTools>();
         services.AddScoped<SessionBarTools>();
         services.AddScoped<SessionIndicatorTools>();
 
+        // The recorder report (gh#756). The store is scoped because it takes the DbContext; the tool and the
+        // HTTP endpoint both resolve the service, so it has to be registered — ActivatorUtilities does not
+        // construct an unregistered dependency, and the endpoint's MapGet has the same rule.
+        services.AddSingleton<RecorderHealthMemo>();
+        services.AddScoped<EfRecorderHealthStore>();
+        services.AddScoped<IRecorderHealthStore>(static provider =>
+            provider.GetRequiredService<EfRecorderHealthStore>());
+        services.AddScoped<RecorderHealthService>();
+        services.AddScoped<RecorderHealthTools>();
+
         // One registration, one tool set, two ways in (ADR-0007). The transport is the only thing that
         // differs, and it is chosen here rather than by a second AddMcpServer call — registering the server
         // twice would build two of everything and leave which one answers to configuration order.
         IMcpServerBuilder server = services.AddMcpServer()
-            .WithToolsFromAssembly(typeof(Program).Assembly)
+            .WithToolsFromAssembly(typeof(Program).Assembly);
 
-            // The store-fault boundary (gh#89). ON THE SERVER, NOT ON A TOOL: every tools/call goes through
-            // this pipeline, so a tool added tomorrow is covered by having been registered rather than by its
-            // author remembering a try/catch. A guard written into a tool covers that tool, which is how a
-            // 23505 from two overlapping fills reached a caller of get_bars as a raw DbUpdateException while
-            // the one method that translated anything sat two tools away.
-            .WithRequestFilters(filters => filters.AddCallToolFilter(StoreFaultGuard.Filter));
+        // The five order tools have no [McpServerToolType], so the assembly scan above does not publish
+        // them. They are listed only when the master switch is on. Each method still refuses when trading
+        // is disabled, which covers a call that arrives without a fresh list.
+        TradingExecutionOptions trading = new();
+        TradingExecutionOptionsConfiguration.Bind(trading, builder.Configuration);
+        if (trading.Enabled)
+        {
+            server.WithTools<TradingOrderTools>();
+        }
+
+        // The store-fault boundary (gh#89). ON THE SERVER, NOT ON A TOOL: every tools/call goes through
+        // this pipeline, so a tool added tomorrow is covered by having been registered rather than by its
+        // author remembering a try/catch. A guard written into a tool covers that tool, which is how a
+        // 23505 from two overlapping fills reached a caller of get_bars as a raw DbUpdateException while
+        // the one method that translated anything sat two tools away.
+        server = server.WithRequestFilters(filters => filters.AddCallToolFilter(StoreFaultGuard.Filter));
 
         if (mcp.Transport == McpTransport.Http)
         {
@@ -885,6 +1082,8 @@ public static class Program
         using IServiceScope scope = app.Services.CreateScope();
         TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
         ILogger logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("startup");
+        MigrationOptions migrations =
+            scope.ServiceProvider.GetRequiredService<IOptions<MigrationOptions>>().Value;
 
         // The probe, the warning that names what it tried, and the bounded retry all live in StoreStartup so
         // the credential-bearing connection string is handled somewhere a unit test can assert the password
@@ -919,7 +1118,14 @@ public static class Program
 
         try
         {
-            await database.Database.MigrateAsync().ConfigureAwait(false);
+            // The same token ReachAsync uses. It cannot fire before the host starts. The comment above
+            // is why a later move of this call, to after StartAsync, would still need the stop catch.
+            await scope.ServiceProvider.GetRequiredService<IMigrationApplier>()
+                .ApplyAsync(
+                    database.Database,
+                    migrations.CommandTimeoutSeconds,
+                    app.Lifetime.ApplicationStopping)
+                .ConfigureAwait(false);
             return StoreAvailability.Available();
         }
         catch (Npgsql.NpgsqlException ex) when (ex.InnerException is System.Net.Sockets.SocketException)
@@ -1026,8 +1232,11 @@ public static class Program
         {
             // Through the logger, not Console.Error: the stdio transport's logging is already configured
             // (ConfigureLogging), and a bare Console write would be the only one in this codebase -- on the
-            // one transport where stdout is the protocol.
-            logger.LogError("reselect-bars refused the command line: {Reason}", ex.Message);
+            // one transport where stdout is the protocol. The message is the operator's text; escape it
+            // before it is a field, so a CR in an argument cannot open a second line.
+            logger.LogError(
+                "reselect-bars refused the command line: {Reason}",
+                LogText.Sanitize(ex.Message));
             return ReselectExit.From(ex);
         }
 
@@ -1083,6 +1292,67 @@ public static class Program
         }
 
         return ReselectExit.Ok;
+    }
+
+    /// <summary>
+    /// The venue client's authentication service, held only by <see cref="GatedAuthenticationService"/>.
+    /// The package registers a named client <c>AuthenticationService</c> with no authentication handler,
+    /// so a login does not re-enter the gate. <see cref="AuthenticationService"/> itself is not registered.
+    /// The client is not disposed: it lives as long as the process.
+    /// </summary>
+    private static AuthenticationService CreateVenueAuthentication(IServiceProvider serviceProvider)
+    {
+        HttpClient http = serviceProvider
+            .GetRequiredService<IHttpClientFactory>()
+            .CreateClient(nameof(AuthenticationService));
+        return new AuthenticationService(
+            serviceProvider.GetRequiredService<ILogger<AuthenticationService>>(),
+            serviceProvider.GetRequiredService<IOptions<ProjectXOptions>>(),
+            http);
+    }
+
+    private static async Task<int> RunTapeExportAsync(WebApplication app, string[] args)
+    {
+        try
+        {
+            ILogger logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("tape-export");
+
+            bool isExport;
+            DateOnly? day;
+            try
+            {
+                (isExport, day) = TapeExportCommands.Parse(args);
+            }
+            catch (ArgumentException exception)
+            {
+                logger.LogError(
+                    "tape export refused the command line: {Reason}",
+                    LogText.Sanitize(exception.Message));
+                return TapeExportCommands.ExitUsage;
+            }
+
+            StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+            if (!store.IsAvailable)
+            {
+                logger.LogError(
+                    "tape export cannot run: the store is unreachable or its migration did not complete "
+                    + "({Reason}). Nothing was written and nothing was deleted.",
+                    store.Explanation);
+                return TapeExportCommands.ExitStore;
+            }
+
+            using IServiceScope scope = app.Services.CreateScope();
+            ITapeExportPass pass = scope.ServiceProvider.GetRequiredService<ITapeExportPass>();
+            TapeExportReport report = isExport
+                ? await pass.ExportAsync(day, CancellationToken.None).ConfigureAwait(false)
+                : await pass.ImportAsync(day, CancellationToken.None).ConfigureAwait(false);
+
+            return report.DaysRefused > 0 ? TapeExportCommands.ExitRefused : TapeExportCommands.ExitOk;
+        }
+        finally
+        {
+            await ShutDownLoggingAsync(app).ConfigureAwait(false);
+        }
     }
 
 }

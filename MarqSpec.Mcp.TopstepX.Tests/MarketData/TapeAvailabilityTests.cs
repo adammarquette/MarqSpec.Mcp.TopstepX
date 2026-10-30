@@ -86,5 +86,23 @@ public sealed class TapeAvailabilityTests
         TapeAvailability.Reconnecting(),
         TapeAvailability.ConnectedButNotSubscribed(),
         TapeAvailability.Stopped(),
+        TapeAvailability.StoppedRatherThanLogin(),
+        TapeAvailability.StoppedForSessionConflict(),
+        TapeAvailability.ClaimTakenOver(),
+        TapeAvailability.ClaimLapsed(),
     ];
+
+    [Fact]
+    public void ClaimTakenOver_AndClaimLapsed_AreNotAnotherRecorderHoldingTheClaim()
+    {
+        TapeAvailability.ClaimTakenOver().Reason.Should().Be(TapeUnavailableReason.ClaimTakenOver);
+        TapeAvailability.ClaimLapsed().Reason.Should().Be(TapeUnavailableReason.ClaimLapsed);
+        TapeAvailability.HeldByAnotherRecorder("http-1", DateTimeOffset.UnixEpoch).Reason
+            .Should().Be(TapeUnavailableReason.HeldByAnotherRecorder);
+
+        TapeAvailability.ClaimTakenOver().Reason
+            .Should().NotBe(TapeAvailability.HeldByAnotherRecorder("http-1", DateTimeOffset.UnixEpoch).Reason);
+        TapeAvailability.ClaimLapsed().Reason
+            .Should().NotBe(TapeAvailability.ClaimTakenOver().Reason);
+    }
 }

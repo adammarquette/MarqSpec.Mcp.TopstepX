@@ -80,7 +80,7 @@ public sealed class SnapshotIndicatorProvenanceTests(SeriesStoreFixture fixture)
     /// Stated rather than read off the catalogue, so a batched read that quietly dropped a name — the join's
     /// natural failure — is a red test rather than a smaller map that agrees with itself.
     /// </remarks>
-    private const int IndicatorCount = 12;
+    private const int IndicatorCount = 15;
 
     /// <summary>ATR(3) over the expiring run, hand-checked.</summary>
     /// <remarks>

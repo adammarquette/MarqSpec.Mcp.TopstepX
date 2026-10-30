@@ -120,6 +120,39 @@ take it. Two kinds, which clear differently — so say which:
 - **Waiting on a change to land.** gh#155 waited on gh#173 because both edit `branch-policy.yml`. It clears on
   a merge, and whoever merges the blocker says so on the blocked issue.
 
+**The reason goes stale, and nothing re-states it by itself.** The comment above is written once, when the
+card is set to `Blocked`, and nothing edits or repeats it when the named blocker later closes. A stale reason
+still *reads* as current, so a reader doing exactly what this case already asks — read the reason, check
+whether it still holds — reaches a confident wrong answer: the named blocker really is closed, so the card
+must be ready. **Measured on 2026-09-14 (gh#677):** gh#520, gh#522 and gh#525 each named a blocker that had
+closed four days earlier, while every one of the three was still correctly `Blocked`, on a different reason
+nothing had recorded. A coordinator read all three stated reasons, found every named blocker closed, and
+dispatched three implementers before discovering that each card's scope had already shipped.
+
+- **Who owes the re-statement.** The [coordinator](agents/coordinator.md) does — **not** because its Pick
+  order reaches `Blocked` cards (it does not: `Blocked` is none of that order's four priorities, so nothing
+  there would ever have opened one), but because this obligation has its own trigger, stated in
+  `coordinator.md` rather than merely asserted here: a sweep of every `Blocked` card **before each pass**
+  through Pick order, on the actor that is already there for every other column rather than on whichever
+  agent happens to notice something resolve first. The sweep checks what the reason actually names, not
+  whether it names an issue — a human action or a measurement has no `gh#N` to poll, and is the population
+  most likely to go stale silently under a narrower check. All-resolved is not the same question as
+  all-clear: before trusting it, confirm nothing shipped the card's scope already
+  ([coordinator.md](agents/coordinator.md) states the check and the sweep that triggers it). Say what the
+  card is waiting on **now**, or move it out of `Blocked` if truly nothing remains.
+- **Where a reader looks.** Post the re-statement as a **new comment**, not a body edit — this corpus already
+  keeps state in dated entries rather than in place (ADR-0023's `## Update` sections). Name it in the first
+  line — put the words `Blocked reason re-stated` there, the way [case 5](#5-two-reviewers-split-verdict)'s
+  verdict line always opens with `Verdict: Approve` or `Verdict: Request changes` — so it is greppable. **The
+  most recent such comment wins**; a reason in the body or an earlier comment does not survive a later one.
+  gh#520, gh#522 and gh#525 each carry exactly one, posted 2026-09-14.
+- **The two `Blocked` populations read alike and are not.** `backlog` already marks one: deferred, trigger not
+  fired. It does not mark the other, which is what all three examples above are: implementation **shipped**,
+  `Blocked` only on a human action, a live measurement, or a date nothing agent-side can move — a release cut
+  and the `aws-production` approval (gh#520), a restore drill (gh#522), a compression-eligibility date
+  (gh#525). Label that population `shipped-awaiting-human` ([below](#labels)) rather than leave it reading the
+  same as `backlog`'s silence.
+
 ### 4. An agent stalls or dies mid-work
 
 A card in `In Progress` looks identical whether the work is live or the session died. **The column is not the
@@ -324,8 +357,10 @@ Two relationships hang off an issue, using different mechanisms:
   auto-closes the issue on merge and surfaces the PR in the board's *Linked pull requests* field. GitHub binds
   that keyword **only on a PR into the default branch**, so a promotion into `staging` or `main` gets neither
   the field nor the auto-close, and its card is moved and closed by hand (gh#101). `Related to #N` — for a PR
-  that touches but does not complete an issue — never binds on any base: a bare `#N` leaves a cross-reference
-  on the issue's timeline and nothing in *Linked pull requests*, which is how #100 and #106 stayed traceable.
+  that touches but does not complete an issue — never binds on any base, and since gh#824 it passes on every
+  base except `develop`: stacked PRs, promotions into `staging` or `main`, and any other base (into `develop`
+  it is `Part of #N` plus `Issue-stays-open: <reason>`): a bare `#N` leaves a cross-reference on the issue's
+  timeline and nothing in *Linked pull requests*, which is how #100 and #106 stayed traceable.
 - **A sub-issue is issue→issue decomposition.** An epic's tasks are its sub-issues. **A PR cannot be a
   sub-issue** — GitHub restricts those to issues — so PR→issue always uses linking.
 
@@ -342,6 +377,7 @@ Repo labels, not board-only fields, so an agent reading the raw issue through `g
 | `work:docs` | Documentation-only |
 | `safety-critical` | Touches the read-only boundary or its enforcement. Floors the estimate at 4 |
 | `backlog` | Deferred — valid direction, not scheduled; revisit when its trigger fires |
+| `shipped-awaiting-human` | The other `Blocked` population — implementation merged; blocked only on a human action, a live measurement, or a date nothing agent-side can move. Companion to `backlog`, not a replacement ([case 3](#3-blocked-needs-a-reason-and-no-column-can-hold-it)) |
 | `ladder-exception` | A justified deviation from the `develop → staging` rule, reason stated in the PR |
 | `Work Estimate: 1–5` | Capability the work demands. See the [rubric](work-estimate-rubric.md) |
 

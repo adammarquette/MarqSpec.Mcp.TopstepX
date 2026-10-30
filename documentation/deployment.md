@@ -579,11 +579,13 @@ The healthcheck timeout must satisfy healthcheck timeout ≥ `Store__StartupWait
 
 One replica of each service is not enough on its own. The server and the recorder both migrate, and they
 take the same session advisory lock. The two waits overlap. They do not add. Each service tries
-the lock and logs once when it has to wait. The wait is a single `CALL`, cancelled at
-`Migrations__CommandTimeoutSeconds` (default 3600) with Postgres error
-`57014`, whatever the healthcheck allows. The second service does not leave a partial index: the create
-is `IF NOT EXISTS` after the lock. If the first service's index-build migration runs close to 3600
-seconds, the second service fails anyway. Redeploy it once the first is healthy.
+the lock and logs once when it has to wait. `Migrations__LockWaitSeconds` (default 300, accepted
+`1` through `604800`) bounds that wait. It is separate from the per-command timeout. A normal
+multi-command apply finishes inside the default. A wait that reaches it is the store unavailable:
+`Store__Required` false degrades, and true logs an error and exits non-zero. The second service does
+not leave a partial index: the create is `IF NOT EXISTS` after the lock. If the first service's index
+build outlasts the wait, the second degrades or exits instead of sitting for the whole command.
+Restart it once the first is healthy.
 
 The composed server has no healthcheck of its own. Postgres uses `pg_isready` with `start_period: 20s`,
 and the server waits on that, not on the server listening. If you add a healthcheck on the server that

@@ -45,6 +45,61 @@ public sealed class MigrationOptionsTests
         negative.Should().Throw<OptionsValidationException>();
     }
 
+    /// <summary>An absent key is five minutes, not the per-command cap.</summary>
+    [Fact]
+    public void LockWaitSeconds_DefaultsToFiveMinutes_WhenTheKeyIsAbsent()
+    {
+        Bind([]).LockWaitSeconds.Should().Be(MigrationOptions.DefaultLockWaitSeconds);
+        MigrationOptions.DefaultLockWaitSeconds.Should().Be(300);
+        Bind([]).CommandTimeoutSeconds.Should().Be(MigrationOptions.DefaultCommandTimeoutSeconds);
+    }
+
+    /// <summary>The lock wait binds on its own. It does not move the command timeout.</summary>
+    [Fact]
+    public void LockWaitSeconds_BindsTheConfiguredValue()
+    {
+        MigrationOptions bound = Bind(new Dictionary<string, string?>
+        {
+            ["Migrations:LockWaitSeconds"] = "45",
+        });
+
+        bound.LockWaitSeconds.Should().Be(45);
+        bound.CommandTimeoutSeconds.Should().Be(MigrationOptions.DefaultCommandTimeoutSeconds);
+    }
+
+    /// <summary>
+    /// Zero would be Npgsql's infinity. The lock wait refuses it, as the command timeout does.
+    /// </summary>
+    [Fact]
+    public void LockWaitSeconds_RefusesZeroAndANegativeValue()
+    {
+        Action zero = () => Bind(new Dictionary<string, string?> { ["Migrations:LockWaitSeconds"] = "0" });
+        Action negative = () => Bind(new Dictionary<string, string?>
+        {
+            ["Migrations:LockWaitSeconds"] = "-1",
+        });
+
+        zero.Should().Throw<OptionsValidationException>();
+        negative.Should().Throw<OptionsValidationException>();
+    }
+
+    /// <summary>Seven days is the ceiling for the wait as well. The bound at the ceiling still binds.</summary>
+    [Fact]
+    public void LockWaitSeconds_RefusesMoreThanSevenDays()
+    {
+        Action over = () => Bind(new Dictionary<string, string?>
+        {
+            ["Migrations:LockWaitSeconds"] = (MigrationOptions.MaxLockWaitSeconds + 1).ToString(),
+        });
+
+        over.Should().Throw<OptionsValidationException>();
+
+        Bind(new Dictionary<string, string?>
+        {
+            ["Migrations:LockWaitSeconds"] = MigrationOptions.MaxLockWaitSeconds.ToString(),
+        }).LockWaitSeconds.Should().Be(MigrationOptions.MaxLockWaitSeconds);
+    }
+
     /// <summary>Seven days is the ceiling. The bound at the ceiling still binds.</summary>
     [Fact]
     public void CommandTimeoutSeconds_RefusesMoreThanSevenDays()

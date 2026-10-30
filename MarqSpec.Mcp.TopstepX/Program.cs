@@ -1152,9 +1152,20 @@ public static class Program
                 token => scope.ServiceProvider.GetRequiredService<IMigrationApplier>()
                     .ApplyAsync(database.Database, migrations.CommandTimeoutSeconds, token),
                 logger,
-                migrations.CommandTimeoutSeconds,
+                migrations.LockWaitSeconds,
                 app.Lifetime.ApplicationStopping).ConfigureAwait(false);
             return StoreAvailability.Available();
+        }
+        catch (MigrationLockWaitTimedOutException)
+        {
+            // The lock was still held when Migrations__LockWaitSeconds elapsed. That is the store
+            // being unavailable, same as a drop: degrade when optional, exit when required. A
+            // per-command timeout is a different exception and still fails the process (gh#843).
+            StoreAvailability unavailable =
+                StoreAvailability.Unavailable("The migration lock wait timed out.");
+            ThrowIfRequired(storeOptions, unavailable, logger);
+            logger.LogWarning("{Explanation}", unavailable.Explanation);
+            return unavailable;
         }
         catch (Exception ex) when (IsDroppedStoreConnection(ex))
         {

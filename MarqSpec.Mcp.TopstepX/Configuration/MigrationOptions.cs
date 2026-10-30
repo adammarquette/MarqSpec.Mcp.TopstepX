@@ -3,7 +3,7 @@ using System.ComponentModel.DataAnnotations;
 namespace MarqSpec.Mcp.TopstepX.Configuration;
 
 /// <summary>
-/// How long one migration command may run.
+/// How long one migration command may run, and how long a second process waits for the apply lock.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -43,4 +43,27 @@ public sealed class MigrationOptions
     /// </remarks>
     [Range(1, MaxCommandTimeoutSeconds)]
     public int CommandTimeoutSeconds { get; init; } = DefaultCommandTimeoutSeconds;
+
+    /// <summary>
+    /// Five minutes. Long enough for a normal multi-command apply, and separate from
+    /// <see cref="CommandTimeoutSeconds"/>, which caps one statement. A per-chunk index build can
+    /// outlast this wait; the waiter then treats the store as unavailable (gh#843).
+    /// </summary>
+    public const int DefaultLockWaitSeconds = 300;
+
+    /// <summary>
+    /// The same typo guard as <see cref="MaxCommandTimeoutSeconds"/>. Zero is refused: Npgsql treats
+    /// zero as no timeout.
+    /// </summary>
+    public const int MaxLockWaitSeconds = 604_800;
+
+    /// <summary>
+    /// How long, in seconds, a process waits to acquire the migration lock.
+    /// </summary>
+    /// <remarks>
+    /// The default is <see cref="DefaultLockWaitSeconds"/>. A wait that reaches it is the store
+    /// unavailable, not a schema defect. Zero is refused rather than treated as no timeout.
+    /// </remarks>
+    [Range(1, MaxLockWaitSeconds)]
+    public int LockWaitSeconds { get; init; } = DefaultLockWaitSeconds;
 }

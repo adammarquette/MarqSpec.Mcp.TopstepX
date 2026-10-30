@@ -139,6 +139,11 @@ export default defineRailway((ctx) => {
       "Host=${{POSTGRES_PRIVATE_HOST}};Port=5432;Database=topstepx_mcp;Username=topstepx;Password=${{shared.POSTGRES_PASSWORD}}",
     // No cross-service ordering on Railway, so wait for Postgres (compose sets 0 because depends_on does it).
     Store__StartupWaitSeconds: "90",
+    // gh#843. Production and staging exit when the store is unreachable or the migration connection
+    // drops, so Railway restarts them (see APP_RESTART_RETRIES). Disposable environments leave the
+    // key unset: the code default is false and ADR-0007's degrade stays. Stating false here would
+    // be the same behaviour, and the check requires the literal true only on these two.
+    ...(persistent ? { Store__Required: "true" } : {}),
 
     ProjectX__ApiKey: ctx.shared.PROJECTX_API_KEY,
     ProjectX__ApiSecret: ctx.shared.PROJECTX_API_SECRET,

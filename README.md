@@ -162,8 +162,8 @@ not stall waiting on it. The recipe tracks `latest` rather than pinning a releas
 would go stale the moment the next tag is cut, silently, and nothing in this repository re-reads a version
 written into prose (gh#471):
 
-The package is private (gh#849): run `docker login ghcr.io -u <github-user>` first, with a classic PAT
-carrying `read:packages` (see [deployment.md](documentation/deployment.md)).
+The package is private (gh#849): run `docker login ghcr.io` first, with the token described under
+"Private image" in [deployment.md](documentation/deployment.md).
 
 ```bash
 docker pull ghcr.io/adammarquette/marqspec.mcp.topstepx:latest

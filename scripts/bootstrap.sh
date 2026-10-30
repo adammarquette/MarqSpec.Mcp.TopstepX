@@ -390,11 +390,12 @@ done
 # ---------------------------------------------------------------------------
 step "5. Published image visibility (read-only)"
 
-# gh#518. Operators pull `ghcr.io/<owner>/<repo>@<digest>` with no registry credential only while the
-# package is PUBLIC. Visibility is a GitHub package setting -- not a file, not a workflow -- and a flip to
-# private breaks unauthenticated `docker pull` on the next deploy unless something reads it back. This step
-# reads it back. It WRITES NOTHING: making the package public again is a Package settings change, not
-# something this script performs.
+# gh#518, gh#849. Visibility is a GitHub package setting -- not a file, not a workflow -- and it decides
+# whether `docker pull ghcr.io/<owner>/<repo>@<digest>` needs a registry credential. This step reads it
+# back and WRITES NOTHING. Since 2026-10-29 (gh#849) this repository's package is PRIVATE on purpose:
+# a private answer is reported as the expected state with the login a host needs (`docker login ghcr.io`
+# with a classic PAT carrying read:packages; GHCR does not accept fine-grained tokens), not as a broken
+# image. No token is read or echoed here.
 #
 # The read is `GET /{users|orgs}/{owner}/packages/container/{name}` -- the package name is the repository
 # name lowercased, the same rule scripts/image-reference.sh applies to the reference the release pushes. It
@@ -445,9 +446,12 @@ if [ -n "$PACKAGE_PATH" ]; then
     if [ "$package_read" = "public" ]; then
       ok "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE is public — unauthenticated docker pull works"
     else
-      warn "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE visibility is '$package_read', not public"
-      warn "  A host pulling it with no registry credential FAILS at docker pull. Make the package public again"
-      warn "  (Package settings > Danger Zone) or configure registry credentials on the host. This script changes neither."
+      # Private is the intended state (gh#849); an unauthenticated pull is denied (401/403, "denied" or
+      # "unauthorized"), which means "log in", not "the image is broken". So this informs, never fails.
+      info "  ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/$PACKAGE is $package_read — an anonymous docker pull is denied"
+      info "  (401/403 \"denied\"/\"unauthorized\"); the image is not broken. Pull after:"
+      info "    docker login ghcr.io -u <github-user>   (password: a classic PAT with read:packages; fine-grained tokens are not accepted)"
+      info "  Railway pulls through each service's Registry Credentials (Settings → Source). See documentation/deployment.md."
     fi
   elif printf '%s' "$package_read" | grep -q 'HTTP 404'; then
     # NAMING THE ASSUMPTION, because "nothing has been released" is a claim and a 404 is only evidence for it
@@ -458,6 +462,7 @@ if [ -n "$PACKAGE_PATH" ]; then
     info "  no container package named $PACKAGE under $OWNER — nothing has been released yet, assuming this token"
     info "  could see one if it were there (a private package a token cannot see also answers 404; a missing"
     info "  read:packages scope answers 403 and is reported separately). Re-run after the first release."
+    info "  If the package is private (gh#849), pulls need: docker login ghcr.io -u <github-user> with a classic PAT (read:packages)."
   elif printf '%s' "$package_read" | grep -q 'read:packages'; then
     warn "  could not read the package visibility: the token lacks the read:packages scope"
     warn "  Grant it once with:  gh auth refresh -s read:packages   and re-run. Nothing here was verified."

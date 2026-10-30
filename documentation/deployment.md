@@ -391,6 +391,13 @@ Running the new image on your infrastructure is separate from release — not au
 
 - **Upgrade:** `docker pull` the release tag (or digest from the workflow log / GHCR), update compose or your
   run command, restart the server (migrate Postgres if the release requires it).
+- **Private image ([#849](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/849)):**
+  `ghcr.io/adammarquette/marqspec.mcp.topstepx` is private, so log in before any pull:
+  `docker login ghcr.io -u <github-user>` with a **classic** PAT carrying `read:packages` (GHCR does not
+  accept fine-grained tokens). Railway pulls through **Registry Credentials** in each service's
+  Settings → Source, set for server and recorder in staging and production. It cannot live in
+  config-as-code: the evaluator rejects `registryCredentials` in `.railway/railway.ts`. Production's first deploy follows
+  [#851](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/851).
 - **Rollback:** pull the previous tag or digest and restart. GHCR tags can be overwritten; prefer digest
   pinning on production hosts.
 

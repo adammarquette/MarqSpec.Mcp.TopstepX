@@ -915,8 +915,7 @@ public static class Program
             services.AddScoped<IExecutionGateway, UnconfiguredExecutionGateway>();
         }
 
-        string connection = builder.Configuration.GetConnectionString("Default")
-            ?? "Host=localhost;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=changeme-local";
+        string connection = StoreConnection.Resolve(builder.Configuration);
 
         services.AddDbContext<TopstepXDbContext>(options =>
             options.UseNpgsql(connection, npgsql => npgsql.UseVector()));
@@ -1138,10 +1137,9 @@ public static class Program
 
         // Not Database.GetConnectionString(). Npgsql redacts the password from that getter, and the
         // lock's own connection would then fail authentication after CanConnect had already succeeded.
-        // This is the same string UseNpgsql was given, including the localhost fallback.
-        string connectionString = scope.ServiceProvider.GetRequiredService<IConfiguration>()
-            .GetConnectionString("Default")
-            ?? "Host=localhost;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=changeme-local";
+        // StoreConnection.Resolve is the same string UseNpgsql was given, including the local fallback.
+        string connectionString = StoreConnection.Resolve(
+            scope.ServiceProvider.GetRequiredService<IConfiguration>());
 
         try
         {

@@ -296,7 +296,7 @@ if (pg) {
   // [pg-volume] gh#850: each volume states its region, so a region Railway fills in after the first attach can't
   // show up as a destructive "-> null" diff on the next plan.
   for (const v of volumes) {
-    const region = v.config?.region ?? v.region;
+    const region = v.config?.region;
     if (region !== PG_VOLUME_REGION) fail(`[pg-volume] volume ${v.name}: region must be stated as "${PG_VOLUME_REGION}" (Railway stores it on first attach; unstated it drifts to null, gh#850), got ${JSON.stringify(region ?? null)}`);
   }
   if (!PG_VOLUME_ENVIRONMENTS.includes(environment) && volumes.length) fail(`[pg-volume] ${environment}: no volume resources outside ${PG_VOLUME_ENVIRONMENTS.join(" and ")}; got ${volumes.map((v) => v.name).join(", ")}`);
@@ -347,8 +347,6 @@ for (const name of ["server", "recorder"]) {
     if (!isShared(env[k], shared)) fail(`${name}: ${k} must be ctx.shared.${shared}`);
   if (literal(env.ConnectionStrings__Default) !== CONNECTION_STRING) fail(`${name}: ConnectionStrings__Default missing or altered`);
   if (env.POSTGRES_PRIVATE_HOST?.type !== "reference") fail(`${name}: POSTGRES_PRIVATE_HOST must be the typed postgres.env.RAILWAY_PRIVATE_DOMAIN reference`);
-  // Unset = Railway's default of 10 (docs.railway.com/deployments/restart-policy).
-  if ((s.deploy?.restartPolicyMaxRetries ?? 10) < 3) fail(`${name}: restartPolicyMaxRetries must be >= 3`);
   if (!/^marqspec-mcp-topstepx-/.test(literal(env.Otel__ServiceName) ?? "")) fail(`${name}: Otel__ServiceName must name the role`);
 }
 

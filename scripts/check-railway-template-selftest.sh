@@ -180,10 +180,10 @@ expect reject template postgres-tcp-proxy 'source: image(POSTGRES_IMAGE),' 'sour
 expect reject template server-tcp-proxy 'healthcheck: "/health",
     healthcheckTimeout: HEALTHCHECK_TIMEOUT,
     replicas: 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'healthcheck: "/health",
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'healthcheck: "/health",
     healthcheckTimeout: HEALTHCHECK_TIMEOUT, tcpProxies: ["8080"],
     replicas: 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 
 # --- secrets ---
 expect reject template literal-postgres-password 'POSTGRES_PASSWORD: ctx.shared.POSTGRES_PASSWORD' 'POSTGRES_PASSWORD: "hunter2"'
@@ -300,24 +300,24 @@ expect reject template startup-wait-exponent 'Store__StartupWaitSeconds: "90"' '
 expect reject template startup-wait-padded 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: " 90"'
 # --- gh#772: exactly one server replica, no multi-region, in every environment ---
 NAMED='[single-server]' expect reject template server-two-replicas 'replicas: 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'replicas: 2,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'replicas: 2,
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 NAMED='[single-server]' expect reject template server-replicas-omitted 'replicas: 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 NAMED='[single-server]' expect reject template server-two-replicas-in-production 'replicas: 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'replicas: ctx.environment === "production" ? 2 : 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'replicas: ctx.environment === "production" ? 2 : 1,
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 NAMED='[single-server]' expect reject template server-multi-region 'replicas: 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'regions: { "us-west2": 1, "europe-west4": 1 },
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'regions: { "us-west2": 1, "europe-west4": 1 },
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 NAMED='[single-server]' expect reject template server-per-region-replicas 'replicas: 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'replicas: { "us-west2": 1, "us-east4": 1 },
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'replicas: { "us-west2": 1, "us-east4": 1 },
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },'
 # replicas: 1 overrides deploy.numReplicas in SDK 3.16.0, so the raw deploy field is tested without it.
 NAMED='[single-server]' expect reject template server-deploy-num-replicas 'replicas: 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT, numReplicas: 3 },'
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },' 'deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT, numReplicas: 3 },'
 expect reject template startup-wait-zero 'Store__StartupWaitSeconds: "90"' 'Store__StartupWaitSeconds: "0"'
-expect reject template restart-retries-zero 'const RESTART = {} as const;' 'const RESTART = { restartPolicyMaxRetries: 0 } as const;'
+expect reject template restart-retries-zero 'const APP_RESTART_RETRIES = 100;' 'const APP_RESTART_RETRIES = 0;'
 expect reject template server-records-tape 'MarketData__RecordTape: "false"' 'MarketData__RecordTape: "true"'
 expect reject template recorder-replicas-3 'replicas: 1,
     deploy: {
@@ -388,6 +388,20 @@ NAMED='[no-default-drift]' expect reject template seed-default-type-stated 'depl
   'deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 3 },'
 NAMED='[no-default-drift]' expect reject template restart-always 'const RESTART = {} as const;' \
   'const RESTART = { restartPolicyType: "ALWAYS" } as const;'
+# --- gh#848: server and recorder ride out long Postgres outages (100 retries, default type unstated) ---
+NAMED='[app-restart]' expect reject template app-restart-wrong-count 'const APP_RESTART_RETRIES = 100;' 'const APP_RESTART_RETRIES = 30;'
+NAMED='[app-restart]' expect reject template app-restart-always 'const RESTART = {} as const;' \
+  'const RESTART = {} as const; const ALWAYS = { restartPolicyType: "ALWAYS" } as const;' \
+  'deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds' \
+  'deploy: { ...RESTART, ...ALWAYS, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds'
+NAMED='[app-restart]' expect reject template app-restart-missing-on-recorder '      ...RESTART,
+      restartPolicyMaxRetries: APP_RESTART_RETRIES,' '      ...RESTART,'
+NAMED='[app-restart]' expect reject template app-restart-type-stated 'const RESTART = {} as const;' \
+  'const RESTART = {} as const; const STATED = { restartPolicyType: "ON_FAILURE" } as const;' \
+  'deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds' \
+  'deploy: { ...RESTART, ...STATED, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds'
+NAMED='[seed]' expect reject template app-restart-budget-on-seed 'deploy: { restartPolicyMaxRetries: 3 },' \
+  'deploy: { restartPolicyMaxRetries: APP_RESTART_RETRIES },'
 expect accept template restart-non-default-retries 'const RESTART = {} as const;' \
   'const RESTART = { restartPolicyMaxRetries: 8 } as const;'
 

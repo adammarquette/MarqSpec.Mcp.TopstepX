@@ -57,16 +57,25 @@ const SEED_RUN_ID = "REPLACE_WITH_SEED_RUN_ID";
 
 
 
-// One retry budget for every service: Railway's DEFAULT, On Failure with 10 restarts
-// (docs.railway.com/deployments/restart-policy), so it is NOT stated. 10, not 5: on a cold deploy Postgres
-// initdb plus the app's 90 s StartupWait can exhaust 5 quick retries; 10 still surfaces a crash loop within
-// minutes.
+// Retry budget. postgres and the seed use Railway's DEFAULT policy type, On Failure
+// (docs.railway.com/deployments/restart-policy); postgres also keeps the default 10 restarts, so it states
+// nothing. 10, not 5: on a cold deploy Postgres initdb plus the app's 90 s StartupWait can exhaust 5 quick
+// retries.
 // NO DEFAULT DRIFT (gh#844): Railway stores a default as null, so stating ON_FAILURE or 10 made every
 // plan show "null -> ON_FAILURE / null -> 10" for postgres, server and recorder (runs 40944859199,
 // 40947739913), and every apply redeployed postgres -- an empty database in staging.
 // evaluate-template.mjs [no-default-drift] rejects stating either default; RESTART stays as the one place
-// a non-default budget would go.
+// a non-default budget for every service would go. server and recorder add APP_RESTART_RETRIES on top.
 const RESTART = {} as const;
+
+// APP RESTART BUDGET (gh#848, option b). Under Store__Required=true server and recorder exit while Postgres is
+// unreachable, so outage recovery is Railway's restart policy. The default 10 restarts give up after roughly
+// 15 minutes (~90 s StartupWait per attempt; Railway documents no backoff, so times are approximate). 100 rides
+// out outages of a couple of hours and is still finite, so a real startup bug ends in a visible crashed state.
+// Only the count is stated: the type stays unset because ON_FAILURE is Railway's default and stating it would
+// drift ([no-default-drift]); ALWAYS would loop forever on a real defect.
+// KEEP IN SYNC: evaluate-template.mjs [app-restart] pins this value (its APP_RESTART_RETRIES).
+const APP_RESTART_RETRIES = 100;
 
 // STARTUP ORDER (gh#844). Railway has no depends-on between services, and server/recorder migrate only at
 // startup. So their pre-deploy command (it runs on the private network with the service's variables, and a
@@ -181,7 +190,7 @@ export default defineRailway((ctx) => {
     healthcheck: "/health",
     healthcheckTimeout: HEALTHCHECK_TIMEOUT,
     replicas: 1,
-    deploy: { ...RESTART, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },
+    deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },
     env: {
       ...common,
       ...serverAuth,
@@ -201,6 +210,7 @@ export default defineRailway((ctx) => {
     replicas: 1,
     deploy: {
       ...RESTART,
+      restartPolicyMaxRetries: APP_RESTART_RETRIES,
       preDeployTimeoutSeconds: PG_WAIT_TIMEOUT,
       // Shorten the window two recorders coexist on a redeploy: stop the old one as soon as the new one is
       // healthy, and give it time to release the tape lease cleanly. See deployment.md on the lease.

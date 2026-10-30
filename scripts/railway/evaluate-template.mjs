@@ -191,12 +191,26 @@ for (const s of services) {
 // On Failure, 10 retries: docs.railway.com/deployments/restart-policy) shows "null -> value" in every plan, and
 // every apply redeploys that service. For postgres in staging (no volume before gh#846) that was an empty
 // database on every deploy (runs 40944859199, 40947739913). State only non-default values; ALWAYS/NEVER are refused outright.
+// A non-default retry count is fine (no drift): the seed's 3, and server/recorder's 100 ([app-restart], gh#848).
+// The type is never stated, since the only allowed type is the default ON_FAILURE.
 const DEFAULT_RESTART = { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 10 };
 for (const s of services) {
   const d = s.deploy ?? {};
   for (const [k, v] of Object.entries(DEFAULT_RESTART))
     if (d[k] === v) fail(`[no-default-drift] ${s.name}: deploy.${k} ${JSON.stringify(v)} is Railway's default, stored as null, so every plan re-applies it and redeploys ${s.name}; leave it unset`);
   if (d.restartPolicyType !== undefined && d.restartPolicyType !== "ON_FAILURE") fail(`[no-default-drift] ${s.name}: restartPolicyType ${JSON.stringify(d.restartPolicyType)}; only Railway's default ON_FAILURE (unset) is allowed`);
+}
+
+// ---- named check: [app-restart] (gh#848) ---------------------------------------------------------------
+// Under Store__Required=true server and recorder exit while Postgres is unreachable; Railway's default 10
+// restarts give up after ~15 min. Every environment: exactly 100 retries, type unset (= default ON_FAILURE;
+// stating it drifts, ALWAYS loops forever on a real defect). Finite, so a startup bug still ends crashed.
+// KEEP IN SYNC: this is .railway/railway.ts's APP_RESTART_RETRIES.
+const APP_RESTART_RETRIES = 100;
+for (const name of ["server", "recorder"]) {
+  const d = byName[name]?.deploy ?? {};
+  if (d.restartPolicyMaxRetries !== APP_RESTART_RETRIES || d.restartPolicyType !== undefined)
+    fail(`[app-restart] ${name}: restartPolicyMaxRetries must be ${APP_RESTART_RETRIES} with restartPolicyType unset (Railway's default ON_FAILURE), got ${JSON.stringify(d.restartPolicyType)} / ${JSON.stringify(d.restartPolicyMaxRetries)}`);
 }
 
 // ---- named check: [pg-wait] (gh#844) -------------------------------------------------------------------

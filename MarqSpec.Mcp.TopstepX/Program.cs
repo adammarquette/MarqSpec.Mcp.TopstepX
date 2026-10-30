@@ -1152,6 +1152,7 @@ public static class Program
                 token => scope.ServiceProvider.GetRequiredService<IMigrationApplier>()
                     .ApplyAsync(database.Database, migrations.CommandTimeoutSeconds, token),
                 logger,
+                migrations.CommandTimeoutSeconds,
                 app.Lifetime.ApplicationStopping).ConfigureAwait(false);
             return StoreAvailability.Available();
         }

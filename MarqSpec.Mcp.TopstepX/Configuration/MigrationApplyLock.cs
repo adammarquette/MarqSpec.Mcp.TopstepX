@@ -23,10 +23,14 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// open for its five statements. This one wraps the apply from outside.
 /// </para>
 /// <para>
-/// The acquire waits with no command timeout. A per-chunk index build can run for
-/// <see cref="MigrationOptions.CommandTimeoutSeconds"/>, and cutting the waiter off at Npgsql's
-/// 30-second default would fail a second replica that was only waiting its turn. Closing the
-/// unpooled connection releases the lock if the explicit unlock cannot run.
+/// The acquire tries <c>pg_try_advisory_lock</c> first. When another session already holds the
+/// lock, this logs once and then blocks on <c>pg_advisory_lock</c> for the wait timeout, which is
+/// the migration command timeout.
+/// That is longer than Npgsql's 30-second default, so a second replica can wait out a per-chunk
+/// index build, and it is finite, so a holder that stays up does not block the waiter forever.
+/// <c>pg_advisory_lock</c> is not called when the try succeeds: the lock is re-entrant in a
+/// session, and a second acquire would need a second unlock. Closing the unpooled connection
+/// releases the lock if the explicit unlock cannot run.
 /// </para>
 /// </remarks>
 internal static class MigrationApplyLock
@@ -43,7 +47,13 @@ internal static class MigrationApplyLock
     /// </summary>
     /// <param name="connectionString">The store the migration runs against. Not logged.</param>
     /// <param name="apply">The migration apply. It runs only after the lock is held.</param>
-    /// <param name="logger">Receives a warning if the explicit unlock fails.</param>
+    /// <param name="logger">
+    /// One information line when the lock is already held, and a warning if the explicit unlock fails.
+    /// </param>
+    /// <param name="lockWaitTimeoutSeconds">
+    /// How long the blocking acquire may wait, in seconds. Zero is refused: Npgsql treats it as
+    /// no timeout.
+    /// </param>
     /// <param name="cancellationToken">
     /// Cancels the connect and the lock wait. The unlock is not cancelled.
     /// </param>
@@ -52,11 +62,13 @@ internal static class MigrationApplyLock
         string connectionString,
         Func<CancellationToken, Task> apply,
         ILogger logger,
+        int lockWaitTimeoutSeconds,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentNullException.ThrowIfNull(apply);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentOutOfRangeException.ThrowIfLessThan(lockWaitTimeoutSeconds, 1);
 
         // Appended, not rebuilt. NpgsqlConnectionStringBuilder.ConnectionString omits the password
         // unless Persist Security Info is set, and a lock connection that cannot authenticate never
@@ -67,11 +79,16 @@ internal static class MigrationApplyLock
         try
         {
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-            await using (NpgsqlCommand acquire = Command(
-                connection,
-                "SELECT pg_advisory_lock(@classId, @objectId)",
-                timeoutSeconds: 0))
+            bool held = await TryAcquireAsync(connection, cancellationToken).ConfigureAwait(false);
+            if (!held)
             {
+                logger.LogInformation(
+                    "The migration lock is held by another process. Waiting up to {TimeoutSeconds}s.",
+                    lockWaitTimeoutSeconds);
+                await using NpgsqlCommand acquire = Command(
+                    connection,
+                    "SELECT pg_advisory_lock(@classId, @objectId)",
+                    timeoutSeconds: lockWaitTimeoutSeconds);
                 await acquire.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
@@ -107,6 +124,17 @@ internal static class MigrationApplyLock
                 exception,
                 "The migration lock could not be released explicitly. Closing its connection releases it.");
         }
+    }
+
+    private static async Task<bool> TryAcquireAsync(
+        NpgsqlConnection connection,
+        CancellationToken cancellationToken)
+    {
+        await using NpgsqlCommand probe = Command(
+            connection,
+            "SELECT pg_try_advisory_lock(@classId, @objectId)",
+            timeoutSeconds: 30);
+        return (bool)(await probe.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false))!;
     }
 
     private static NpgsqlCommand Command(NpgsqlConnection connection, string sql, int timeoutSeconds)

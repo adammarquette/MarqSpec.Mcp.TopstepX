@@ -75,7 +75,7 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 | Service | Image | Role |
 |---|---|---|
 | `postgres` | `timescale/timescaledb-ha:pg17@sha256:cae37881…` (ADR-0004), digest-pinned | `PGDATA=/home/postgres/pgdata/data`; no domain, no TCP proxy. **Volume in production only** (below) |
-| `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **OAuth** (ADR-0021); **staging: StaticToken** (ADR-0021 exception, 2026-10-28), `RecordTape=false` |
+| `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **StaticToken** on `MCP_HTTP_BEARER_TOKEN` in every environment (ADR-0021 exception, temporary), `RecordTape=false` |
 | `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
 
 `Deployment__Version` and `Deployment__ImageDigest` are derived from `SERVER_IMAGE`, never typed separately.
@@ -206,13 +206,13 @@ before any production deploy. Production deploys stay manual and need Adam's app
   while the old deployment keeps serving. The alternative, a pre-deploy migration command, would need an image
   entrypoint that migrates and exits (no such mode today); revisit with #767. The timeout is per command, so a
   migration of several long commands can still exceed it; watch first-deploy logs.
-- **Auth:** the server runs OAuth, not compose's static token. Its scope is locked to `topstepx-mcp/read`.
-  **Except staging**, under [ADR-0021's 2026-10-28 exception](adr/0021-a-non-loopback-instance-is-supported.md):
-  until an OAuth issuer (Cognito user pool) exists, staging's server runs `StaticToken` on
-  `MCP_HTTP_BEARER_TOKEN`, with no `Mcp__OAuth__*` key. The check fails `StaticToken` in any other environment,
-  so production stays OAuth.
-- **Resource URL:** `Mcp__OAuth__ResourceUrl` is exactly `https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp`, the
-  server's own domain.
+- **Auth:** the server runs `StaticToken` on its environment's shared `MCP_HTTP_BEARER_TOKEN`, with no
+  `Mcp__OAuth__*` key, in **every** environment, production included. This is
+  [ADR-0021's exception](adr/0021-a-non-loopback-instance-is-supported.md) (staging 2026-10-28, production
+  2026-10-29 on [#851](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/851)). It is
+  **temporary**, until an OAuth provider is chosen (ApiaryKeeper's Keycloak is a candidate). The check fails
+  any other mode (`[static-token-required]`) and a missing or literal token (`[static-token-secret]`). The
+  app's OAuth mode is unchanged and unused on Railway.
 - **Forwarded headers:** `ASPNETCORE_FORWARDEDHEADERS_ENABLED` is true on `server` and false on `recorder`.
 - **Restarts:** Railway's default (`ON_FAILURE`, 10) for all three services, left **unstated**: Railway
   stores a default as null, so stating it is a diff in every plan and a redeploy on every apply
@@ -227,22 +227,23 @@ before any production deploy. Production deploys stay manual and need Adam's app
 - The edge is the only path into `server`, so trusting `X-Forwarded-*` there is safe.
 - `recorder` has no edge; the private network is its only path in.
 
-**Resource URL and custom domains.** `RAILWAY_PUBLIC_DOMAIN` is the service's public domain. With no domain
-the value is `https:///mcp`, which `OAuthOptions` refuses at startup. With a custom domain, confirm on the
-first deploy that `RAILWAY_PUBLIC_DOMAIN` is the host connectors use, because `check-deployment.sh` compares
-`resource` exactly. This is an ADR-0025 open item.
+**Resource URL and custom domains.** Not used while every server runs the static token. When OAuth returns,
+`Mcp__OAuth__ResourceUrl` must be exactly `https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp`, the service's own public
+domain. With no domain that is `https:///mcp`, which `OAuthOptions` refuses at startup. With a custom domain,
+confirm `RAILWAY_PUBLIC_DOMAIN` is the host connectors use, because `check-deployment.sh` compares `resource`
+exactly. This is an ADR-0025 open item.
 
 **Shared variables.** Set them per environment in Railway. CI rejects any literal secret or unknown reference.
 Staging's are `POSTGRES_PASSWORD`, the three `PROJECTX_*`, `MCP_HTTP_BEARER_TOKEN` and
 `MCP_RECORDER_BEARER_TOKEN`.
-Production's have `MCP_OAUTH_ISSUER` and `MCP_OAUTH_CLIENT_IDS` in place of `MCP_HTTP_BEARER_TOKEN`.
+Production's are the same names, each with its own value. `MCP_HTTP_BEARER_TOKEN` is **required** in production;
+don't delete it. No environment needs `MCP_OAUTH_ISSUER` or `MCP_OAUTH_CLIENT_IDS` (the template rejects them).
 
 | Shared variable | Feeds |
 |---|---|
 | `POSTGRES_PASSWORD` | `postgres`, and the password in `ConnectionStrings__Default` |
 | `PROJECTX_API_KEY`, `PROJECTX_API_SECRET`, `PROJECTX_DATA_TIER` | `ProjectX__*` (the tier is never defaulted, R-7.2) |
-| `MCP_OAUTH_ISSUER`, `MCP_OAUTH_CLIENT_IDS` | `server`'s `Mcp__OAuth__Issuer` / `ClientIds`, **not staging** |
-| `MCP_HTTP_BEARER_TOKEN` | **staging only:** `server`'s `Mcp__HttpBearerToken` (ADR-0021 exception) |
+| `MCP_HTTP_BEARER_TOKEN` | `server`'s `Mcp__HttpBearerToken`, **every environment** (ADR-0021 exception, temporary) |
 | `MCP_RECORDER_BEARER_TOKEN` | `recorder`'s `Mcp__HttpBearerToken` |
 
 The database host is the typed reference `postgres.env.RAILWAY_PRIVATE_DOMAIN`, read into the connection
@@ -378,8 +379,9 @@ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
 CI runs [`check-deployment-selftest.sh`](../scripts/check-deployment-selftest.sh) against a loopback
 fixture so that gate can still fail without a live deployment.
 
-Staging runs the static token (ADR-0021 exception), so check it with the static-token mode instead. That mode
-refuses any environment but staging. `railway-staging.yml` runs this after the seed, using the `staging`
+Every Railway server runs the static token (ADR-0021 exception), so check staging with the static-token mode
+instead. That mode still refuses any environment but staging, so production can't be checked this way yet;
+widening it is a script change for a follow-up. `railway-staging.yml` runs this after the seed, using the `staging`
 environment secret `MCP_HTTP_BEARER_TOKEN`:
 
 ```bash

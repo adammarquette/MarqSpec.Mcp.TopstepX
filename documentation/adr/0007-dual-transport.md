@@ -1308,9 +1308,11 @@ The 2026-08-22 rule stands for every launch that does not ask otherwise. `Store_
 to false. When it is false, an unreachable store, and a connection that drops while migrations are
 applied, still degrade: the process stays up, `/health` stays independent of the store, and the
 tools that need no store still answer. When it is true, those two facts log an error and the
-process exits non-zero, so an orchestrator that restarts a failed container can try again. A
-migration that fails against a database that did answer is still a defect and still fails the
-process either way.
+process exits non-zero, so an orchestrator that restarts a failed container can try again. The
+long-running host returns exit code 1. `reselect-bars`, `export-tape` and `import-tape` catch the
+same failure, log their cannot-run line, and return their store exit codes. A migration that
+fails against a database that did answer is still a defect and still fails the process either
+way.
 
 Railway sets `Store__Required=true` on the server and the recorder, in production and in staging.
 Local, stdio, compose and any other environment leave the key unset. `StoreAvailabilityHolder` is

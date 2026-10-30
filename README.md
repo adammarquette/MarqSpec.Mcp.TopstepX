@@ -244,7 +244,8 @@ degrades to a refusal at the point of use ([ADR-0007](documentation/adr/0007-dua
 the process stays up. Set it true only where a failed process is restarted for you. Railway sets it
 on the server and the recorder in production and staging, so a store that never answers, or a
 connection that drops while migrations are applied, logs an error and exits non-zero instead of
-serving refusals for the life of the container. `/health` does not consult the store either way.
+serving refusals for the life of the container. `reselect-bars`, `export-tape` and `import-tape`
+log that error and return their store exit codes. `/health` does not consult the store either way.
 The startup holder is still set once. Two processes migrating one database share one session
 advisory lock for the whole apply, so the second waits rather than both creating the same table.
 
@@ -553,6 +554,8 @@ reproduce.
 | `2` | The command line was refused **before anything touched the store** — a missing or extra argument, a symbol this server does not serve, an instant that is not ISO-8601, an empty or inverted window, or one ending past the calendar's horizon. The message names the argument and the rule. Nothing was written. |
 | `3` | **The run stopped.** The store was unreachable or its migration dropped the connection, or the plan degraded for a whole window — the venue lists no contracts, its front does not read against the product's cycle, or the instrument is not served (*not reachable through the verb — the parse refuses it first, at `2`*). |
 
+`Store__Required=true` is still exit `3`. The verb logs the cannot-run line and returns that code.
+
 **Exit 3 does not mean nothing was rewritten.** The run commits one unit of work per resolution series, so a
 degradation on the second series exits 3 with the first already committed, and the migration itself can stop
 partway. The per-series log lines are what say how far it got. Anything the verb has no story for — a
@@ -586,6 +589,9 @@ with DuckDB or pandas is [documentation/tape-export-reload.md](documentation/tap
 | `1` | At least one day failed verification or was refused on import. |
 | `2` | The day argument is not exact `yyyy-MM-dd`. |
 | `3` | The store could not be migrated. |
+
+`Store__Required=true` is still exit `3` for both verbs. Each logs the cannot-run line and returns
+that code.
 
 The full environment contract, including the names gh#758 must use, is in
 [`documentation/deployment.md`](documentation/deployment.md#config-contract-for-758).

@@ -14,8 +14,29 @@ image on GHCR** built from it.
 
 ## Issue-first, its one exemption, and the promotion carve-out
 
-Every pull request cites an issue opened before it — `Closes #N` when it completes one, `Related to #N` when it
-touches one without finishing it. **The `issue-link` check enforces this**; it is not advisory.
+Every pull request cites an issue opened before it. **The `issue-link` check enforces this**; it is not
+advisory, and its logic and cases live in `scripts/check-issue-link.sh` and its self-test.
+
+**A PR into `develop` carries a closing binding to an issue in this repository** (gh#824). The body says
+`Closes #N` — or close/closed, fix/fixes/fixed, resolve/resolves/resolved, any case, an optional colon — in
+ordinary prose, before `#N` or `adammarquette/MarqSpec.Mcp.TopstepX#N`, and GitHub must actually bind it (the
+check reads `closingIssuesReferences` too). The body's closing number must be the issue GitHub actually links:
+`Closes #999` in the body with #5 linked only in the sidebar fails. A closing reference may also be written as
+this repository's issue URL (`Fixes https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/N`), which
+counts like `#N`. A link set only in the PR sidebar, with no closing keyword in the body, fails. Another
+repository's issue does not count. Into `develop`, `Related to #N` and `Towards #N` are not enough on their
+own; extra `Related to` lines next to a closing binding are fine. `Related to #N` passes on every base except
+`develop`: stacked PRs, promotions into `staging` or `main`, and any other base. When a PR really does leave
+its issue open, say so and say why:
+
+```text
+Part of #N
+Issue-stays-open: <why the issue stays open after this merges>
+```
+
+`Part of #N` without an `Issue-stays-open:` line fails. The opt-out does not check that #N exists, so
+reviewers must verify it. The opt-out passes only when no issue is linked to the PR (in the sidebar or
+anywhere, in any repository); remove any linked issue first.
 
 Four things it will tell you, because they all look like they work and none of them does:
 
@@ -51,7 +72,8 @@ promote: the closing keyword is the right form to write, and **the issue will no
 close it by hand. The run says both.
 
 **Stacked PRs onto a feature branch are deliberately not covered.** They cannot bind either, but there
-`Related to #N` is the *correct* form — the PR really does not close the issue when it merges into its parent.
+`Related to #N` (or `Part of` / `Towards #N`) is the *correct* form — the PR really does not close the issue
+when it merges into its parent. The closing-binding rule applies to `develop` only.
 
 If the check cannot read the PR's closing references, it retries and then **fails**. A check that reports
 success when it did not run is the failure this rule exists to prevent.
@@ -191,9 +213,10 @@ actively claimed indefinitely, and the late commit is orphaned onto no PR. This 
 
 ## Issue-first — no orphaned PRs
 
-Every change starts from a **tracking issue** opened *before* the branch/PR; the PR references it (`Closes #N` /
-`Related to #N`). Populate every field — assignee, milestone, `work:*` and `Work Estimate` labels. Issues are the
-cards; the board auto-adds pull requests too, but a PR item is **not** a card — never move one.
+Every change starts from a **tracking issue** opened *before* the branch/PR; the PR references it (`Closes #N`
+into `develop`; see *Issue-first* above for the `Issue-stays-open:` opt-out and stacked PRs). Populate every
+field — assignee, milestone, `work:*` and `Work Estimate` labels. Issues are the cards; the board auto-adds
+pull requests too, but a PR item is **not** a card — never move one.
 
 **The spec belongs in the issue**, never as a file under `documentation/` — a parallel spec duplicates the
 tracker and drifts from it.
@@ -203,19 +226,47 @@ tracker and drifts from it.
 - **[Conventional Commits](https://www.conventionalcommits.org/)**. Accepted types:
   `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`.
   The commit *type* drives SemVer.
-- AI-authored changes carry **both** trailers, in this exact form:
-
-  ```
-  Assisted-by: <Model Name> (<tool>)
-  Co-Authored-By: <Model Name> <noreply@anthropic.com>
-  ```
-
-  Both, every time. The single-trailer and model-id-parenthetical variants that appear in the sibling repos are
-  drift, not alternatives.
 - **Docs move with the code — the same-PR rule:** any change whose behavior, tool surface or configuration a
   doc describes updates **the affected section of that doc, in the same PR** — the PRD's `R-#`, the
   architecture doc, the ADRs, and the [tool catalogue](documentation/mcp-tool-catalog.md). A PR that drifts is
   **not done**.
+
+### AI-assisted commits
+
+If an AI tool helped write a commit, end the message with a trailer in the form `<model>:<version>`:
+
+```
+Assisted-by: grok-bot:<agent-name>
+```
+
+- The value is `<model>:<version>`, with no spaces. Grok Bot agents sign `grok-bot:<agent-name>` in lowercase
+  kebab-case, e.g. `grok-bot:sgt-squash`.
+- `Co-Authored-By` is optional and not checked.
+- Put trailers in the last paragraph of the message, with no blank lines between them and nothing after them.
+  If another paragraph follows, git doesn't read them as trailers and the check skips them without warning.
+
+**Enforcement.** The commit-hygiene job runs `scripts/check-commit-trailers.sh` on every pull request and
+merge-queue (`merge_group`) run. It only checks
+commits that carry an `Assisted-by:` trailer, and it picks the rule by author date:
+
+| Author date | Rule |
+| --- | --- |
+| Before 2026-10-25T00:00:00-05:00 | Not checked. |
+| From then until `2026-10-25T12:36:00-05:00` | Interim rule: `Assisted-by: <Model Name> (<tool>)` and at least one `Co-Authored-By: <Name> <email>`. |
+| From `2026-10-25T12:36:00-05:00` on | `Assisted-by:` must match `<model>:<version>`. `Co-Authored-By` isn't required. |
+
+Merged history stays as it is. To fix a failing commit on an open PR, you have to reword it and force-push,
+and that needs Adam's approval first.
+
+**Gating scripts run from the base commit** (gh#827). `commit-hygiene` and `issue-link` run the base commit's
+copy of `scripts/check-commit-trailers.sh` and `scripts/check-issue-link.sh`, not your PR's copy. A PR that
+changes one of these scripts is still judged by the base branch's copy, so the change takes effect for gating
+only after it merges (the self-tests in `ci.yml` still run your copy). A PR that adds a new gating script has
+no base copy, so the check fails closed and the PR needs a one-time manual gate by a maintainer. The limit:
+the workflow files and the local action `.github/actions/fetch-base-script` still come from the PR. A PR that
+edits `.github/workflows/branch-policy.yml`, `ci.yml` or that action can remove or alter the fetch step or
+point `run:` back at `./scripts/`, so it is still judged by its own copy of the workflow. A reviewer must read
+every workflow and action change in full.
 
 ## Pull requests
 
@@ -224,7 +275,7 @@ tracker and drifts from it.
   comment alike; see the bullets under *Issue-first* above for what the check reads and what it still misses.
 - **Populate every field — maximal metadata.** Assignee, milestone, `work:*` + `Work Estimate` labels.
 - **Attribution is per section, not per PR.** AI-authored body sections, comments and reviews each carry
-  `Assisted-by: <Model Name> (<tool>)` in the same form as the commit trailer. More than one tool can write
+  `Assisted-by: <model>:<version>` in the same form as the commit trailer. More than one tool can write
   the same PR, so a single footer attributes the wrong agent. Replace the template placeholder on a section
   you wrote; a later edit replaces the line. Human-only text omits it. **Dependabot is exempt.**
 - **Reviews submit a verdict.** A reviewer leaves findings as comments and **Approves** or **Requests changes** —

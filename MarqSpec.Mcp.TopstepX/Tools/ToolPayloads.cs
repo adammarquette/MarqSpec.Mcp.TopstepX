@@ -1,3 +1,4 @@
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Venue;
@@ -118,6 +119,25 @@ public static class ToolPayloads
         ContractSpan Span,
         IReadOnlyList<ContractSegmentInfo> Segments);
 
+    /// <summary>
+    /// The first and last bar a series actually contains.
+    /// </summary>
+    /// <param name="Earliest">
+    /// When the first returned bar opened, or <see langword="null"/> when the series is empty.
+    /// <b>A property, so it is omitted from the wire object</b> rather than serialised as <c>null</c>: the
+    /// caller's test is key presence, never a comparison to null.
+    /// </param>
+    /// <param name="Latest">
+    /// When the last returned bar opened, or <see langword="null"/> when the series is empty. Omitted the
+    /// same way as <paramref name="Earliest"/>.
+    /// </param>
+    /// <remarks>
+    /// Reported rather than left for the caller to scan <c>bars[0]</c> / <c>bars.at(-1)</c>, because an empty
+    /// series has neither, and because a window the vendor answers only in part is otherwise
+    /// indistinguishable from a market that did not trade (gh#695, R-1.16).
+    /// </remarks>
+    public sealed record AvailableBarRange(DateTimeOffset? Earliest, DateTimeOffset? Latest);
+
     /// <summary>A bar series, and what it cost to produce.</summary>
     /// <param name="Symbol">The normalised instrument.</param>
     /// <param name="ResolutionMinutes">The bar size.</param>
@@ -156,6 +176,12 @@ public static class ToolPayloads
     /// the ones the product's cycle names. A window can be <c>SingleContract</c> and still have been decided
     /// among survivors of a venue negative.
     /// </param>
+    /// <param name="Available">
+    /// The first and last bar this call actually returned. Compare <c>available.earliest</c> to the window
+    /// asked for: a later earliest means the vendor (and this store) have no bars before that instant, which
+    /// on Simulated-tier minute bars is a rolling window of weeks rather than a market that did not trade
+    /// (gh#695, R-1.16). Both timestamps are omitted when the series is empty.
+    /// </param>
     public sealed record BarSeries(
         string Symbol,
         int ResolutionMinutes,
@@ -163,7 +189,8 @@ public static class ToolPayloads
         int FetchedBuckets,
         int VenueRequests,
         ContractCoverage Contracts,
-        HistoryCandidates History);
+        HistoryCandidates History,
+        AvailableBarRange Available);
 
     /// <summary>One session's OHLCV, on the trade date it belongs to.</summary>
     /// <param name="TradeDate">The CME trade date, the key a caller joins these on.</param>
@@ -253,6 +280,11 @@ public static class ToolPayloads
     /// <see cref="BarSeries.History"/> describes — the base bars a session is derived from are read through
     /// the same cache-aside path, so the same degradation reaches this answer.
     /// </param>
+    /// <param name="Available">
+    /// The first and last <b>session open</b> this call actually returned — <c>t</c> on this series, the
+    /// same thing it means on every other. Omitted timestamps mean no session bar was built (gh#695,
+    /// R-1.16).
+    /// </param>
     public sealed record SessionBarSeries(
         string Symbol,
         string Session,
@@ -262,7 +294,8 @@ public static class ToolPayloads
         int FetchedBuckets,
         int VenueRequests,
         ContractCoverage Contracts,
-        HistoryCandidates History);
+        HistoryCandidates History,
+        AvailableBarRange Available);
 
     /// <summary>An indicator series.</summary>
     /// <param name="Symbol">The normalised instrument.</param>
@@ -742,6 +775,87 @@ public static class ToolPayloads
         string? EmbeddingNote = null,
         double? Similarity = null);
 
+    /// <summary>
+    /// Whether repeating the same command without reconciliation can duplicate a live order.
+    /// </summary>
+    /// <remarks>
+    /// Matches the gate: <see cref="TradingAttemptOutcome.Refused"/>, <see cref="TradingAttemptOutcome.Preview"/>,
+    /// <see cref="ExecutionWriteOutcome.NotTransmitted"/> and <see cref="ExecutionWriteOutcome.VenueRejected"/>
+    /// are <see cref="TradingRetrySafety.SafeToRetry"/>. <see cref="TradingAttemptOutcome.Unknown"/>,
+    /// <see cref="ExecutionWriteOutcome.TransmittedOutcomeUnknown"/> and
+    /// <see cref="ExecutionWriteOutcome.BrokerSuccessWithoutOrderId"/> are
+    /// <see cref="TradingRetrySafety.OutcomeUnknown"/>.
+    /// A broker acknowledgment is <see cref="TradingRetrySafety.NotSafeToRetry"/>.
+    /// </remarks>
+    public enum TradingRetrySafety
+    {
+        /// <summary>Nothing durable was left at the venue. The same command may be sent again.</summary>
+        SafeToRetry,
+
+        /// <summary>The broker acknowledged the write. Sending it again can duplicate a live order.</summary>
+        NotSafeToRetry,
+
+        /// <summary>The transmit may have reached the venue. Reconcile open orders before another send.</summary>
+        OutcomeUnknown,
+    }
+
+    /// <summary>
+    /// Result code when the tool catch-all could not classify an exception. Not a venue code. The refusal
+    /// is omitted and <see cref="TradingRetrySafety.OutcomeUnknown"/> is the retry signal. Do not retry.
+    /// </summary>
+    public const int UnclassifiedFaultResultCode = -1;
+
+    /// <summary>One gated order-tool result. Numeric fields and closed names only (ADR-0008, ADR-0024).</summary>
+    /// <param name="Status">Preview, Refused, Live, Failed, or Unknown. Live is only a broker acknowledgment.</param>
+    /// <param name="RetrySafety">Whether another send of this command is safe.</param>
+    /// <param name="ParsedStage">The stage the gate parsed. Unknown when the call never fetched an account.</param>
+    /// <param name="RefusalCode">
+    /// The gate refusal code when <paramref name="Status"/> is Refused. Omitted from the wire otherwise.
+    /// </param>
+    /// <param name="ResultCode">
+    /// The venue business error code when a write returned one, or
+    /// <see cref="UnclassifiedFaultResultCode"/> when the tool catch-all handled an exception it could
+    /// not classify. Omitted when neither applies.
+    /// </param>
+    /// <param name="OrderId">
+    /// The broker-assigned order id after an acknowledged place, including when a later post-send fault
+    /// makes the outcome <see cref="TradingRetrySafety.OutcomeUnknown"/>. Omitted when the venue assigned none.
+    /// </param>
+    public sealed record TradingWriteResult(
+        string Status,
+        TradingRetrySafety RetrySafety,
+        AccountStage ParsedStage,
+        string? RefusalCode,
+        int? ResultCode,
+        long? OrderId);
+
+    /// <summary>Projects a gate result onto the tool wire.</summary>
+    /// <param name="result">The gate result.</param>
+    /// <returns>The tool payload.</returns>
+    public static TradingWriteResult FromGate(TradingRiskGateResult result) =>
+        new(
+            result.Outcome.ToString(),
+            RetrySafetyFor(result),
+            result.ParsedStage,
+            result.Refusal?.Code,
+            result.WriteResult?.VendorErrorCode,
+            result.WriteResult?.OrderId);
+
+    /// <summary>The retry-safety signal for one gate result.</summary>
+    /// <param name="result">The gate result.</param>
+    /// <returns>The closed signal.</returns>
+    public static TradingRetrySafety RetrySafetyFor(TradingRiskGateResult result)
+    {
+        if (result.Outcome == TradingAttemptOutcome.Unknown
+            || result.WriteResult?.Outcome is ExecutionWriteOutcome.TransmittedOutcomeUnknown
+                or ExecutionWriteOutcome.BrokerSuccessWithoutOrderId)
+        {
+            return TradingRetrySafety.OutcomeUnknown;
+        }
+
+        return result.IsRetrySafe ? TradingRetrySafety.SafeToRetry : TradingRetrySafety.NotSafeToRetry;
+    }
+
     /// <summary>Maps a domain bar to its wire shape.</summary>
     /// <param name="bar">The bar.</param>
     /// <returns>The payload.</returns>
@@ -754,6 +868,68 @@ public static class ToolPayloads
     {
         ArgumentNullException.ThrowIfNull(bar);
         return new BarPoint(bar.OpenTime, bar.Open, bar.High, bar.Low, bar.Close, bar.Volume);
+    }
+
+    /// <summary>The first and last open in a bar series, or omitted timestamps when there are none.</summary>
+    /// <param name="bars">The bars, typically already ascending.</param>
+    /// <returns>The range actually present, not the window that was asked for.</returns>
+    public static AvailableBarRange ToAvailableRange(IReadOnlyList<BarPoint> bars)
+    {
+        ArgumentNullException.ThrowIfNull(bars);
+
+        if (bars.Count == 0)
+        {
+            return new AvailableBarRange(null, null);
+        }
+
+        DateTimeOffset earliest = bars[0].T;
+        DateTimeOffset latest = bars[0].T;
+        for (int i = 1; i < bars.Count; i++)
+        {
+            DateTimeOffset at = bars[i].T;
+            if (at < earliest)
+            {
+                earliest = at;
+            }
+
+            if (at > latest)
+            {
+                latest = at;
+            }
+        }
+
+        return new AvailableBarRange(earliest, latest);
+    }
+
+    /// <summary>The first and last session open in a session-bar series.</summary>
+    /// <param name="bars">The session bars.</param>
+    /// <returns>The range actually present. <c>t</c> is the session open, as on every other series.</returns>
+    public static AvailableBarRange ToAvailableRange(IReadOnlyList<SessionBarPoint> bars)
+    {
+        ArgumentNullException.ThrowIfNull(bars);
+
+        if (bars.Count == 0)
+        {
+            return new AvailableBarRange(null, null);
+        }
+
+        DateTimeOffset earliest = bars[0].T;
+        DateTimeOffset latest = bars[0].T;
+        for (int i = 1; i < bars.Count; i++)
+        {
+            DateTimeOffset at = bars[i].T;
+            if (at < earliest)
+            {
+                earliest = at;
+            }
+
+            if (at > latest)
+            {
+                latest = at;
+            }
+        }
+
+        return new AvailableBarRange(earliest, latest);
     }
 
     /// <summary>One footprint cell on the wire.</summary>
@@ -792,13 +968,25 @@ public static class ToolPayloads
     /// Tape volume-front beside the contract Bars would fetch. Always present as an object;
     /// keys inside it are omitted when that answer does not exist.
     /// </param>
+    /// <param name="Live">
+    /// Whether this process is listening for that instrument. True means the subscription is up
+    /// here. It does not mean the cells are current: <see cref="CoveredWindow.End"/> is when the
+    /// served data ends, and <see cref="CoveredWindow.Narrowed"/> is set when that window is not
+    /// the ask, including a gap at the start (gh#728). Always present.
+    /// </param>
+    /// <param name="Reason">
+    /// A closed code for <see cref="Live"/>. Not a sentence (ADR-0008). Always present.
+    /// </param>
     /// <remarks>
-    /// Top-level fields are always present. Live tape-subscription health
-    /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
-    /// naming the fix (gh#218). A covered window whose stored tape has prints the cells do not yet
-    /// reflect is projected on the read (gh#366, gh#377). If the tape still produces no cell the tool
-    /// refuses rather than returning empty <c>cells</c> — that quiet-looking shape would hide a roll
-    /// or an uncounted tape.
+    /// Top-level fields are always present. There is no separate <c>partial</c> or
+    /// <c>dataEndsAt</c>: <see cref="CoveredWindow.Narrowed"/> is the short-window flag (a roll,
+    /// a hole, a gap at the start, or a cut at the end) and <see cref="CoveredWindow.End"/> is
+    /// when the data ends. When this process is not the recorder, closed coverage is aggregated
+    /// from stored prints in memory and nothing is written (gh#728, ADR-0016). A window with no
+    /// closed tape still refuses with a sentence naming the fix (gh#218). While this process is
+    /// the recorder, a covered window whose stored tape has prints the cells do not yet reflect
+    /// is projected on the read (gh#366, gh#377). If the tape still produces no cell the tool
+    /// refuses rather than returning empty <c>cells</c>.
     /// </remarks>
     public sealed record FootprintSeries(
         string Symbol,
@@ -806,7 +994,9 @@ public static class ToolPayloads
         IReadOnlyList<FootprintCellPoint> Cells,
         CoveredWindow Covered,
         ContractCoverage Contracts,
-        VolumeFrontInfo Front);
+        VolumeFrontInfo Front,
+        bool Live,
+        string Reason);
 
     /// <summary>Volume at one price on the wire.</summary>
     /// <param name="P">The price.</param>
@@ -832,10 +1022,19 @@ public static class ToolPayloads
     /// Tape volume-front beside the contract Bars would fetch. Always present as an object;
     /// keys inside it are omitted when that answer does not exist.
     /// </param>
+    /// <param name="Live">
+    /// Whether this process is listening for that instrument. True means the subscription is up
+    /// here. It does not mean the cells behind the profile are current (gh#728). Always present.
+    /// </param>
+    /// <param name="Reason">
+    /// A closed code for <see cref="Live"/>. Not a sentence (ADR-0008). Always present.
+    /// </param>
     /// <remarks>
-    /// Top-level fields are always present. Live tape-subscription health
-    /// is not a field on this payload — when the tape is not listening the tool refuses with a sentence
-    /// naming the fix (gh#218).
+    /// Top-level fields are always present. <see cref="CoveredWindow.Narrowed"/> is the
+    /// short-window flag and <see cref="CoveredWindow.End"/> is when the data ends. When this
+    /// process is not the recorder, the profile is derived from cells aggregated in memory from
+    /// the closed tape, and nothing is written (gh#728). A window with no closed tape still
+    /// refuses with a sentence naming the fix (gh#218).
     /// </remarks>
     public sealed record VolumeProfileSeries(
         string Symbol,
@@ -848,7 +1047,9 @@ public static class ToolPayloads
         long TotalVolume,
         CoveredWindow Covered,
         ContractCoverage Contracts,
-        VolumeFrontInfo Front);
+        VolumeFrontInfo Front,
+        bool Live,
+        string Reason);
 
     /// <summary>
     /// The session — and the instant inside it — when the volume-front flipped.

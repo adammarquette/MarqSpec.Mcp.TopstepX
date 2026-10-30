@@ -1,0 +1,1085 @@
+#!/usr/bin/env bash
+# check-issue-link.sh — the `issue-link` gate: a pull request cites the issue it works on (gh#35, gh#824).
+#
+#   scripts/check-issue-link.sh                       # reads the PR from the environment (branch-policy.yml)
+#   scripts/check-issue-link.sh --strip < body.md     # print the body with code removed, decide nothing
+#
+# Environment (all set by the workflow step; the self-test sets them per case):
+#   PR              pull request number              GH_REPO         owner/name of THIS repository
+#   AUTHOR          PR author login                  GH_TOKEN        token for `gh` (the workflow's GITHUB_TOKEN)
+#   TITLE, BODY     PR title and body                BASE            base branch
+#   DEFAULT_BRANCH  the repository default branch (`develop`)
+#   ISSUE_LINK_RETRY_SLEEP  seconds between API attempts (default 5; the self-test sets 0)
+#
+# THE RULE, by base (gh#824 for the default branch; every other arm is unchanged from the inline step):
+#   author dependabot[bot]          exempt -- it cannot file an issue first.
+#   base == DEFAULT_BRANCH          a CLOSING BINDING to an issue in this repository. The body, with code
+#                                   removed, carries `close|closes|closed|fix|fixes|fixed|resolve|resolves|
+#                                   resolved` (any case, optional colon) before `#N`, `<this repo>#N` or
+#                                   `http(s)://github.com/<this repo>/issues/N[/]`, AND at least one such N is
+#                                   ALSO in GitHub's closingIssuesReferences filtered to THIS repository.
+#                                   Opt-out: `Part of #N` plus a line `Issue-stays-open: <reason>`.
+#                                   `Related to #N` / `Towards #N` / a bare `Part of #N` no longer pass.
+#   base staging or main            a ladder promotion: a binding is impossible there, so a closing keyword
+#   (and not the default)           read from the body passes (gh#101), as does a binding or Related/Part/Towards.
+#   any other base (stacked PR)     a binding, or `Related to|Part of|Towards #N` in prose (gh#57).
+#
+# Logic moved here verbatim from `.github/workflows/branch-policy.yml` by gh#824 so it can carry a self-test
+# (scripts/check-issue-link-selftest.sh, run by ci.yml). The comment history below travelled with it.
+set -euo pipefail
+
+: "${BODY:=}" "${TITLE:=}" "${AUTHOR:=}" "${BASE:=}" "${DEFAULT_BRANCH:=develop}" "${PR:=}"
+: "${GH_REPO:=adammarquette/MarqSpec.Mcp.TopstepX}"
+: "${ISSUE_LINK_RETRY_SLEEP:=5}"
+
+strip_only=false
+if [ "${1:-}" = "--strip" ]; then strip_only=true; BODY=$(cat); fi
+
+if [ "$strip_only" = false ]; then
+  # Dependabot opens its own PRs and cannot file an issue first, so issue-first is UNSATISFIABLE for
+  # them -- not merely inconvenient. Exempting them explicitly is honest; the alternative was a gate
+  # that had to stay toothless for everyone so that one author could pass it.
+  if [ "$AUTHOR" = "dependabot[bot]" ]; then
+    echo "::notice::Author is dependabot[bot]; issue-first does not apply to an automated bump."
+    exit 0
+  fi
+fi
+
+# EVERY citation this job reads comes from here: a body with CODE REMOVED -- HTML comments,
+# fenced blocks, four-space indented blocks, inline spans. GitHub binds a reference inside none of
+# them, so neither may this gate. Derived ONCE and read by BOTH arms below (gh#123); neither
+# re-derives it, because two copies of this rule are two rules, and the pair had already drifted
+# once. THREE PHASES, ONE VALUE: comments, then block-level code, then inline spans. The indented
+# block joined the phase that already tracked fences (gh#142) rather than arriving as a fourth
+# stage or a second variable -- both are the same question asked of a whole line, and a stripper
+# answering it in two places is the drift this comment exists to prevent. Those phases were three
+# processes in a pipe until gh#155; they are ONE awk program now, because the first and the last
+# both need the same notion of an inline span, and a notion cannot be shared across a pipe
+# without being written twice. See WHAT AN INLINE SPAN IS below.
+#
+# Four kinds of code, and only one of them is obvious. A line-oriented strip of inline spans leaves
+# a FENCED `Closes #96` looking exactly like a real citation -- and a
+# promotion body is the one shape that reliably contains a pasted `git log`, because it
+# enumerates the work it carries. Worse, that paste is usually NOT fenced: `git log`'s default
+# `--pretty=medium` indents a commit body by exactly four spaces, which is an indented code block
+# to GitHub and was ordinary prose to this gate until gh#142. Either way the job read the WORK's
+# citation as the PROMOTION's own and passed a promotion citing nothing of its own, which is the
+# precise thing the carve-out below says it refuses to do. HTML comments drop first -- STEPPING
+# OVER inline spans rather than into them -- then block-level code, then the spans themselves.
+#
+# WHY THE FIRST PASS KNOWS ABOUT BACKTICKS AT ALL (gh#123, from review). It was then the only pass
+# carrying state ACROSS lines, so an opener it accepts wrongly costs every line after it. A
+# `<!--` written as INLINE CODE is exactly that -- prose ABOUT the marker, not a marker -- and
+# this repository's platform pull requests discuss it constantly, gh#123's own body included:
+# 7 `<!--` against 4 `-->`, two thirds of the body discarded before either arm read a word.
+# The fifth diagnostic below then told the author their PROSE citation was inside code, which
+# is gh#90's shape rebuilt by the message written to retire it.
+#
+# Reordering the phases was the other candidate, and was rejected on both orders: spans cannot
+# run before fences, because a strip that pairs any backtick with the next one eats two of the
+# three backticks in a ``` marker and the fence phase then matches nothing; and fences cannot run
+# before comments without silently re-deciding the `<!--`-inside-a-FENCE case, which is pinned
+# deliberately below. So the comment phase SKIPS a span instead: emitted UNTOUCHED, so the fence
+# phase still sees its markers and the span phase still removes it -- and BOTH now consult one
+# span map rather than each pairing backticks for itself.
+#
+# WHAT AN INLINE SPAN IS, ONCE (gh#155). `build_spans()` is the single notion; `strip_comments()`
+# and `strip_spans()` both call it and neither has a rule of its own. Three decisions in it, and
+# the third is the one that keeps a stray backtick harmless:
+#   1. A SPAN MAY CROSS A LINE BOUNDARY. That is the defect this card names: the margin here is
+#      110 columns, so a long span routinely wraps, and 9 of the 71 pull-request bodies open when
+#      gh#142 landed carry a non-fenced line with an odd backtick count. Paired per line, such a
+#      span leaks its middle -- `Some prose about `a long option / Closes #96` and what it does.`
+#      cited nothing GitHub could see and this gate read a citation.
+#   2. RUN PAIRS WITH RUN OF THE SAME LENGTH, which is CommonMark: a backtick string closes on a
+#      backtick string of EQUAL length. The old strip paired any backtick with the next one, so
+#      ``Closes #1`` came out as the bare words `Closes #1` and read as a citation GitHub does
+#      not bind. How close to CommonMark this gets, deliberately: run length and the
+#      opener-with-no-closer rule, yes; the leading/trailing space strip and backslash escapes,
+#      no -- neither can turn a citation into a non-citation or back.
+#   3. AN UNPAIRED RUN IS LITERAL TEXT, and scanning resumes just after it. This is what makes a
+#      cross-line span safe to adopt at all: the review round behind gh#123 rejected teaching the
+#      comment phase to carry state across lines precisely because one stray backtick would then
+#      discard the rest of the body. A run only opens a span when its closer already exists, so
+#      a stray one opens nothing. Nothing is swallowed by a backtick any more, in either phase.
+# And the search for that closer is BOUNDED to one leaf block, which is where GitHub parses
+# inlines. `build_spans()` sorts every line into three kinds, and getting this wrong is not a
+# rounding error -- see WHY A MISSED BOUNDARY IS A FAIL-OPEN below:
+#   INLINE-FREE, excluded outright, its backticks inert: a blank line, a fence marker, and every
+#     line of an HTML block -- marked once by `mark_html_blocks()` off CommonMark's CLOSED LIST
+#     of block tag names, never off "the line starts with `<`". Whether such a line keeps its
+#     TEXT is a second and separate question, answered per tag in `mark_html_blocks()`: `pre` is
+#     the one whose text goes.
+#   A ONE-LINE BLOCK, which is a region of exactly itself: an ATX heading, a table row, a
+#     thematic break, a setext underline. Its content IS inline-parsed -- so it must neither
+#     join the paragraph above it nor lend a backtick to the one below.
+#   A REGION BREAK that starts a new region: a list item, and a change in blockquote depth.
+# Everything else is paragraph text and continues the region it is in.
+#
+# UNTERMINATED MARKERS SWALLOW THE REST OF THE BODY -- an unclosed fence, an unclosed `<!--`,
+# and (inside a fence) an `<!--` whose `-->` the fence pass would otherwise have removed. The
+# gate then REFUSES rather than accepts. Deliberate, and the same direction in all three cases:
+# over-stripping makes the run say why and the author moves the citation into plain prose,
+# while under-stripping passes silently on a citation GitHub ignores. For a gate, take the loud
+# error. A `<!--` inside BACKTICKS stopped being one of them at gh#123, and stopped being one when
+# those backticks sit on two different lines at gh#155.
+# Read the next block before generalising that sentence: it is true of an unterminated MARKER and
+# false of an indented BLOCK, and the difference is which line gets dropped.
+#
+# THE INDENTED BLOCK IS THE ONE PLACE WHERE OVER-STRIPPING IS THE WRONG DIRECTION (gh#142), so
+# all three of CommonMark's preconditions are checked rather than the leading four spaces alone:
+#   1. four COLUMNS of indent, a tab advancing to the next multiple of four;
+#   2. a blank line above it -- an indented chunk cannot interrupt a paragraph, so a wrapped
+#      sentence that happens to start indented stays prose;
+#   3. the indent measured from the enclosing LIST ITEM's content column, not from column zero.
+#
+# Rule 3 is the whole reason this is not a one-line regex, and it is the deliberate departure
+# from `5188178` on the never-merged `bug/101_...` branch, which dropped every four-space line
+# and argued that over-stripping is the safe direction. It is the safe direction for an
+# unterminated marker, where the gate refuses and the author moves a citation they can still see.
+# It is the WRONG direction here, because the line being dropped IS the citation: a continuation
+# line inside a list item is ordinary prose that markdown asks you to indent, and refusing it
+# blocks a legitimate pull request -- a worse failure than the phantom this change removes.
+# Measured, not assumed: 6 of the 71 pull-request bodies open when this landed carry a line
+# indented four or more columns outside a fence -- #14, #20, #23, #75, #92, #117, 48 lines
+# between them, every one a nested list item or a list continuation and not one of them code.
+# This rule drops none of the 48; the flat rule drops all 48. Be exact about what that costs:
+# no archived body happens to carry its citation on one of those lines, so the flat rule would
+# have refused nothing yet. That is where the citation tends to sit, not a property of the rule.
+#
+# (An earlier draft of this comment said 37 bodies and 173 lines. That came from a measuring
+# script matching `^( {4}|\t)` with `grep -E`, where `\t` is the LETTER t -- so every line
+# starting with "the" counted. Caught in review. The gate itself never had that bug: it reads
+# the indent character by character in `indent()` below, tab as four columns, no regex.)
+#
+# Blockquote markers come off before the indent is measured -- `>     Closes #N` is code inside a
+# quote -- and a trailing CR comes off with them: a body typed in GitHub's web editor arrives
+# CRLF, and a CR-only line that does not read as blank silently disables precondition 2, which
+# would be a gate quietly not working rather than a gate failing.
+#
+# KNOWN REMAINDER: precondition 2 is implemented as "the line above was BLANK", and CommonMark
+# says "cannot interrupt a PARAGRAPH" -- so an indented chunk pressed straight up against a
+# heading, a thematic break or a table, with NO blank line between, is code to GitHub and prose
+# here. Checked against GitHub's renderer rather than read off the spec: `markdown/raw` returns
+# a `pre code` for all three, and for a lazy continuation of a paragraph it returns none, which
+# is the case this gate already agrees with. Put a blank line in and the gate strips all three
+# correctly. Left as is deliberately: closing it means teaching this pass to recognise headings,
+# rules and tables -- more surface for the same class of mistake -- to buy an UNDER-strip, which
+# keeps a phantom rather than refusing an honest body. And the shape this gate exists for cannot
+# hit it: `git log --pretty=medium` prints a blank line above the indented commit body, always.
+#
+# WHY A MISSED BOUNDARY IS A FAIL-OPEN, and why the list above is not a nice-to-have. The first
+# version of this change bounded regions at a blank line and a fence marker ONLY, and shipped
+# for review with a note calling the rest a known remainder that could merely INVENT a span --
+# a harmless over-strip. That note had the direction exactly backwards, and the review measured
+# it. Two lines:
+#
+#     ## A heading that ends in a stray `
+#     The gate reads `Related to #99` from the body.
+#
+# The stray run on the heading pairs with the OPENING run of the real span below it, every
+# pairing after it shifts by one, and the span's contents are handed to the greps AS PROSE.
+# GitHub renders `<code>Related to #99</code>` and binds nothing; the gate read a citation and
+# PASSED a pull request citing nothing. A missed boundary does not invent a span, it DESTROYS
+# one -- and a destroyed span is a phantom citation, which on a required check is the vacuous
+# green this repository has shipped seven times. Reproduced the same way on a table row, a
+# thematic break, a setext underline, a list item, a `<div>`, a blockquote seam and the tail of
+# an HTML comment, every one confirmed against GitHub's own renderer via `POST /markdown`.
+#
+# INLINE-FREE AND CITATION-LIVE ARE TWO QUESTIONS, and the second one has no answer in any spec.
+# Every row below is a throwaway pull request whose entire body was the construct, read off the
+# runner rather than reasoned about:
+#   `<!-- a block-level comment --> Closes #155`      -> `PR closes 1 issue(s)`   LIVE
+#   `<div>` + a BACKTICKED `Closes #155`              -> `PR closes 1 issue(s)`   LIVE
+#   `<pre>` + `Closes #155` + `</pre>`                -> "GitHub bound nothing"   NOT live
+# The first two bind -- the second through backticks, because a block carries no inline parsing
+# so they are literal text. The obvious remedy for the comment tail is to blank it, which
+# CommonMark-s "type 2 consumes the whole line" appears to license; it would delete a citation
+# that WORKS, which is the gh#142 direction test failing the way that blocks an honest pull
+# request. So an HTML block loses its inline parsing and keeps its text -- EXCEPT `pre`, the one
+# tag that survives sanitising as a real element, inside which GitHub does not autolink. Its
+# content is deleted like a fence. `script`, `style` and `textarea` are sanitised away and their
+# contents come back as ordinary linkified text, so they keep theirs. One of the four inverts;
+# nothing about the tag NAME predicts which, and only the runner told us.
+# Two of those rows move a verdict the other way: `develop` strips the backticks per line and
+# REFUSES the `<div>` body GitHub binds. That is a fail-CLOSED bug this change fixes rather than
+# introduces.
+#
+# A REMAINDER-S DIRECTION IS A MEASUREMENT, NOT A DEDUCTION. This note has now been written wrong
+# twice, both times by correct-sounding reasoning about a construct nobody had run:
+#   Round one said the seam could only INVENT a span, a harmless over-strip. It DESTROYS one, and
+#     that is a phantom citation on a required check.
+#   Round two said both directions were fail-open, differing only in blast radius. They are not.
+#     A blockquote LAZY CONTINUATION is one paragraph to GitHub -- `> quoted with stray` and a
+#     backtick, then an unquoted line -- so the stray run pairs across the seam and the citation
+#     below lands OUTSIDE the span, linkified and live. The `q != wasq` rule splits that region,
+#     the two runs on the lower line pair with each other, and the gate strips a span GitHub
+#     never formed: it REFUSES a body GitHub binds. Fail-CLOSED. It matches `develop`, so nothing
+#     moves against the baseline and lazy continuations stay unsupported -- but the sentence that
+#     said this could not happen is what licensed the next approximation.
+# A KNOWN REMAINDER carrying the wrong direction is worse than no note: it tells the next reader
+# the hole is safe. Run the construct.
+#
+# AND ITS SIBLING, from round three: A CORRECT FIX THAT WIDENS A STATE-S LIFETIME INHERITS EVERY
+# GAP IN THAT STATE-S OTHER GUARDS. `mark_html_blocks()` never had fence awareness and never
+# needed it while its state died at the next blank line. Giving `pre` a closing-tag terminator --
+# right on its own terms -- turned that into RUNS TO END OF BODY, and a line-initial `<script>`
+# or `<pre>` inside a fenced EXAMPLE then took the rest of the body with it, in both directions.
+# Neither the fixtures nor the differential could see it: 0 of the 96 archived bodies carry a
+# line-initial type-1 tag. When you extend how long a state lives, re-audit every guard that
+# state never had.
+#
+# Still approximate, each with the direction MEASURED against `POST /markdown`: an ordered list
+# item interrupts on any number rather than only `1.`; a heading or table row inside a blockquote
+# is not recognised through the `>`; a lazy continuation splits a region it should not (above);
+# a table row is one region rather than one per cell; and HTML block type 7 -- a complete tag
+# alone on a line at block position -- is not implemented, so `<search>` opening a body leaves the
+# citation under it stripped when GitHub binds it (measured: `PR closes 1 issue(s)`). Every one of
+# those is fail-CLOSED and every one matches `develop`, so none is a regression and none blocks a
+# body this repository has written.
+#
+# AND ONE THAT IS TWO COPIES OF A RULE, which is the defect this whole comment block exists to
+# prevent, recorded rather than fixed. `strip_blocks()` still runs its OWN fence model: a ``` is
+# a fence toggle to it even inside an HTML block the marker pass has correctly decided is open.
+# Measured on `<div>` / ``` / text / blank / a prose citation -- GitHub binds the citation and
+# the gate deletes it. Fail-CLOSED and byte-identical to `develop`, so not a regression; left
+# alone deliberately because moving the block phase onto the shared model is a second rewrite
+# with a differential of its own, and this change is already four review rounds long. The next
+# person to touch either pass inherits this line rather than rediscovering it.
+#
+# WHAT IS NOT ALLOWED TO BE APPROXIMATE IS THE TAG LIST, and it took two rounds to get right.
+#   The first attempt bounded on "the line starts with `<`" -- cheap, errs toward more
+#   boundaries, and WRONG on a real body: #59 wraps a span onto a line beginning
+#   `<IntegrationTests>`, which is no HTML block at all. The gate stopped stripping a span GitHub
+#   strips, nothing went red, and the only thing that caught it was the differential going from
+#   13 non-blank changers to 12.
+#   The second attempt quoted the CURRENT spec, 0.31. GitHub runs cmark-gfm, which tracks
+#   0.29/0.30, and the two revisions differ on exactly the two names that matter -- see the TAGS
+#   table. `search` listed as type 6 let `paragraph with an opener` / `<search>` /
+#   `Closes #155 and a closer` through, where GitHub puts the citation inside `<code>`.
+# Reading the right spec is not the same as reading the implementation. Sweep the list.
+#
+# A LINE REMOVED BY THE BLOCK PHASE IS BLANKED, NOT DELETED, and that is load-bearing rather than
+# tidy: the span phase runs after it, and a deleted fenced block would butt the paragraph above
+# it against the paragraph below with no blank line between, letting a run in one pair with a run
+# in the other. Blanking keeps the boundary -- and keeps the line numbering identical through all
+# three phases, which is what makes the three comparable when this is debugged by hand.
+#
+# Portable to `mawk 1.3.4`, which is what /usr/bin/awk resolves to on ubuntu-24.04, as well as to
+# `gawk`: no ERE interval expressions, no gensub, no length(array), no delete of a whole array
+# (gh#142 chose awk over python3 for this gate; that choice is unchanged and this program keeps
+# it payable).
+#
+# WHAT THE RUNS BELOW DO AND DO NOT SETTLE. Docker was down on the machine this was written on,
+# so the container check gh#142 ran was unavailable, and NO probe has ever printed an awk
+# version. They settle that this program works ON THE RUNNER -- not which awk ran it. `gawk` is
+# absent from the ubuntu-24.04 image, which makes mawk near-certain and is exactly the
+# package-list inference the gh#142 bullet refuses to make, so it is not claimed here either.
+# What WAS measured stands in its place: byte-identical output under `LC_ALL=C gawk --posix`
+# across all 96 archived bodies, 88 of them carrying non-ASCII -- POSIX mode plus single-byte
+# indexing being the mawk-shaped constraint.
+#
+# THE DENOMINATOR IS PINNED at the 96 bodies every measurement on this branch ran over, not at
+# whatever `gh pr list` returns today: that population only grows, and this change-s own
+# throwaway probes pushed it past 130. An earlier draft of this line said 88 was 95, which is the
+# same count taken over a longer list -- right number, wrong denominator, and re-derivable in one
+# command. Third wrong measured figure in this file, after `37 bodies / 173 lines` and a `44`
+# where the claim was carried by 13, and this one sits three paragraphs from the note about the
+# first. Two routes, each proved on a known positive AND a known negative before either was
+# believed, both answer 88 of 96.
+#
+# This paragraph and the matching one in the platform contract have to say the same thing. An
+# earlier round narrowed the claim in the CONTRACT ONLY and left the word "settled" standing
+# here, pointing at a five-row table that had since been replaced three times -- two copies of
+# one claim, drifted, inside the comment block that argues against exactly that. A retraction
+# that goes missing is the same shape as a regression nothing can see.
+#
+# PROVEN BY MUTATION, not argued. Throwaway pull requests, all closed with their branches
+# deleted, so these ids are the only trail back. EVERY ROW NAMES THE CODE IT RAN ON, because
+# gh#184 is the card about citing a run taken on the read that was replaced:
+#
+#   ON THE CODE THAT SHIPS
+#   #233  32922261154  `Related to #155` inside a span that wraps -> failure, fifth diagnostic.
+#   #234  32922267562  pull request #117s body -- a fenced block, a four-space indented block,
+#                      ~140 backticks, a span that wraps, five references of which exactly ONE
+#                      is prose -> SUCCESS. The green half, and the most construct-dense body
+#                      this repository has; only its first line was changed, from a binding
+#                      keyword to a non-binding one, so the gate had to read the stripped body.
+#   #235  32922270640  a `<script>` inside a FENCE, citation in a wrapped span below -> failure.
+#   #237  32922278067  a `<pre>` inside a FENCE, citation in prose below -> SUCCESS.
+#
+#   THE FENCE PAIR THE THIRD REVIEW ROUND CAUGHT, on the superseded 55c27fd. Byte-identical
+#   bodies to the two rows above, one regression in EACH direction:
+#   #236  32922275222  the `<script>` body -> SUCCESS. Fail-open: the marker pass opened a real
+#                      HTML block from inside a fenced example and inerted every line to EOF, so
+#                      the span below never paired and its citation reached the greps.
+#   #238  32922281889  the `<pre>` body -> failure. Fail-closed: the same block was DELETED to
+#                      EOF, and the stripped body was five empty lines where GitHub linkifies.
+#
+#   SUPERSEDED, kept only so the trail is continuous: #225/#226/#227 (32916669238, 32916671753,
+#   32916673468) are the same red/green/seam rows on 55c27fd, and #228/#230 (32916676204,
+#   32916681114) the `<pre>` and `<search>` rows there, each paired against #229/#231 below.
+#
+#   THE TWO FAIL-OPENS THE SECOND REVIEW ROUND CAUGHT, on the superseded 3127b3a. Each is the
+#   byte-identical body of the row above it, so the pair differs only in this file:
+#   #229  32916678861  the `<pre>` body -> SUCCESS. `pre` was inerted rather than deleted, and
+#                      GitHub does not autolink inside one, so the gate read a reference the
+#                      platform cannot see.
+#   #231  32916682980  the `<search>` body -> SUCCESS. `search` was listed as an HTML block on
+#                      the strength of CommonMark 0.31; cmark-gfm is 0.29/0.30 and puts that
+#                      citation inside `<code>`.
+#
+#   SUPERSEDED, kept only so the trail is continuous: #210/#211/#212 (32908571781, 32908576351,
+#   32908579934) are the same three shipping-code rows taken on 3127b3a, which the two rows
+#   above then replaced.
+#
+#   BEFORE, ON `develop` (blob 73474e2, unchanged across the whole of this work)
+#   #200  32893102563  the SAME body as #233 -> SUCCESS. "PR cites an issue without closing
+#                      it." The defect on the runner: GitHub bound nothing and the gate read a
+#                      reference GitHub cannot see.
+#   #197  32892799377  the same wrap written with `Closes` -> failure, on the FOURTH diagnostic.
+#                      Same leak, different arm. On a `develop` base a body-read `Closes` never
+#                      passes, so only the WEAKER arm can move a verdict here -- which is why
+#                      #200/#233 is the pair that measures anything and a `Closes` pair is not.
+#
+#   THE REGRESSION THIS BRANCH SHIPPED FOR REVIEW, on the superseded 8cb2891
+#   #205  32905389963  the heading seam -> SUCCESS. A required gate passing a body citing
+#                      nothing, introduced by the first version of this change and caught in
+#                      review. Kept because a fix with no record of what it fixed is an
+#                      assertion.
+#
+#   WHAT GITHUB BINDS, which no spec answers
+#   #204  32902191149  body `<!-- a block-level comment --> Closes #155` -> "PR closes 1
+#                      issue(s)". The tail of an HTML block is live.
+#   #209  32906740190  body `<div>` + a BACKTICKED `Closes #155` -> "PR closes 1 issue(s)".
+#                      No inline parsing in a block, so the backticks are literal and the
+#                      reference binds. This is why an HTML block is excluded from PAIRING and
+#                      never blanked.
+#   #223  32914548521  body `<pre>` + `Closes #155` + `</pre>` -> "GitHub bound nothing". The
+#                      one HTML block whose text is NOT live, which is why `pre` is deleted
+#                      rather than inerted. Four rows here, and exactly one inverts.
+#   #224  32914552168  body `<search>` + a BACKTICKED `Closes #155` -> "PR closes 1 issue(s)".
+#                      A type-7 block at block position, which this gate does not implement --
+#                      so it strips that citation where GitHub binds it. Fail-CLOSED, matching
+#                      `develop`, and listed in the remainder above with that direction.
+#
+# And the differential behind them: 96 archived pull-request bodies, 44 whose stripped text
+# changes, 13 of those in NON-BLANK content, 0 whose verdict moves. Lean on the 13, not the 44:
+# 31 of the 44 differ only in blank lines, and `grep` is line-oriented, so a blank line cannot
+# move a verdict by construction. Byte-identical output under `LC_ALL=C gawk --posix` across all
+# 96, which is the mawk-shaped constraint -- single-byte indexing and no gawk extensions -- run
+# where a container was not available.
+body_no_code="$(printf '%s' "$BODY" \
+  | awk '
+      function is_fence(s) { return (s ~ /^[[:space:]>]*(```|~~~)/) }
+
+      function lead(s,   i, m, c, w) {
+        # Index of the first non-space character, 0 when the line is blank. Its COLUMN is left in
+        # LEADW, a tab advancing to the next multiple of four.
+        w = 0; m = length(s); i = 1
+        while (i <= m) {
+          c = substr(s, i, 1)
+          if (c == " ") { w = w + 1; i = i + 1 }
+          else if (c == "\t") { w = w + 4 - (w % 4); i = i + 1 }
+          else break
+        }
+        if (i > m) { LEADW = -1; return 0 }
+        LEADW = w
+        return i
+      }
+
+      function inline_free(s,   i) {
+        # Lines GitHub parses NO inlines in, so a backtick on one is inert and pairs with nothing.
+        # HTML blocks are the third kind and are marked separately, in inert[], because they run
+        # across lines.
+        i = lead(s)
+        if (i == 0) return 1
+        if (is_fence(s)) return 1
+        return 0
+      }
+
+      function html_block_tag(s,   i, m, j, c, name) {
+        # Does this line OPEN an HTML block? CommonMark types 1 and 6, which is a CLOSED LIST of
+        # tag names -- and the list is the whole point. `<IntegrationTests>` is not on it, so the
+        # line carrying it is ordinary paragraph text and a span may run through it. A blunter
+        # rule of "the line starts with <" was written first and measured wrong on #59, whose
+        # wrapped `docker compose ... <IntegrationTests>` span it stopped stripping.
+        i = lead(s)
+        if (i == 0 || LEADW > 3) return 0
+        if (substr(s, i, 1) != "<") return 0
+        j = i + 1
+        if (substr(s, j, 1) == "/") j = j + 1
+        m = length(s); name = ""
+        while (j <= m) {
+          c = substr(s, j, 1)
+          if (c ~ /^[A-Za-z0-9-]$/) { name = name tolower(c); j = j + 1 }
+          else break
+        }
+        if (name == "") return 0
+        if (j <= m) {
+          c = substr(s, j, 1)
+          if (c != " " && c != "\t" && c != ">" && c != "/") return 0
+        }
+        return (index(TAGS, " " name " ") > 0) ? 1 : 0
+      }
+
+      function type1_tag(s,   i, j, m, c, name) {
+        # CommonMark HTML block type 1 -- pre, script, style, textarea. Returns the tag name, or
+        # the empty string. These end at their OWN closing tag rather than at a blank line, and
+        # one of the four is the single place where inline-free and citation-live come apart.
+        i = lead(s)
+        if (i == 0 || LEADW > 3) return ""
+        if (substr(s, i, 1) != "<") return ""
+        j = i + 1; m = length(s); name = ""
+        while (j <= m) {
+          c = substr(s, j, 1)
+          if (c ~ /^[A-Za-z0-9]$/) { name = name tolower(c); j = j + 1 }
+          else break
+        }
+        if (name != "pre" && name != "script" && name != "style" && name != "textarea") return ""
+        if (j <= m) {
+          c = substr(s, j, 1)
+          if (c != " " && c != "\t" && c != ">") return ""
+        }
+        return name
+      }
+
+      function html_other(s,   i, c) {
+        # CommonMark HTML block types 3, 4 and 5: `<?`, `<!LETTER`, `<![CDATA[`.
+        i = lead(s)
+        if (i == 0 || LEADW > 3) return 0
+        if (substr(s, i, 1) != "<") return 0
+        c = substr(s, i + 1, 1)
+        return (c == "?" || c == "!") ? 1 : 0
+      }
+
+      function one_line_block(s,   i, m, c, k, ch, cnt, ok, r) {
+        # Blocks that are exactly one line long: an ATX heading, a table row, a thematic break, a
+        # setext underline. Their content IS inline-parsed, so the line is a region of its own --
+        # it neither joins the paragraph above it nor lends its backticks to the one below.
+        i = lead(s)
+        if (i == 0 || LEADW > 3) return 0
+        m = length(s); c = substr(s, i, 1)
+        if (c == "#") {
+          k = 0
+          while (i + k <= m && substr(s, i + k, 1) == "#") k = k + 1
+          if (k <= 6) {
+            if (i + k > m) return 1
+            r = substr(s, i + k, 1)
+            if (r == " " || r == "\t") return 1
+          }
+        }
+        if (c == "|") return 1
+        if (c == "-" || c == "_" || c == "*" || c == "=") {
+          ch = c; cnt = 0; ok = 1
+          for (k = i; k <= m; k++) {
+            r = substr(s, k, 1)
+            if (r == ch) cnt = cnt + 1
+            else if (r != " " && r != "\t") { ok = 0; break }
+          }
+          if (ok && cnt >= 3) return 1
+        }
+        return 0
+      }
+
+      function mark_html_blocks(   i, probe, open, j, t1, closer, opendel, fence) {
+        # An HTML block carries NO inline parsing, so nothing in it opens or closes a code span.
+        # Whether its TEXT is still live for a citation is a SEPARATE question with a separate
+        # answer, and only a measurement gives it. Two kinds, and the second has exactly one
+        # member:
+        #   inert[i] = 1  inline-free, text KEPT. A block-level comment tail binds, and so does a
+        #                 BACKTICKED citation inside a div -- both measured on the runner.
+        #                 Deleting either would throw away a citation that works.
+        #   inert[i] = 2  inline-free AND deleted by the block phase, like a fence. `pre` only.
+        #                 It survives sanitising as a real element and GitHub does not autolink
+        #                 inside one, so a citation there is invisible to the platform. `script`,
+        #                 `style` and `textarea` are sanitised AWAY and their contents come back
+        #                 as ordinary linkified text, so they are 1, not 2. One of the four
+        #                 inverts, which is why this is a table and not a rule.
+        #
+        # Terminators: type 2 at the line carrying its closing marker; type 1 at its OWN closing
+        # tag, because a blank line does not end one; types 3-6 at a blank line.
+        #
+        # Computed ONCE over the raw body and consulted by both build_spans() calls. That is sound
+        # only because the block phase blanks rather than deletes, so line numbers never move.
+        open = 0; closer = ""; opendel = 0; fence = 0
+        for (i = 1; i <= n; i++) {
+          probe = buf[i]
+          sub(/\r$/, "", probe)
+          if (open == 1) {
+            inert[i] = 1
+            if (index(probe, "-->") > 0) open = 0
+            continue
+          }
+          if (open == 3) {
+            inert[i] = opendel ? 2 : 1
+            if (index(tolower(probe), closer) > 0) open = 0
+            continue
+          }
+          if (open == 2) {
+            if (lead(probe) == 0) { inert[i] = 0; open = 0 }
+            else inert[i] = 1
+            continue
+          }
+          inert[i] = 0
+          # FENCE STATE, and it is load-bearing (review, round three). A fenced code block and an
+          # HTML block are both leaf blocks, so whichever OPENS FIRST wins: while an HTML block is
+          # open the three arms above run and a fence marker is just content; while a FENCE is
+          # open nothing here may open an HTML block, because its lines are code. Without this,
+          # a line-initial `<script>` or `<pre>` written INSIDE a fence opened a real HTML block
+          # -- and once type 1 arrived it ran to its own closing tag or to END OF BODY, so the
+          # whole rest of the body went inert (fail-open: a span below is never paired and its
+          # citation reaches the greps) or deleted (fail-closed: a body GitHub binds is refused).
+          # Both measured against `POST /markdown`, both regressions against `develop`.
+          if (is_fence(probe)) { fence = !fence; continue }
+          if (fence) continue
+          j = lead(probe)
+          if (j > 0 && LEADW <= 3 && substr(probe, j, 1) == "<") {
+            if (substr(probe, j, 4) == "<!--") {
+              inert[i] = 1
+              if (index(substr(probe, j + 4), "-->") == 0) open = 1
+            } else {
+              t1 = type1_tag(probe)
+              if (t1 != "") {
+                opendel = (t1 == "pre") ? 1 : 0
+                inert[i] = opendel ? 2 : 1
+                closer = "</" t1 ">"
+                if (index(tolower(probe), closer) == 0) open = 3
+              } else if (html_other(probe) || html_block_tag(probe)) {
+                inert[i] = 1; open = 2
+              }
+            }
+          }
+        }
+      }
+
+      function add_seg(i, a, b,   k) {
+        if (b < a) return
+        k = seg_n[i] + 1; seg_n[i] = k
+        seg_a[i, k] = a; seg_b[i, k] = b
+      }
+
+      function mark_span(l1, c1, l2, c2,   m) {
+        # A span is recorded as one inclusive char range per line it covers, delimiters included.
+        if (l1 == l2) { add_seg(l1, c1, c2); return }
+        add_seg(l1, c1, length(buf[l1]))
+        for (m = l1 + 1; m < l2; m++) add_seg(m, 1, length(buf[m]))
+        add_seg(l2, 1, c2)
+      }
+
+      function pair_region(a, b,   i, s, L, col, k, nr, j, found, rl, rc, rn) {
+        # Every backtick RUN in one region, in order, then CommonMark pairing: a run closes on
+        # the next run of the SAME length; a run with no such closer is literal text and the
+        # scan resumes at the run after it, never inside it.
+        nr = 0
+        for (i = a; i <= b; i++) {
+          s = buf[i]; L = length(s); col = 1
+          while (col <= L) {
+            if (substr(s, col, 1) == "`") {
+              k = col
+              while (k <= L && substr(s, k, 1) == "`") k = k + 1
+              nr = nr + 1
+              rl[nr] = i; rc[nr] = col; rn[nr] = k - col
+              col = k
+            } else col = col + 1
+          }
+        }
+        i = 1
+        while (i <= nr) {
+          found = 0
+          for (j = i + 1; j <= nr; j++) {
+            if (rn[j] == rn[i]) { found = j; break }
+          }
+          if (found > 0) {
+            mark_span(rl[i], rc[i], rl[found], rc[found] + rn[found] - 1)
+            i = found + 1
+          } else i = i + 1
+        }
+      }
+
+      function build_spans(   i, a, probe, q, wasq) {
+        # THE ONE NOTION. A region is a run of lines that could be one paragraph; a span may cross
+        # a line boundary inside a region and may never leave it. Three kinds of line end one:
+        #   inline_free   -- excluded outright; its backticks are inert (blank, fence, HTML block)
+        #   one_line_block-- a region of exactly itself (heading, table row, rule)
+        #   a list item, or a change in blockquote depth -- ends the region and starts a new one
+        # A trailing CR comes off for the tests only, exactly as the block phase does, so a CRLF
+        # body does not quietly lose every boundary.
+        for (i = 1; i <= n; i++) seg_n[i] = 0
+        a = 0; wasq = 0
+        for (i = 1; i <= n; i++) {
+          probe = buf[i]
+          sub(/\r$/, "", probe)
+          if (inert[i] || inline_free(probe)) {
+            if (a > 0) { pair_region(a, i - 1); a = 0 }
+            wasq = 0
+            continue
+          }
+          if (one_line_block(probe)) {
+            if (a > 0) { pair_region(a, i - 1); a = 0 }
+            pair_region(i, i)
+            wasq = 0
+            continue
+          }
+          q = (probe ~ /^ ? ? ?>/) ? 1 : 0
+          if ((q != wasq || item(probe) >= 0) && a > 0) { pair_region(a, i - 1); a = 0 }
+          wasq = q
+          if (a == 0) a = i
+        }
+        if (a > 0) pair_region(a, n)
+      }
+
+      function strip_comments(   i, line, L, out, pos, p, q, t, tend, k, comment) {
+        build_spans()
+        comment = 0
+        for (i = 1; i <= n; i++) {
+          line = buf[i]; L = length(line); out = ""; pos = 1
+          while (pos <= L) {
+            if (comment) {
+              # Inside a comment the span map is not consulted: the marker that closes it is
+              # the only thing being looked for, exactly as before gh#155.
+              q = index(substr(line, pos), "-->")
+              if (q == 0) { pos = L + 1; break }
+              pos = pos + q + 2; comment = 0
+            } else {
+              q = index(substr(line, pos), "<!--")
+              p = (q == 0) ? 0 : pos + q - 1
+              t = 0; tend = 0
+              for (k = 1; k <= seg_n[i]; k++) {
+                if (seg_b[i, k] >= pos) {
+                  t = seg_a[i, k]; if (t < pos) t = pos
+                  tend = seg_b[i, k]
+                  break
+                }
+              }
+              # `t < p`, not `t <= p`: a span opener and a `<!--` cannot start at the same
+              # column, and whichever comes FIRST wins -- CommonMark gives code spans and raw
+              # HTML equal precedence, left to right. Looks like an off-by-one and is not; the
+              # renderer was asked and agrees. Do not "fix" it.
+              if (t > 0 && (p == 0 || t < p)) {
+                out = out substr(line, pos, tend - pos + 1)
+                pos = tend + 1
+                continue
+              }
+              if (p == 0) { out = out substr(line, pos, L - pos + 1); pos = L + 1; break }
+              if (p > pos) out = out substr(line, pos, p - pos)
+              pos = p + 4; comment = 1
+            }
+          }
+          nbuf[i] = out
+        }
+        for (i = 1; i <= n; i++) buf[i] = nbuf[i]
+      }
+
+      function indent(s,   i, m, c, w) {
+        # Leading width in COLUMNS, a tab advancing to the next multiple of four.
+        # -1 means the line is blank, which is what precondition 2 above reads.
+        w = 0; m = length(s)
+        for (i = 1; i <= m; i++) {
+          c = substr(s, i, 1)
+          if (c == " ") w = w + 1
+          else if (c == "\t") w = w + 4 - (w % 4)
+          else return w
+        }
+        return -1
+      }
+
+      function item(s,   i, m, c, w, d, k) {
+        # Content column of a list marker, or -1 when the line is not one. That column is
+        # what rule 3 measures from: inside `- text`, code starts at 6, not at 4.
+        w = 0; m = length(s); i = 1
+        while (i <= m) {
+          c = substr(s, i, 1)
+          if (c == " ") { w = w + 1; i = i + 1 }
+          else if (c == "\t") { w = w + 4 - (w % 4); i = i + 1 }
+          else break
+        }
+        if (i > m) return -1
+        c = substr(s, i, 1)
+        if (c == "-" || c == "*" || c == "+") { i = i + 1; w = w + 1 }
+        else if (c ~ /^[0-9]$/) {
+          k = 0
+          while (i <= m && substr(s, i, 1) ~ /^[0-9]$/ && k < 9) {
+            i = i + 1; w = w + 1; k = k + 1
+          }
+          if (i > m) return -1
+          c = substr(s, i, 1)
+          if (c != "." && c != ")") return -1
+          i = i + 1; w = w + 1
+        } else return -1
+        if (i > m) return w + 1
+        c = substr(s, i, 1)
+        if (c != " " && c != "\t") return -1
+        d = w
+        while (i <= m) {
+          c = substr(s, i, 1)
+          if (c == " ") { w = w + 1; i = i + 1 }
+          else if (c == "\t") { w = w + 4 - (w % 4); i = i + 1 }
+          else break
+        }
+        if (i > m || w - d > 4) return d + 1
+        return w
+      }
+
+      function strip_blocks(   i, probe, w, limit, c, fence, list, blank, code) {
+        fence = 0; list = -1; blank = 1; code = 0
+        for (i = 1; i <= n; i++) {
+          # A `pre` block is deleted here, like a fence, because GitHub does not autolink inside
+          # one -- the only HTML block whose text is NOT live. See mark_html_blocks().
+          if (inert[i] == 2) { blank = 1; code = 0; nbuf[i] = ""; continue }
+          if (is_fence(buf[i])) { fence = !fence; blank = 1; code = 0; nbuf[i] = ""; continue }
+          if (fence == 1) { nbuf[i] = ""; continue }
+          probe = buf[i]
+          sub(/\r$/, "", probe)
+          while (probe ~ /^ ? ? ?>/) sub(/^ ? ? ?>[ \t]?/, "", probe)
+          w = indent(probe)
+          if (w < 0) { blank = 1; nbuf[i] = buf[i]; continue }
+          limit = (list < 0) ? 4 : list + 4
+          if (w >= limit && (blank || code)) { code = 1; blank = 0; nbuf[i] = ""; continue }
+          code = 0
+          c = item(probe)
+          if (c >= 0) list = c
+          else if (blank && list >= 0 && w < list) list = -1
+          blank = 0
+          nbuf[i] = buf[i]
+        }
+        for (i = 1; i <= n; i++) buf[i] = nbuf[i]
+      }
+
+      function strip_spans(   i, k, line, out, pos, L) {
+        build_spans()
+        for (i = 1; i <= n; i++) {
+          line = buf[i]; L = length(line); out = ""; pos = 1
+          for (k = 1; k <= seg_n[i]; k++) {
+            if (seg_a[i, k] > pos) out = out substr(line, pos, seg_a[i, k] - pos)
+            if (seg_b[i, k] + 1 > pos) pos = seg_b[i, k] + 1
+          }
+          if (pos <= L) out = out substr(line, pos, L - pos + 1)
+          nbuf[i] = out
+        }
+        for (i = 1; i <= n; i++) buf[i] = nbuf[i]
+      }
+
+      BEGIN {
+        # CommonMark HTML block type 6, AS GITHUB IMPLEMENTS IT -- cmark-gfm tracks CommonMark
+        # 0.29/0.30, NOT the current 0.31. The two revisions differ on exactly two names, and
+        # both of them land here: 0.31 dropped `source` and added `search`. Written to 0.31 this
+        # list had `search` in and `source` out, and the first of those was fail-OPEN:
+        #   `search`  is NOT type 6 for GitHub, so it cannot interrupt a paragraph. Listing it
+        #             made the gate inert a line GitHub goes on parsing.
+        #   `source`  IS type 6 for GitHub. Omitting it was fail-closed, matching `develop`.
+        # Checked against `POST /markdown` rather than read off a spec page. THE SPEC IS NOT THE
+        # IMPLEMENTATION -- name the revision you are writing to, and measure the edges.
+        # Type 1 (pre script style textarea) is deliberately NOT here; see mark_html_blocks().
+        TAGS = " address article aside base basefont blockquote body caption center col colgroup"
+        TAGS = TAGS " dd details dialog dir div dl dt fieldset figcaption figure footer form frame"
+        TAGS = TAGS " frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main"
+        TAGS = TAGS " menu menuitem nav noframes ol optgroup option p param section source summary"
+        TAGS = TAGS " table tbody td tfoot th thead title tr track ul "
+      }
+
+      { buf[NR] = $0 }
+
+      END {
+        n = NR
+        mark_html_blocks()
+        strip_comments()
+        strip_blocks()
+        strip_spans()
+        for (ln = 1; ln <= n; ln++) print buf[ln]
+      }
+    ')"
+
+if [ "$strip_only" = true ]; then printf '%s\n' "$body_no_code"; exit 0; fi
+
+# THIS repository, escaped for an ERE. A qualified reference to ANY other repository does not count: GitHub can
+# bind one, but closing another repo's issue says nothing about this repo's board (gh#824).
+repo_re=$(printf '%s' "$GH_REPO" | sed 's/[].[^$*+?(){}|\\/]/\\&/g')
+REF="(${repo_re})?#[0-9]+"
+# The same issue written as a URL, `https://github.com/<this repo>/issues/N`, which GitHub also binds after a
+# closing keyword (gh#824 r2). http or https, an optional trailing slash; THIS repository only, like REF.
+URL_REF="https?://github\\.com/${repo_re}/issues/[0-9]+/?"
+CLOSE_REF="(${REF}|${URL_REF})"
+# A keyword must start a word: `encloses #5` is not `closes #5`. The colon is optional, as GitHub allows.
+KW_CLOSE='(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:blank:]]+'
+KW_CITE='(^|[^[:alnum:]_])(related to|part of|towards):?[[:blank:]]+'
+
+# closingIssuesReferences is ground truth: it reflects what GitHub actually BOUND, which is not the
+# same as what the body appears to say. A backticked `Closes #N` does not bind, and a closing keyword
+# in the TITLE is ignored entirely. Counted for THIS repository only (gh#824): a binding to another repo
+# is real to GitHub and meaningless to this repo's board.
+#
+# Retried rather than defaulted. A check that cannot evaluate must not report success -- that is the
+# exact failure this job is being fixed for -- but one transient API blip should not block a merge.
+closes=""
+for attempt in 1 2 3; do
+  # One read, two answers: `<this repo's numbers>|<every bound reference, any repo, as owner/name#N>`.
+  if refs=$(gh pr view "$PR" --json closingIssuesReferences --jq \
+      "([.closingIssuesReferences[] | select((.repository.owner.login + \"/\" + .repository.name | ascii_downcase) == (\"$GH_REPO\" | ascii_downcase)) | .number | tostring] | join(\" \")) + \"|\" + ([.closingIssuesReferences[] | .repository.owner.login + \"/\" + .repository.name + \"#\" + (.number | tostring)] | join(\" \"))") \
+     && [[ "$refs" =~ ^[0-9\ ]*\|[^|]*$ ]]; then
+    bound=${refs%%|*}
+    bound_any=${refs#*|}
+    # shellcheck disable=SC2086 # word-splitting the space-separated number list is the point
+    closes=$(set -- $bound; echo $#)
+    break
+  fi
+  echo "::warning::Could not read closing references (attempt $attempt). Retrying."
+  closes=""
+  sleep "$ISSUE_LINK_RETRY_SLEEP"
+done
+
+if [ -z "$closes" ]; then
+  echo "::error::Could not read this PR's closing references after three attempts. Failing rather"
+  echo "::error::than passing a check that did not run."
+  exit 1
+fi
+
+# Herestring, not a pipe: `grep -q` exits on its first match, and under `pipefail` a SIGPIPE'd
+# upstream would make the pipeline non-zero on a body that DID match -- reading as no citation.
+body_closes=false
+if grep -qiE "${KW_CLOSE}${CLOSE_REF}" <<<"$body_no_code"; then
+  body_closes=true
+fi
+# The issue NUMBERS the body closes in prose, and the subset GitHub actually bound (gh#824 r2, review
+# critique 1). Without the intersection `Closes #999` in the body plus #5 linked only in the sidebar passed:
+# each piece of evidence existed, but about different issues.
+body_nums=""
+if [ "$body_closes" = true ]; then
+  body_nums=$(grep -oiE "${KW_CLOSE}${CLOSE_REF}" <<<"$body_no_code" \
+    | sed -E 's#/$##; s#.*[^0-9]([0-9]+)$#\1#' | sort -un | tr '\n' ' ' | sed 's/ $//')
+fi
+matched=""
+for n in $body_nums; do
+  case " $bound " in *" $n "*) matched="${matched:+$matched }$n" ;; esac
+done
+
+# THE CLOSING-BINDING RULE (gh#824, Adam's 2026-10-25 audit decision). On the default branch the binding IS
+# available, so a PR must use it: `Related to #N` merged work while its card stayed open with nothing saying why.
+# Two pieces of evidence, and they must agree on the SAME issue number (gh#824 r2): at least one N that follows a
+# closing keyword in the body must also be in this repository's closingIssuesReferences.
+#   the BODY  -- what the author wrote, in prose. A link made only in the sidebar's Development panel binds
+#                too, but leaves the PR text saying nothing; the rule is about the text reviewers read.
+#   the API   -- what GitHub bound. A body keyword on a number that is a PULL REQUEST, or does not exist,
+#                binds nothing; only closingIssuesReferences can tell. No extra scope: the job already reads it.
+# Checked separately, `Closes #999` plus #5 linked in the sidebar passed; the intersection closes that.
+# The opt-out is explicit and reasoned, never silent: `Part of #N` plus `Issue-stays-open: <reason>`, both in
+# prose (so a template placeholder inside an HTML comment cannot satisfy it).
+# THE OPT-OUT NEEDS AN EMPTY BINDING (gh#824 r3, review critique 2). "Nothing is linked" means
+# closingIssuesReferences is EMPTY: no issue of this repository AND no issue of any other repository, whether
+# bound by a body keyword or by the sidebar. A PR that says its issue stays open while GitHub will close
+# something on merge contradicts itself, so it fails and names what is linked. This runs only after the
+# matched-binding pass above, so `Closes #999` + `Part of #5` + `Issue-stays-open:` with #5 linked lands here
+# (no match, something linked) and fails with the remove-the-link message.
+if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
+  if [ -n "$matched" ]; then
+    echo "::notice::PR closes #${matched// /, #} in $GH_REPO, and the body says so in prose."
+    exit 0
+  fi
+  if grep -qiE "(^|[^[:alnum:]_])part of:?[[:blank:]]+${REF}" <<<"$body_no_code" \
+     && grep -qE '^[[:blank:]]*Issue-stays-open:[[:blank:]]*[^[:blank:]]' <<<"$body_no_code" \
+     && [ -n "$bound_any" ]; then
+    echo "::error::The body opts out (Part of #N + Issue-stays-open:), but GitHub links ${bound_any// /, } to this"
+    echo "::error::PR and would close it on merge. The opt-out passes only when NO issue is linked. Remove the"
+    echo "::error::linked issue(s) from the sidebar (and any closing keyword for them), or drop the opt-out and"
+    echo "::error::use a plain 'Closes #N' for the issue this PR finishes."
+    exit 1
+  fi
+  if grep -qiE "(^|[^[:alnum:]_])part of:?[[:blank:]]+${REF}" <<<"$body_no_code" \
+     && grep -qE '^[[:blank:]]*Issue-stays-open:[[:blank:]]*[^[:blank:]]' <<<"$body_no_code"; then
+    echo "::notice::PR is Part of an issue that stays open, with a stated reason (Issue-stays-open:)."
+    echo "::notice::That satisfies issue-first; the issue will NOT auto-close on merge."
+    exit 0
+  fi
+fi
+
+# THE PROMOTION CARVE-OUT (gh#101) and the stacked-PR path, both on a base that is NOT the default.
+if [ "$BASE" != "$DEFAULT_BRANCH" ]; then
+  if [ "$closes" -gt 0 ]; then
+    echo "::notice::PR closes $closes issue(s)."
+    exit 0
+  fi
+fi
+
+# THE PROMOTION CARVE-OUT (gh#101). GitHub BINDS a closing keyword only on a PR into the DEFAULT
+# branch, which here is `develop`. A ladder promotion targets `staging` or `main`, so
+# closingIssuesReferences is empty on every promotion that has run or ever will -- not because the
+# author wrote it wrong, but because the binding is structurally unavailable to them. #100 and #106,
+# the only two promotions this repo has ever made, both hit it and both reached for `Related to #N`:
+# the weaker form, which explicitly means DOES NOT CLOSE THIS. A gate that makes an honest PR
+# understate its own relationship to its issue is teaching people to route around it.
+#
+# THE DECISION: a promotion is NOT exempt the way dependabot is -- it must still cite an issue --
+# but on a promotion base the citation is read out of the BODY, because that is the only evidence
+# that can exist there. Outright exemption was rejected: it would pass a promotion citing nothing at
+# all, and issue-first is perfectly satisfiable for a promotion. Only the BINDING is not.
+#
+# Scoped to `staging` and `main` deliberately, NOT to "any base that is not the default". A stacked
+# PR onto a feature branch cannot bind either, and there `Related to #N` is the CORRECT answer
+# (gh#57) -- it really does not close the issue when it merges into its parent. Widening this would
+# hand that case a pass it has not earned.
+#
+# The DEFAULT_BRANCH guard is not redundant. It makes this branch unreachable if `staging` or `main`
+# ever becomes the default, where a body read would stand in for a binding that WAS available and
+# simply did not happen.
+if [ "$BASE" = "staging" ] || [ "$BASE" = "main" ]; then
+  if [ "$BASE" != "$DEFAULT_BRANCH" ] && [ "$body_closes" = true ]; then
+    echo "::notice::Base is '$BASE', a ladder promotion. GitHub binds a closing keyword only on a"
+    echo "::notice::PR into '$DEFAULT_BRANCH', so the body is the only evidence available - and it"
+    echo "::notice::cites an issue. That satisfies issue-first."
+    echo "::warning::The issue will NOT auto-close on merge, for the same reason. Close it by hand."
+    exit 0
+  fi
+fi
+
+# OFF THE DEFAULT BRANCH ONLY since gh#824. AGENTS.md admitted BOTH forms everywhere: `Closes #N` for a PR
+# that completes an issue, `Related to #N` for one that touches it without finishing it. On `develop` the
+# second now needs the `Issue-stays-open:` opt-out above; on a stacked base it is still the CORRECT form.
+#
+# Reads $body_no_code, NOT $BODY (gh#123). From gh#35 until now this arm read the raw body, so a
+# `Related to #N` quoted inside a pasted commit log satisfied it -- reopening by the WEAKER form the
+# exact hole the carve-out above closes for the stronger one, and doing it on the path a promotion
+# actually walks: #100 and #106, the only two promotions this repo has made, both cited this way.
+# A gate that accepts the CARRIED work's citation as the PROMOTION's own is not checking anything.
+#
+# This STRENGTHENS the check on every base, `develop` included -- the one deliberate difference
+# from gh#101/#117, which could truthfully say it moved no verdict on the default branch. The only
+# bodies whose verdict moves are those whose sole citation was already inside code; every PR body
+# in this repository's history still passes.
+#
+# Herestring for the same reason as $body_closes above: no SIGPIPE under `pipefail`.
+if [ "$BASE" != "$DEFAULT_BRANCH" ] && grep -qiE "${KW_CITE}${REF}" <<<"$body_no_code"; then
+  echo "::notice::PR cites an issue without closing it (Related to #N). That satisfies issue-first."
+  exit 0
+fi
+
+# Diagnostics before the failure, so the message says what is wrong rather than only that something is.
+#
+# EVERY GREP BELOW READS THE RAW TEXT, AND THAT IS DELIBERATE (gh#123). No verdict is decided down
+# here -- the two arms above already made it, both from $body_no_code. A diagnostic exists to name
+# what the author WROTE, so it has to look at what they wrote: a backtick diagnostic reading a body
+# with backticks removed could never fire at all.
+if printf '%s' "$TITLE" | grep -qiE '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+'; then
+  echo "::error::The TITLE contains a closing keyword. GitHub ignores those - move it into the body."
+fi
+
+# -i, and it matters (gh#101). This grep was the only one of the three without it, so it matched a
+# lowercase `closes #1` and MISSED the canonical `Closes #1` that CONTRIBUTING.md tells people to
+# write -- the diagnostic was absent for the exact form it exists to explain. Message-only: this
+# branch has no exit, so nothing about the verdict changes. Found by running the gate, not reading it.
+#
+# `grep` is line-oriented, so this cannot see a span that WRAPS (gh#155) -- and it is deliberately
+# not taught to: a second notion of a span, in a diagnostic, is the drift gh#123 closed. The fifth
+# diagnostic below already covers that body, by comparing the raw text against $body_no_code, and
+# its message names the wrap explicitly.
+if printf '%s' "$BODY" | grep -qiE '`[^`]*(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+[^`]*`'; then
+  echo "::error::A closing keyword appears inside backticks, which does not bind. Remove the backticks."
+fi
+
+if printf '%s' "$BODY" | grep -qiE '(settles|delivers|implements|completes|addresses) +#[0-9]+'; then
+  echo "::error::Near-miss verb before an issue reference. Only close/fix/resolve bind."
+fi
+
+# FIFTH DIAGNOSTIC (gh#123). The body DOES cite an issue and every occurrence of it is inside code,
+# so the citation the author can see is one neither GitHub nor this gate can. This is the message
+# the backtick diagnostic above could not carry: that one detects a SPAN, so a keyword fenced rather
+# than span-quoted produced no diagnostic at all -- the author read `This PR cites no issue`, went
+# back to a body with the reference plainly in it, and had nowhere to go (gh#90's shape). Comparing
+# the raw body against $body_no_code covers all four kinds of code with one test instead of one
+# detector per kind -- gh#142 added the fourth kind and needed no new grep here, only the extra
+# noun in the message below.
+#
+# TERMINAL, so the generic "cites no issue" -- which is FALSE here -- never follows it. Nothing is
+# lost by stopping: with every citation inside code, $body_closes is necessarily false, so the
+# fourth diagnostic below cannot fire either.
+#
+# It says what the STRIPPER concluded, not what the body IS -- and the two can still come
+# apart, because an unterminated marker over-strips on purpose and this branch is the only
+# place an author ever meets that decision. Asserting the body is wrong when the stripper
+# merely stopped early sends them to stare at a citation that is already fine, instead of at
+# the marker above it that is not. (A `<!--` inside backticks used to land here; it no longer
+# does.)
+CITATION='(close[sd]?|fix(e[sd])?|resolve[sd]?|related to|part of|towards):? +([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+'
+if grep -qiE "$CITATION" <<<"$BODY" && ! grep -qiE "$CITATION" <<<"$body_no_code"; then
+  echo "::error::This check read every issue reference in this body as CODE - a fenced block, a"
+  echo "::error::four-space indented block, an HTML comment, or backticks - and a backtick span"
+  echo "::error::counts even when it OPENS on one line and CLOSES on the next, which at a 110"
+  echo "::error::column margin is easy to write without seeing. GitHub ignores all four, and so"
+  echo "::error::does this check. Put the citation in ordinary prose. If it came from a"
+  echo "::error::pasted commit log, that is the CARRIED work's citation - and note that git log"
+  echo "::error::indents a commit body four spaces, so an unfenced paste is code too. This PR"
+  echo "::error::still needs a citation of its own."
+  echo "::error::If the citation already IS in prose, an unterminated code fence or HTML comment"
+  echo "::error::above it swallowed the rest of the body. Close that marker, or cite above it."
+  exit 1
+fi
+
+# A closing keyword before a PULL REQUEST URL (gh#824 r3). GitHub closes issues, not pull requests, so this
+# binds nothing -- and without this it fell through to a message saying there was no keyword at all.
+if [ "$body_closes" = false ] \
+   && grep -qiE "${KW_CLOSE}https?://github\\.com/[[:alnum:]_.-]+/[[:alnum:]_.-]+/pull/[0-9]+" <<<"$body_no_code"; then
+  echo "::error::The closing keyword points at a PULL REQUEST link (.../pull/N). Only an issue can be closed."
+  echo "::error::Close the issue instead: 'Closes #N' or 'Closes https://github.com/$GH_REPO/issues/N'."
+  exit 1
+fi
+
+# DEFAULT-BRANCH DIAGNOSTICS (gh#824). Each names the one piece of evidence that is missing. Like every
+# diagnostic here they change only the MESSAGE; terminal, so no false generic message follows them.
+if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
+  if [ "$body_closes" = true ] && [ "$closes" -gt 0 ]; then
+    echo "::error::Mismatch: the body closes #${body_nums// /, #} in prose, but GitHub links #${bound// /, #} to"
+    echo "::error::this PR. The body's closing number must be the issue GitHub actually links. Fix the number"
+    echo "::error::in the body, or the link in the sidebar, so the two name the same issue."
+    exit 1
+  fi
+  if [ "$body_closes" = false ] && [ "$closes" -gt 0 ]; then
+    echo "::error::GitHub binds $closes issue(s) to this PR - most likely linked in the sidebar - but the"
+    echo "::error::body has no closing keyword in prose. Add a plain 'Closes #N' to the body."
+    exit 1
+  fi
+  if grep -qiE "(^|[^[:alnum:]_])part of:?[[:blank:]]+${REF}" <<<"$body_no_code"; then
+    echo "::error::'Part of #N' alone no longer passes into '$DEFAULT_BRANCH'. Use 'Closes #N', or keep"
+    echo "::error::'Part of #N' and add a line 'Issue-stays-open: <why the issue stays open>'."
+    exit 1
+  fi
+  if grep -qiE "${KW_CITE}${REF}" <<<"$body_no_code"; then
+    echo "::error::'Related to #N' and 'Towards #N' no longer pass into '$DEFAULT_BRANCH' (gh#824): a PR"
+    echo "::error::into the default branch closes its issue. Use 'Closes #N', or 'Part of #N' plus a line"
+    echo "::error::'Issue-stays-open: <why the issue stays open>'."
+    exit 1
+  fi
+  if [ "$body_closes" = false ] \
+     && grep -qiE "(^|[^[:alnum:]_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:blank:]]+[[:alnum:]_.-]+/[[:alnum:]_.-]+#[0-9]+" \
+        <<<"$body_no_code"; then
+    echo "::error::The closing keyword references an issue in ANOTHER repository. Only an issue in"
+    echo "::error::$GH_REPO counts. Add a plain 'Closes #N' for this repository's issue."
+    exit 1
+  fi
+fi
+
+# FOURTH DIAGNOSTIC (gh#101, merged from gh#102). Without it, a body whose first line is
+# `Closes #99` falls all the way through to "This PR cites no issue" -- a message that is FALSE, not
+# merely unhelpful. The reader acts on it, and the natural response is to add a second `Closes #99`,
+# which fails identically for the same invisible reason (gh#90's shape). This branch only ever
+# changes the MESSAGE on a failing run; every verdict above it is unchanged.
+if [ "$body_closes" = true ]; then
+  echo "::error::The body carries a plain closing keyword, but GitHub bound nothing."
+  if [ "$BASE" != "$DEFAULT_BRANCH" ]; then
+    echo "::error::This PR targets '$BASE', not the default branch '$DEFAULT_BRANCH', and a closing"
+    echo "::error::keyword binds only on a PR into the default branch. A second 'Closes #N' fails"
+    echo "::error::identically. Use 'Related to #N' - a stacked PR does not close its issue when it"
+    echo "::error::merges into its parent. (A promotion into staging/main passes above, not here.)"
+  else
+    echo "::error::The base IS the default branch, so the binding was available and did not happen."
+    echo "::error::The referenced number most likely does not resolve to an issue in this repository."
+  fi
+  exit 1
+fi
+
+if [ "$BASE" = "$DEFAULT_BRANCH" ]; then
+  echo "::error::This PR cites no issue. Issue-first: add a plain 'Closes #N' to the body (or 'Part of #N'"
+  echo "::error::plus 'Issue-stays-open: <reason>'). Task specs and acceptance criteria belong in the issue."
+else
+  echo "::error::This PR cites no issue. Issue-first: add a plain 'Closes #N' or 'Related to #N' to"
+  echo "::error::the body. Task specs and acceptance criteria belong in the issue, not in the PR."
+fi
+exit 1

@@ -15,11 +15,12 @@ Check it against the code.
 contract; QA test creation is performed blind to the implementation per the
 [QA contract](../../MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md).
 
-**Traceability to verify on every PR:** an explicit, **plain** `Closes #N` / `Related to #N` **in ordinary
-prose** — a citation inside code binds nothing and `issue-link` reads none of it, whether the code is
-backticks, a fenced block or an HTML comment (gh#123; a four-space-indented block is the form it still reads,
-gh#142) — and the affected `R-#`, ADR, architecture, data-dictionary or tool-catalogue section updated in the
-same PR.
+**Traceability to verify on every PR:** an explicit, **plain** `Closes #N` **in ordinary prose** into
+`develop`, naming the issue GitHub actually links (`Part of #N` plus `Issue-stays-open: <reason>` when the
+issue stays open, valid only with no issue linked; `Related to #N` on any base except `develop`) — a citation
+inside code binds nothing and `issue-link` reads none of it, whether the code is backticks, a fenced block or
+an HTML comment (gh#123; a four-space-indented block is the form it still reads, gh#142) — and the affected
+`R-#`, ADR, architecture, data-dictionary or tool-catalogue section updated in the same PR.
 
 ## What to look for
 
@@ -76,7 +77,7 @@ places: change either and change both.**
   back to a comment whose **first line is the verdict**: `**Verdict: Request changes**` or `**Verdict: Approve**`.
   An ambiguous review state is worse than a bluntly-stated one.
 - **Sign what you write.** An AI-authored inline note, review body or verdict comment ends with
-  `Assisted-by: <Model Name> (<tool>)` — the same form as the commit trailer, on the comment itself. A single
+  `Assisted-by: <model>:<version>` — the same form as the commit trailer, on the comment itself. A single
   footer on the PR does not cover a comment you added later.
 - **Your verdict moves the card, but you do not move it.** Approval sends the card to `Ready to Merge` — the
   maintainer's "what may I merge" signal, which no automation ever sets — and changes-requested sends it back

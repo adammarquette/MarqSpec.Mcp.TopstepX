@@ -319,7 +319,8 @@ public sealed class CalendarEndGuardTests : IDisposable
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
                 NullLogger<FootprintCacheService>.Instance,
-                _telemetry));
+                _telemetry),
+            _telemetry);
 
         ContractRollTools roll = new(
             resolver, _database, _gateway, new LevelMethodCatalog(_calendar), front, _clock);

@@ -266,6 +266,66 @@ the closed allowlist recorded on [ADR-0023](0023-aws-deployment-topology.md) §9
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
 
+## Exception (2026-10-28) — Railway staging runs the static token until an OAuth issuer exists
+
+**Decided by Adam (operator), 2026-10-28:** *"Run staging on a static token for now, with an ADR-0021
+exception, and keep OAuth for production."*
+
+**Why.** No Cognito user pool exists for the Railway deployment
+([deployment.md](../deployment.md#railway-gh758)), so `MCP_OAUTH_ISSUER` and `MCP_OAUTH_CLIENT_IDS` have no
+valid values. An OAuth server with no issuer refuses to start (`OAuthOptions`), and staging could not deploy
+at all.
+
+**Scope.** Staging's `server` on Railway only. It runs `Mcp__Auth__Mode=StaticToken` with
+`Mcp__HttpBearerToken` from the staging shared variable `MCP_HTTP_BEARER_TOKEN`, and **no** `Mcp__OAuth__*` key
+beside it (`McpOptions` refuses that pairing at startup). Staging holds only the synthetic seed and runs with
+`Trading__Enabled=false`. That does not make a shared secret on a public listener acceptable in general. It
+is the price of a disposable environment deploying before its issuer exists.
+
+**Production stays on OAuth, and the checker enforces it.** `.railway/railway.ts` picks the server's auth with
+one explicit `ctx.environment === "staging"` branch, so every other environment gets the OAuth block.
+`scripts/railway/evaluate-template.mjs` fails `StaticToken` on the server in any environment but staging
+(`[static-token-staging-only]`), fails an OAuth key beside it (`[static-token-no-oauth]`), and keeps every
+OAuth requirement everywhere else. `scripts/check-deployment.sh` runs its static-token mode only with
+`MCP_CHECK_ENVIRONMENT=staging`.
+
+**Temporary.** This exception ends when an OAuth issuer (a Cognito user pool) exists for Railway. At that
+point the staging branch in `railway.ts` is deleted, `MCP_HTTP_BEARER_TOKEN` is removed from staging, and
+staging returns to the coupling above. Nothing else in this record changes.
+
+Assisted-by: grok-bot:sgt-squash
+
+## Update (2026-10-29) — the static-token exception covers production too, TEMPORARILY
+
+**Decided by Adam (operator), 2026-10-29, on gh#851:** *"Let's just use a static key for now."* This widens
+the 2026-10-28 exception above and supersedes its **"Production stays on OAuth"** paragraph and the
+staging-only half of its **Scope** and **Temporary** paragraphs. The rest of that entry stands.
+
+**Why.** Production is blocked on the same thing staging was: no OAuth provider is chosen for Railway, so
+`MCP_OAUTH_ISSUER` and `MCP_OAUTH_CLIENT_IDS` have no valid values and an OAuth server would refuse to start.
+Production has never deployed (gh#851).
+
+**Scope.** Every environment's `server` on Railway runs `Mcp__Auth__Mode=StaticToken`, with
+`Mcp__HttpBearerToken` from **that environment's** shared `MCP_HTTP_BEARER_TOKEN` and no `Mcp__OAuth__*` key
+beside it. `.railway/railway.ts` has one `serverAuth` block and no environment branch. The template no longer
+references `MCP_OAUTH_ISSUER` or `MCP_OAUTH_CLIENT_IDS`. `scripts/railway/evaluate-template.mjs` requires
+`StaticToken` on the server everywhere (`[static-token-required]`), requires the token as that shared
+reference (`[static-token-secret]`), and still fails any OAuth key beside it (`[static-token-no-oauth]`).
+`Trading__Enabled` stays the literal `"false"` (ADR-0024), so a leaked token reads data and cannot trade. The
+app's OAuth code path is unchanged; only the deployment stops using it.
+
+**What this costs.** Production holds a real account's balances, positions and history behind one shared
+secret on a public hostname, with the defects *Token* above names: no identity, no expiry, no consent step,
+rotation by restart and re-paste. The operator accepted that until a provider exists. Each environment's
+token is its own value, set and rotated by Adam, never by an agent.
+
+**TEMPORARY.** This ends when an OAuth provider is chosen for Railway. ApiaryKeeper's self-hosted Keycloak
+is a candidate to evaluate then; Cognito is no longer assumed, since Railway has no AWS stack to carry it. At
+that point `serverAuth` goes back to OAuth, `[static-token-required]` goes back to requiring OAuth, and
+`MCP_HTTP_BEARER_TOKEN` is removed from each environment as it moves.
+
+Assisted-by: grok-bot:sgt-squash
+
 ## Follow-ups
 
 - gh#510 lands as a dated update on ADR-0007; when it does, a dated update here says which of the three

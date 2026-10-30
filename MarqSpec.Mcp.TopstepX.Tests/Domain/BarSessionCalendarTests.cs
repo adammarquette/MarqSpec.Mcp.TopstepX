@@ -164,6 +164,49 @@ public sealed class BarSessionCalendarTests
     }
 
     [Fact]
+    public void Parse_WhenAnEarlyCloseIsNotADateAndTime_ThrowsEarlyCloseException()
+    {
+        Action parse = () => BarSessionCalendar.Parse("16:00", [], earlyCloses: ["not-a-close"]);
+
+        EarlyCloseException exception = parse.Should().Throw<EarlyCloseException>().Which;
+        exception.Should().NotBeAssignableTo<FormatException>();
+        exception.Message.Should().NotStartWith("Early close");
+        exception.Message.Should().Contain("not-a-close");
+    }
+
+    [Fact]
+    public void Parse_WhenAnEarlyCloseIsNotBeforeTheOrdinaryClose_ThrowsEarlyCloseException()
+    {
+        Action parse = () => BarSessionCalendar.Parse("16:00", [], earlyCloses: ["2026-11-27 16:00"]);
+
+        EarlyCloseException exception = parse.Should().Throw<EarlyCloseException>().Which;
+        exception.Should().NotBeAssignableTo<ArgumentOutOfRangeException>();
+        exception.Message.Should().Contain("ordinary session close");
+        exception.Message.Should().NotContain("02:00");
+    }
+
+    [Fact]
+    public void Parse_WhenAnEarlyCloseIsBeforeTwoAm_NamesThatBound()
+    {
+        Action parse = () => BarSessionCalendar.Parse("16:00", [], earlyCloses: ["2026-11-27 01:30"]);
+
+        EarlyCloseException exception = parse.Should().Throw<EarlyCloseException>().Which;
+        exception.Message.Should().Contain("01:30");
+        exception.Message.Should().Contain("before 02:00 Central");
+        exception.Message.Should().NotContain("ordinary session close");
+    }
+
+    [Fact]
+    public void IsExpectedBucket_WhenAnEarlyCloseIsDeclared_StillExpectsTheOrdinaryAfternoon()
+    {
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", [], earlyCloses: ["2026-11-27 12:00"]);
+        DateTimeOffset bucket = MarketClock.FromMarket(new DateOnly(2026, 11, 27), new TimeOnly(13, 0));
+
+        calendar.SessionCloseOn(new DateOnly(2026, 11, 27)).Should().Be(new TimeOnly(12, 0));
+        calendar.IsExpectedBucket(bucket, _fiveMinutes).Should().BeTrue();
+    }
+
+    [Fact]
     public void Constructor_RefusesANonPositiveMaintenanceWindow()
     {
         Action build = () => new BarSessionCalendar(new TimeOnly(16, 0), [], TimeSpan.Zero);

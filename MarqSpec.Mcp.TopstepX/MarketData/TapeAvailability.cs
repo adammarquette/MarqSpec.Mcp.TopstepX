@@ -21,10 +21,29 @@ public enum TapeUnavailableReason
     Stopped = 4,
 
     /// <summary>
-    /// Another process holds this instrument's tape claim, so this recorder did not subscribe —
-    /// or stood down when its own claim was taken over (gh#404).
+    /// Another process holds this instrument's tape claim, so this recorder did not subscribe
+    /// (gh#404). Distinct from <see cref="ClaimTakenOver"/> and <see cref="ClaimLapsed"/>: those
+    /// are this process losing a claim it held, and they still refuse a read.
     /// </summary>
     HeldByAnotherRecorder = 5,
+
+    /// <summary>
+    /// The recorder stopped because another TopstepX session took this login, and it will not
+    /// reconnect (gh#757).
+    /// </summary>
+    StoppedForSessionConflict = 6,
+
+    /// <summary>
+    /// This process held the claim and lost it to another start. It stood down rather than
+    /// staying a second writer (gh#404).
+    /// </summary>
+    ClaimTakenOver = 7,
+
+    /// <summary>
+    /// This process held the claim and could not renew it before it expired, so it gave the
+    /// instrument up (gh#404).
+    /// </summary>
+    ClaimLapsed = 8,
 }
 
 /// <summary>
@@ -77,8 +96,9 @@ public sealed class TapeAvailability
     public static TapeAvailability NeverStartedBecauseStdio() =>
         new(
             TapeUnavailableReason.NeverStarted,
-            "The trade tape is not recorded under the stdio transport. Run the HTTP transport "
-            + "with MarketData__RecordTape=true.");
+            "The trade tape is not recorded under the stdio transport. Run a separate HTTP process "
+            + "against the same database with MarketData__RecordTape=true. HTTP alone is not enough; "
+            + "the switch defaults off.");
 
     /// <summary><c>RecordTape</c> is off, so the recorder never started.</summary>
     /// <returns>An unavailable marker.</returns>
@@ -119,6 +139,32 @@ public sealed class TapeAvailability
             TapeUnavailableReason.Stopped,
             "The trade-tape recorder stopped. Prints will not be recorded until the process restarts.");
 
+    /// <summary>
+    /// The recorder stopped because this login conflicted with another session. It will not reconnect
+    /// the hub and will not call <c>loginKey</c>. A tool may keep using the token already held until
+    /// that token ages out.
+    /// </summary>
+    /// <returns>An unavailable marker naming the platform and the switch.</returns>
+    public static TapeAvailability StoppedForSessionConflict() =>
+        new(
+            TapeUnavailableReason.StoppedForSessionConflict,
+            "The trade-tape recorder stopped because this TopstepX login conflicted with another session. "
+            + "It will not reconnect the market hub and will not call loginKey, so a new login does not "
+            + "kick the trading platform offline. Tools may keep using the token already held until it "
+            + "ages out, and then they fail instead of logging in. Close that platform and restart this "
+            + "server to record again, or set MarketData__StopOnSessionConflict=false to keep reconnecting.");
+
+    /// <summary>
+    /// The recorder stopped because it had no fresh token and will not call <c>loginKey</c> to get one.
+    /// </summary>
+    /// <returns>An unavailable marker. The reason is <see cref="TapeUnavailableReason.Stopped"/>.</returns>
+    public static TapeAvailability StoppedRatherThanLogin() =>
+        new(
+            TapeUnavailableReason.Stopped,
+            "The trade-tape recorder stopped because it does not hold a fresh TopstepX token, and it "
+            + "will not call loginKey. It will not reconnect the market hub. This does not close login "
+            + "for REST tools. Restart this server to record again.");
+
     /// <summary>Another process holds this instrument's tape claim.</summary>
     /// <param name="holder">The owner recorded on the claim row.</param>
     /// <param name="expiresAt">When that claim lapses unless the holder renews it.</param>
@@ -146,14 +192,14 @@ public sealed class TapeAvailability
     /// </summary>
     /// <returns>An unavailable marker.</returns>
     /// <remarks>
-    /// The same reason as <see cref="HeldByAnotherRecorder(string, DateTimeOffset)"/> and a
-    /// different sentence: no owner is named, because a renewal that fails proves the claim is not
-    /// this process's without proving whose it now is, and naming a guess would be worse than
-    /// naming nobody.
+    /// A different reason from <see cref="HeldByAnotherRecorder(string, DateTimeOffset)"/>. No
+    /// owner is named, because a renewal that fails proves the claim is not this process's
+    /// without proving whose it now is, and naming a guess would be worse than naming nobody.
+    /// A read while this is the state refuses: this process was the recorder and stood down.
     /// </remarks>
     public static TapeAvailability ClaimTakenOver() =>
         new(
-            TapeUnavailableReason.HeldByAnotherRecorder,
+            TapeUnavailableReason.ClaimTakenOver,
             "Another recorder took this instrument's tape claim, so this one stopped recording it "
             + "rather than doubling every volume. Only one process may record an instrument: stop "
             + "the second, or split MarketData__Instruments, then restart.");
@@ -164,14 +210,15 @@ public sealed class TapeAvailability
     /// </summary>
     /// <returns>An unavailable marker.</returns>
     /// <remarks>
-    /// The same reason as <see cref="ClaimTakenOver"/> — this process does not hold the claim —
-    /// and a different sentence, because nobody necessarily took it. Telling an operator to go and
-    /// stop a second recorder that does not exist sends them after the wrong thing; the fault here
-    /// is between this process and the store.
+    /// A different reason from <see cref="ClaimTakenOver"/> and from
+    /// <see cref="HeldByAnotherRecorder(string, DateTimeOffset)"/>. Nobody necessarily took the
+    /// claim. Telling an operator to go and stop a second recorder that does not exist sends them
+    /// after the wrong thing; the fault here is between this process and the store. A read while
+    /// this is the state refuses.
     /// </remarks>
     public static TapeAvailability ClaimLapsed() =>
         new(
-            TapeUnavailableReason.HeldByAnotherRecorder,
+            TapeUnavailableReason.ClaimLapsed,
             "This recorder could not renew its tape claim on this instrument before the claim "
             + "expired, so it stopped recording rather than writing without one — another process "
             + "is entitled to the tape from that moment. Check the database, then restart.");
@@ -204,5 +251,27 @@ public sealed class TapeAvailability
         {
             throw new McpException(Explanation!);
         }
+    }
+
+    /// <summary>
+    /// The sentence for a window that has no closed tape, when this process is not the recorder.
+    /// </summary>
+    /// <returns>Guidance that names the fix and does not tell the caller to stop the recorder.</returns>
+    /// <remarks>
+    /// <see cref="HeldByAnotherRecorder"/>'s own explanation tells an operator who wanted to
+    /// record to stop the other process. That is the wrong fix for a read: the other process is
+    /// the only writer, and stopping it ends the tape. Stdio names a separate HTTP recorder on
+    /// the same database, the same sentence as the README.
+    /// </remarks>
+    public string ExplainNoClosedTape()
+    {
+        if (Reason == TapeUnavailableReason.HeldByAnotherRecorder)
+        {
+            return "Another recorder holds this instrument's tape claim and has not closed a "
+                + "coverage run in this window. Wait for that recorder to finish a listen. "
+                + "There is no market-tape backfill, so an empty answer would look like a quiet market.";
+        }
+
+        return Explanation!;
     }
 }

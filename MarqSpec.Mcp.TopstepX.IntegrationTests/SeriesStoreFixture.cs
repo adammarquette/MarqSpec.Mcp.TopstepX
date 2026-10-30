@@ -19,11 +19,11 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// only run here.
 /// </para>
 /// <para>
-/// <b>Separate from <see cref="SchemaFixture"/> on purpose.</b> That one holds a database the schema suites
-/// share and never empty, because their claims are about the schema rather than its contents. These suites
-/// each assume a store nobody else has written to — the property <c>UseInMemoryDatabase(Guid.NewGuid())</c>
-/// used to give them for free — so this fixture empties the store between tests instead. xUnit runs the
-/// classes of one collection <i>serially</i>, which is what makes emptying it safe.
+/// <b>Separate from <see cref="SchemaFixture"/> on purpose.</b> That fixture also empties its shared database
+/// between the tests that write rows. These suites each assume a store nobody else has written to — the
+/// property <c>UseInMemoryDatabase(Guid.NewGuid())</c> used to give them for free — so this fixture empties
+/// the store between tests instead. xUnit runs the classes of one collection <i>serially</i>, which is what
+/// makes emptying it safe.
 /// </para>
 /// </remarks>
 public sealed class SeriesStoreFixture : IAsyncLifetime

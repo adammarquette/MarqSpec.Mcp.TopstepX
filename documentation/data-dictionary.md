@@ -9,9 +9,10 @@
 gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`),
 gh#404 (`TapeLeases`),
 gh#499 (`SessionBars`),
-gh#501 (`SessionIndicatorValues`)
+gh#501 (`SessionIndicatorValues`),
+gh#709 (`TradingAuditLog`)
 
-One Postgres database, eleven tables — §4 is a retired number, not a twelfth. Entities live in
+One Postgres database, twelve tables — §4 is a retired number, not a thirteenth. Entities live in
 `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
 lockstep with them in the same PR.
 
@@ -115,7 +116,7 @@ it is read alongside rows a window already selected, never searched on.
 | Column | Type | Note |
 |---|---|---|
 | `Venue` `Instrument` `ResolutionMinutes` | | PK |
-| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling` |
+| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling`, `adx` |
 | `Period` | `integer` | PK · part of identity; ATR(14) and ATR(3) are different numbers |
 | `BucketStart` | `timestamptz` | PK · the hypertable's time dimension |
 | `Value` | `numeric(18,8)` | |
@@ -127,6 +128,11 @@ replay reaching for the ATR behind a past decision should find the number that w
 `Period` is `0` for indicators that take none (VWAP is anchored, not windowed), which keeps them from colliding
 with a windowed indicator of the same name. A VWAP with a lookback is a **different calculation**, so it is a
 different name — `vwap-rolling`, at its own period — rather than `vwap` at a non-zero one.
+
+**A name's warm-up decides how far into a contract run its first row lands, and they differ.** Most warm up in
+`n` or `n + 1` bars; `adx` takes `2n`, because it smooths a value that is itself smoothed. So a freshly rolled
+contract holds `plus-di` and `minus-di` rows for buckets where `adx` has none, and that gap is an absence the
+projection is correct to leave rather than a hole in the store (gh#670).
 
 **One name can have several periods here, and every one of them was configured.** Each indicator has a PRIMARY
 period (`Indicators__*Period`) and may have additional ones (`Indicators__Additional*Periods`); the catalogue
@@ -401,10 +407,38 @@ prints that cannot be refetched — the same fact §8 states for the listening l
 chunks older than seven days compress in place. Compression is a different Timescale job from retention;
 `SchemaTests` asserts both (`policy_compression` present on `Trades`, `policy_retention` still empty).
 
+**The export copies a finished UTC day and does not delete rows** (`R-10`, gh#755). A day of
+`TradeTimeUtc` is written once that day has ended, as gzip CSV and Parquet, one pair of files per
+contract: `trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.vN.csv.gz` and `.parquet`, on the mounted
+volume at `TapeExport__Path` (default `/data/tape-exports`). The volume is not created by a migration.
+`Retention__*` is not read; dropping raw tape needs its own ADR. Whether each file was copied, and
+whether a Drive upload of it finished, is §14.
+
 The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md): probe
 `pg_available_extensions`, create it when Timescale is present, warn and leave a plain table when it is not.
 
-Index: `(Instrument, ContractId, TradeTimeUtc)` — the shape of every read.
+Indexes: `(Instrument, ContractId, TradeTimeUtc)` — one instrument, one contract, a window; and
+`(Instrument, TradeTimeUtc)` — the recorder-health read, which names the instrument and the session and not
+the contract (gh#756). When the `timescaledb` extension is installed and `Trades` is a hypertable, that
+second index is created with `timescaledb.transaction_per_chunk`, as its own top-level statement outside
+the migration transaction, so startup does not hold one lock across every chunk. The prepare step only
+marks the session in that case. The context sends the per-chunk statement when the mark is set, and does
+not send it otherwise: plain Postgres rejects the `timescaledb` reloption, and Timescale does not run that
+build inside the prepare procedure. When Timescale is absent the same migration creates a plain
+index on `public."Trades"`, which is the ADR-0004 fallback. That plain `CREATE INDEX` blocks writes
+on `Trades` for the whole build. The per-chunk form commits once per chunk and does not hold one lock
+across the hypertable. An invalid index left by an interrupted build is dropped before the create,
+because `IF NOT EXISTS` would otherwise keep it. The build holds a session advisory lock for its duration,
+because EF commits the history-table lock before a statement that suppresses the migration transaction.
+A second replica **waits** on that lock. `pg_advisory_lock` raises `55P03` only when the session has set
+`lock_timeout`, and this migration does not set it. The lock is released once, after the build, on both
+the plain and the per-chunk path. The lock and the session mark are connection state: the five statements
+run on the one connection `MigrateAsync` keeps open. A script runner that reconnects between them loses
+both. `dotnet ef migrations script` still prints the `timescaledb` reloption unconditionally, because the
+decision to send it is the interceptor, which a script does not run. Startup gives that migration
+`Migrations__CommandTimeoutSeconds` (default 3600) instead of Npgsql's 30-second command timeout, and
+restores the previous timeout afterwards, so a long per-chunk build is not cancelled and rebuilt on the
+next start. The model and the snapshot still declare the index.
 
 **Volume-front is a read over this table, not a filter and not a twelfth table** (gh#219). Per
 `(instrument, contract)` per session, total `Size`. The highest-volume contract is the tape's
@@ -468,6 +502,10 @@ outage is the hole between two closed ranges: they must meet it with no slack on
 
 Not a hypertable. This is a ledger, like §3, not a time series of events.
 
+**Closed ranges are exported with the tape, one contract per day; the still-listening sentinel is not** (`R-10`). A row whose
+`RangeEnd` is `9999-12-31` is not written to `tape-coverage/`. A closed range is filed under the UTC
+day of `RangeStart`. Neither row is deleted by the export.
+
 ## §9 `FootprintCells` — a projection over §7
 
 | Column | Type | Note |
@@ -493,6 +531,12 @@ rebuild reconciles: cells the current tape no longer justifies are removed, not 
 tape yields empty cells, not a fabricated profile. **Two reads that need the contract join §7.**
 
 Not a hypertable. The tape is the high-volume series; this is its projection, rebuildable.
+
+**The export copies these cells anyway** (`R-10`), as gzip CSV and Parquet under
+`footprint-cells/{venue}/{instrument}/{resolution}/`, so a restore is readable before a replay.
+There is still no contract on the file: the cell does not store one. They stay a projection: the
+trades file is the source of truth, and a rebuild still reconciles cells the restored tape no longer
+justifies. A cell is filed under the UTC day of `BucketStart`. The export does not delete it.
 
 **A volume profile is not a twelfth table.** Point of control and the 70% value area are an aggregate over
 these cells plus §8 (`R-9`, gh#221). The host reads the cells and the listening ledger and calls Domain;
@@ -636,7 +680,7 @@ ending at the close.
 |---|---|---|
 | `Venue` `Instrument` | | PK |
 | `Session` | `varchar(16)` | PK · the closed session vocabulary, same name and same width as §11 |
-| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling` |
+| `Indicator` | `varchar(32)` | PK · lowercase stable name — `atr`, `rsi`, `macd-signal`, `vwap-rolling`, `adx` |
 | `Period` | `integer` | PK · part of identity, and it counts **sessions** here — an `sma` at 20 over `rth` is twenty trading days |
 | `BucketStart` | `timestamptz` | PK · the session bar's `OpenUtc` |
 | `Value` | `numeric(18,8)` | |
@@ -677,6 +721,88 @@ justify.
 §9, §10 and §11.
 
 Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of every read, mirroring §2's.
+
+## §13 `TradingAuditLog` — append-only trading attempts
+
+| Column | Type | Note |
+|---|---|---|
+| `Id` | `bigint` | PK · `GENERATED ALWAYS AS IDENTITY` |
+| `AttemptedAt` | `timestamptz` | When the attempt was recorded, UTC |
+| `AccountId` | `integer` | Venue account id |
+| `ParsedStage` | `varchar(16)` | Stage from a **fresh** account fetch — `Practice`, `Evaluation`, `Funded`, `Unknown` |
+| `Tool` | `varchar(64)` | MCP tool name, e.g. `place_order` |
+| `IdempotencyKey` | `varchar(256)` | Caller-supplied key. `TradingAuditClaims.MaxKeyLength` is 256, the column width. Scoped with `AccountId` and `Tool` |
+| `RequestHash` | `varchar(64)` | SHA-256 hex of the normalised request, including `dryRun` — **no raw body, no secrets** |
+| `DryRun` | `boolean` | Preview (`dryRun: true`) vs transmit. Also a part of `RequestHash` |
+| `ContractCount` | `integer` | Cap charge on `Attempted`; the pre-send `Unknown` claim and other outcome rows use `0`. Session-day rollups sum `Attempted` on `place_order`, `modify_order`, and `partial_close_position` (5 PM America/Chicago boundary) |
+| `Outcome` | `varchar(32)` | Closed outcome name — `Attempted`, `Preview`, `Refused`, `Live`, `Failed`, `Unknown` |
+| `VenueErrorCode` | `varchar(64)` | Venue business error when a write ran; null on the pre-send claim |
+| `OrderId` | `bigint` null | Broker order id on a `Live` row, so a replay can return it. Null otherwise |
+
+One row for **every** trading attempt that passes validation — preview, refusal, or live — before the
+outcome is returned (ADR-0024 §5, gh#707 / gh#709 / gh#750). A size, price, non-positive partial-close, or
+over-long-key refusal writes no row, and neither does `trading_disabled` before the claim. The kill switch,
+stage, allowlist, denylist, caps, a blank key, an idempotency conflict, a gateway refusal, and
+`trading_disabled` after the claim write `Refused`. The idempotency claim **is** a row in this table: one
+`Unknown` row inserted before the send, unique on `(AccountId, Tool, IdempotencyKey)` where
+`Outcome = 'Unknown'` and the key is not empty. The migration `AddTradingAuditIdempotencyClaim` that creates
+that index temporarily disables `trading_audit_log_reject_update` — the `BEFORE UPDATE` trigger that rejects
+audit updates, because the table is append-only and those rows cannot be rewritten while the trigger is on —
+rewrites every extra `Unknown` row for the same account, tool and key to `Attempted` at contract count 0
+with `VenueErrorCode` `duplicate_unknown_claim`, keeps the earliest `Unknown` (`MIN(Id)`), then re-enables
+the trigger before the index is created. A replay prefers a later `Live`, then `Failed`, then a `Refused`
+row written after the current claim with the same request hash. An earlier refusal, or a later refusal with
+a different hash, does not override that claim. Empty keys are outside the
+unique index. `modify_order` charges the full new size on its `Attempted` row, not a delta.
+
+**The cap charge sits on `Attempted`, and outcome rows stay at `0`.** A gateway refusal after the write-ahead
+appends a second `Attempted` row with the negated count, then `Refused` at `0`, so the session-day sum nets
+to zero. A thrown send leaves that charge on the write-ahead row; its `Unknown` row is `0`.
+
+**Append-only at the database.** `BEFORE UPDATE` and `BEFORE DELETE` triggers raise if either is attempted.
+The idempotency migration is the one supported exception: it disables `trading_audit_log_reject_update` for
+the duplicate-`Unknown` rewrite described above, then enables it again before the unique index is created.
+Tests truncate the table between cases; production has no other mutation path.
+
+**Not a hypertable** — volume is bounded by human-scale order attempts, not bar or tape rates.
+
+Indexes: `(AccountId, AttemptedAt)` for an account's history; `(IdempotencyKey)` for correlating retries;
+unique partial `(AccountId, Tool, IdempotencyKey)` for the pre-send claim.
+
+## §14 `TapeExportReceipts` — status of one export file
+
+| Column | Type | Note |
+|---|---|---|
+| `Day` | `date` | UTC day the file covers. Part of the primary key |
+| `Kind` | `varchar(32)` | `trades`, `tape-coverage`, `footprint`, or `manifest` |
+| `Format` | `varchar(16)` | `csv.gz`, `parquet`, or `json` |
+| `Venue` | `varchar(64)` | Empty for the day manifest |
+| `Instrument` | `varchar(32)` | Empty for the day manifest |
+| `ContractId` | `varchar(64)` | Empty for footprint files and the manifest. A cell has no contract (§9) |
+| `ResolutionMinutes` | `integer` | Bar size for a footprint file; `0` otherwise |
+| `RelativePath` | `varchar(512)` | Path under `TapeExport__Path`, `/` separators |
+| `Sha256` | `varchar(64)` | Lowercase hex of the file bytes |
+| `RowCount` | `integer` | Data rows. `0` for a manifest |
+| `ExportedAtUtc` | `timestamptz` | When this status was written |
+| `DriveFileId` | `varchar(128)` | Last Drive file id that landed. A failed attempt does not clear it |
+| `UploadState` | `varchar(16)` | `pending`, `drive_disabled`, `uploaded`, or `failed` |
+| `FailureType` | `varchar(128)` | Exception type name when `UploadState` is `failed`, or `Timeout`, `LockLost`, or `IdentityBusy`. Null otherwise. Never a credential |
+| `FailureStatus` | `integer` | HTTP status when the client reported one. Null when there is no status |
+
+Primary key: `(Day, Kind, Format, Venue, Instrument, ContractId, ResolutionMinutes)`. A second pass of
+the same file updates this row (`ON CONFLICT DO UPDATE`). It does not insert another, and it does not
+delete tape.
+
+**This is not a retention policy** (`R-10.7`, gh#755). It records that a file was written and whether
+the Drive upload finished, so a later decision can check. `Retention__*` is not read.
+`UploadState = failed` means the local file and the local rows are still there, and `DriveFileId` is
+the last id that landed. `drive_disabled` means Drive was not configured. While Drive stays off that
+state counts as finished. Once Drive is on, those days are exported. `pending` is committed in its
+own transaction before the upload, so another session can see it, and it is not a finished copy. A
+pass that finds pending rows logs the count. The file id is written in a second transaction after
+the upload returns. Not a hypertable.
+
+Index: `(Day, UploadState)` — the read that decision would make.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

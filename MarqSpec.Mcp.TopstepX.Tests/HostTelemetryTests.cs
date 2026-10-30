@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using FluentAssertions;
@@ -6,6 +7,7 @@ using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
+using Microsoft.Extensions.Logging;
 
 namespace MarqSpec.Mcp.TopstepX.Tests;
 
@@ -77,6 +79,31 @@ public sealed class HostTelemetryTests
         measurement.Tags[HostTelemetry.SymbolTag].Should().Be(Symbol);
         measurement.Tags[HostTelemetry.ResolutionTag].Should().Be(5);
         measurement.Tags[HostTelemetry.OutcomeTag].Should().Be(outcome);
+    }
+
+    [Fact]
+    public void AnExecutionWriteIsCountedWithItsOperationAndRefusalWhenItsScopeCloses()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Collect(telemetry, HostTelemetry.ExecutionWritesInstrument);
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (HostTelemetry.ExecutionWriteScope scope = telemetry.ExecutionWrite(ExecutionOperation.PlaceOrderOperation))
+        {
+            writes.LastMeasurement.Should().BeNull();
+            scope.Outcome(ExecutionWriteRefusal.TradingDisabled);
+        }
+
+        writes.LastMeasurement!.Value.Should().Be(1);
+        writes.LastMeasurement.Tags[HostTelemetry.OperationTag].Should().Be(ExecutionOperation.PlaceOrderOperation);
+        writes.LastMeasurement.Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.TradingDisabled);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("execution." + ExecutionOperation.PlaceOrderOperation);
+        span.GetTagItem(HostTelemetry.OperationTag).Should().Be(ExecutionOperation.PlaceOrderOperation);
+        span.GetTagItem(HostTelemetry.RefusalTag).Should().Be(ExecutionWriteRefusal.TradingDisabled);
     }
 
     [Fact]
@@ -176,6 +203,122 @@ public sealed class HostTelemetryTests
         span.Parent.Should().Be(parent);
         span.GetTagItem(HostTelemetry.SymbolTag).Should().Be(Symbol);
         span.GetTagItem(HostTelemetry.ResolutionTag).Should().Be(15);
+    }
+
+    [Theory]
+    [InlineData(SessionConflictSource.Hub)]
+    [InlineData(SessionConflictSource.Api)]
+    public void SessionConflict_KnownSource_RecordsASpanAndACounter(string source)
+    {
+        // gh#757. The source is a closed vocabulary. The vendor's close sentence is not a tag: it
+        // is a new series per distinct sentence, and a place a credential can land.
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> conflicts = Collect(telemetry, HostTelemetry.TapeSessionConflictsInstrument);
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (telemetry.SessionConflict(source))
+        {
+        }
+
+        CollectedMeasurement<long> measurement = conflicts.LastMeasurement!;
+        measurement.Value.Should().Be(1);
+        measurement.Tags[HostTelemetry.SourceTag].Should().Be(source);
+        measurement.Tags.Should().NotContainKey(HostTelemetry.SymbolTag);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("tape.session_conflict");
+        span.Kind.Should().Be(ActivityKind.Internal);
+        span.GetTagItem(HostTelemetry.SourceTag).Should().Be(source);
+        span.GetTagItem(HostTelemetry.SymbolTag).Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(SessionRenewalRefusal.Latched)]
+    [InlineData(SessionRenewalRefusal.Outage)]
+    [InlineData(SessionRenewalRefusal.Conflict)]
+    [InlineData(SessionRenewalRefusal.ClosedSuspecting)]
+    [InlineData(SessionRenewalRefusal.ClosedProbe)]
+    [InlineData(SessionRenewalRefusal.ClosedBackoff)]
+    [InlineData(SessionRenewalRefusal.ClosedLatched)]
+    public void SessionRenewalRefusal_KnownReason_RecordsASpanAndACounter(string reason)
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> refusals = Collect(telemetry, HostTelemetry.SessionRenewalRefusalsInstrument);
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (telemetry.SessionRenewalRefusal(reason))
+        {
+        }
+
+        CollectedMeasurement<long> measurement = refusals.LastMeasurement!;
+        measurement.Value.Should().Be(1);
+        measurement.Tags[HostTelemetry.ReasonTag].Should().Be(reason);
+        measurement.Tags.Should().NotContainKey(HostTelemetry.SymbolTag);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("session.renewal_refusal");
+        span.Kind.Should().Be(ActivityKind.Internal);
+        span.GetTagItem(HostTelemetry.ReasonTag).Should().Be(reason);
+        span.GetTagItem(HostTelemetry.SymbolTag).Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(SessionRenewalReopen.Expired)]
+    [InlineData(SessionRenewalReopen.Exhausted)]
+    public void SessionRenewalReopen_KnownReason_RecordsASpanAndACounter(string reason)
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> reopens = Collect(telemetry, HostTelemetry.SessionRenewalReopensInstrument);
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (telemetry.SessionRenewalReopen(reason))
+        {
+        }
+
+        CollectedMeasurement<long> measurement = reopens.LastMeasurement!;
+        measurement.Value.Should().Be(1);
+        measurement.Tags[HostTelemetry.ReasonTag].Should().Be(reason);
+        measurement.Tags.Should().NotContainKey(HostTelemetry.SymbolTag);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("session.renewal_reopen");
+        span.Kind.Should().Be(ActivityKind.Internal);
+        span.GetTagItem(HostTelemetry.ReasonTag).Should().Be(reason);
+        span.GetTagItem(HostTelemetry.SymbolTag).Should().BeNull();
+    }
+
+    [Theory]
+    [InlineData(SessionRecoveryLogin.Failed)]
+    [InlineData(SessionRecoveryLogin.CachedToken)]
+    [InlineData(SessionRecoveryLogin.Succeeded)]
+    public void SessionRecoveryLogin_KnownOutcome_RecordsASpanAndACounter(string outcome)
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> recoveries = Collect(telemetry, HostTelemetry.SessionRecoveryLoginsInstrument);
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (telemetry.SessionRecoveryLogin(outcome))
+        {
+        }
+
+        CollectedMeasurement<long> measurement = recoveries.LastMeasurement!;
+        measurement.Value.Should().Be(1);
+        measurement.Tags[HostTelemetry.ReasonTag].Should().Be(outcome);
+        measurement.Tags.Should().NotContainKey(HostTelemetry.SymbolTag);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("session.recovery_login");
+        span.Kind.Should().Be(ActivityKind.Internal);
+        span.GetTagItem(HostTelemetry.ReasonTag).Should().Be(outcome);
+        span.GetTagItem(HostTelemetry.SymbolTag).Should().BeNull();
     }
 
     [Fact]
@@ -596,6 +739,58 @@ public sealed class HostTelemetryTests
         }
     }
 
+    [Fact]
+    public void RecordBookkeepingFault_CountsEvenWhenTheLoggerThrows()
+    {
+        ThrowingLogger logger = new();
+        using HostTelemetry telemetry = new(logger);
+        using MetricCollector<long> faults = Collect(telemetry, HostTelemetry.BookkeepingFaultsInstrument);
+
+        telemetry.RecordBookkeepingFault();
+
+        faults.GetMeasurementSnapshot().Should().ContainSingle().Which.Value.Should().Be(1);
+        logger.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public void ABookkeepingFaultOnAnotherMeterWithTheSameNameIsIgnored()
+    {
+        using HostTelemetry watched = new();
+        using HostTelemetry other = new();
+        BookkeepingFaultCounter counter = new();
+        using MeterListener listener = counter.Listen(watched);
+
+        other.RecordBookkeepingFault();
+        counter.Value.Should().Be(0);
+
+        watched.RecordBookkeepingFault();
+        counter.Value.Should().Be(1);
+    }
+
+    [Fact]
+    public void ConcurrentBookkeepingFaultsSumExactly()
+    {
+        const int threads = 8;
+        const int perThread = 2_000;
+        using HostTelemetry telemetry = new();
+        BookkeepingFaultCounter counter = new();
+        using MeterListener listener = counter.Listen(telemetry);
+
+        Parallel.For(
+            0,
+            threads,
+            new ParallelOptions { MaxDegreeOfParallelism = threads },
+            _ =>
+            {
+                for (int i = 0; i < perThread; i++)
+                {
+                    telemetry.RecordBookkeepingFault();
+                }
+            });
+
+        counter.Value.Should().Be(threads * perThread);
+    }
+
     private static MetricCollector<long> Collect(HostTelemetry telemetry, string instrument) =>
         Collect<long>(telemetry, instrument);
 
@@ -630,5 +825,35 @@ public sealed class HostTelemetryTests
 
         ActivitySource.AddActivityListener(listener);
         return listener;
+    }
+
+    private sealed class ThrowingLogger : ILogger<HostTelemetry>
+    {
+        public int Calls { get; private set; }
+
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            Calls++;
+            throw new InvalidOperationException("logger failed");
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose()
+            {
+            }
+        }
     }
 }

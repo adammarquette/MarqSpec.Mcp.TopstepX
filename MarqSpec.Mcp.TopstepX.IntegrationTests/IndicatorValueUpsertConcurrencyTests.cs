@@ -36,8 +36,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class IndicatorValueUpsertConcurrencyTests(SchemaFixture fixture)
+public sealed class IndicatorValueUpsertConcurrencyTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     /// <summary>The bucket whose bar is restated, so the values over it have to be rewritten.</summary>
     private const int RestatedBucket = 15;
 

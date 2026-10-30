@@ -30,7 +30,13 @@ WORKDIR /app
 # this it prints "Cannot load library libgssapi_krb5.so.2" as the FIRST line in the log. It is harmless -- the
 # connection succeeds -- which is precisely the problem: an alarming error above a successful startup sends
 # the next person debugging something that is not broken.
-RUN apt-get update  && apt-get install -y --no-install-recommends libgssapi-krb5-2  && rm -rf /var/lib/apt/lists/*
+# setpriv is already on this image: util-linux is Essential in Debian and the aspnet:10.0 layer ships it.
+# The entrypoint (gh#767) uses it to drop from root to uid 64198 with a plain execve, so the app stays PID 1.
+# runuser is not used there: it forks and stays as the parent. Nothing is installed for this.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgssapi-krb5-2 \
+    && rm -rf /var/lib/apt/lists/* \
+    && test -x /usr/bin/setpriv
 
 # Non-root. This process holds brokerage credentials and reaches the public internet; there is no reason for
 # it to be able to write to its own image.
@@ -39,33 +45,34 @@ USER 64198
 
 COPY --from=build --chown=64198:64198 /app .
 
+# Root-owned and not writable by 64198, because a root start (RAILWAY_RUN_UID=0) runs it before dropping.
+COPY --chmod=0755 scripts/prepare-tape-volume.sh /usr/local/bin/prepare-tape-volume.sh
+
 # The ICU data behind TimeZoneInfo.FindSystemTimeZoneById("America/Chicago"). Every session rule in this
 # codebase is Central wall-clock, so invariant globalization would break gap detection rather than merely
 # formatting -- and it would do so by reporting plausible-looking wrong buckets.
 ENV DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
 # ASPNETCORE_HTTP_PORTS is INHERITED from mcr.microsoft.com/dotnet/aspnet:10.0 as 8080, and is left standing
-# deliberately. It is why ConfigureDefaultBinding's ephemeral loopback default never applies in here: an
-# address is always named inside the image, so stdio binds a fixed 8080 on every container interface rather
-# than 127.0.0.1:0 (gh#446; ADR-0007's 2026-09-03 update).
+# deliberately for the HTTP transport. Clearing it here was measured and REJECTED (ADR-0007, 2026-09-03):
+# `ASPNETCORE_HTTP_PORTS=""` under Mcp__Transport=Http drops Kestrel to http://localhost:5000, which
+# inside a container is unreachable from outside whatever `-p` mapping is given.
 #
-# That is not an exposure -- read off Program.cs, not measured. Nothing is published for a stdio container,
-# and MapMcp sits inside the Http branch of Program.cs, so the listener answers no MCP route to anyone; each
-# container has its own network namespace besides, so two of them cannot collide the way two host processes
-# did in gh#392.
-#
-# Clearing it here was measured and REJECTED. `ASPNETCORE_HTTP_PORTS=""` does give stdio a loopback ephemeral
-# port -- but under Mcp__Transport=Http it drops Kestrel to its own default, http://localhost:5000, which
-# inside a container is unreachable from outside whatever `-p` mapping is given. It fixes the transport that
-# serves nothing and silently breaks the one that serves everything -- and it would answer gh#444, whether the
-# HTTP transport is supported outside compose, as a side effect of a change about something else.
-# docker-compose.yml sets ASPNETCORE_HTTP_PORTS: "" explicitly, which is where that override belongs.
+# Under stdio the inherited variable is not an operator-named listener. ConfigureDefaultBinding ignores
+# it and starts a server that binds no port, so two `docker run --rm -i` containers sharing a network
+# namespace no longer collide on 8080 (gh#696). MapMcp stays inside the Http branch. An operator who
+# wants a health or metrics listener under stdio names one with ASPNETCORE_URLS or ASPNETCORE_HTTPS_PORTS.
+# docker-compose.yml sets ASPNETCORE_HTTP_PORTS: "" explicitly, which is where that override belongs
+# for the composed HTTPS path.
 
 # Documentary only -- EXPOSE publishes nothing. 8443 is right for the deployment this image supports:
 # docker-compose.yml sets ASPNETCORE_HTTPS_PORTS=8443 and clears ASPNETCORE_HTTP_PORTS above, because the
-# composed server has been HTTPS-only since gh#416. Outside compose, with no ASPNETCORE_* override, the
-# inherited ASPNETCORE_HTTP_PORTS=8080 named above is what actually binds -- measured, fresh build, `docker
-# run -i` with no compose: "Now listening on: http://[::]:8080" -- and EXPOSE still says 8443 for that case
-# too. A bare `docker run` is not the deployment this number describes.
+# composed server has been HTTPS-only since gh#416. A bare `docker run -i` is stdio and binds no HTTP
+# port (gh#696). The inherited ASPNETCORE_HTTP_PORTS=8080 still binds under Mcp__Transport=Http with no
+# override, which is the HTTP-without-compose recipe, not this EXPOSE. A bare `docker run` is not the
+# deployment this number describes.
 EXPOSE 8443
-ENTRYPOINT ["dotnet", "MarqSpec.Mcp.TopstepX.dll"]
+# gh#767. Started as 64198 (the default above) the script logs one line and execs dotnet unchanged. Started as
+# root (RAILWAY_RUN_UID=0, the production recorder only) it chowns the /data tape volume, then drops to
+# 64198 and execs dotnet. See scripts/prepare-tape-volume.sh and documentation/deployment.md.
+ENTRYPOINT ["/usr/local/bin/prepare-tape-volume.sh", "dotnet", "MarqSpec.Mcp.TopstepX.dll"]

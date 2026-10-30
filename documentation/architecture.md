@@ -147,7 +147,12 @@ ADR-0022's *Update (2026-09-08)* (gh#538).
 5. **Fetch** each remaining range, paged at `1000 × barSize` — the gateway caps a history call at 1000 bars and
    silently truncates past it. The pages are **paced** to the vendor's 50-per-30-seconds allowance on the
    history endpoint, shared process-wide, because a cold year of five-minute bars is 106 requests back to back
-   (`R-1.10`, [wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)). Every bar is **stamped
+   (`R-1.10`, [wiki — rate limits](wiki/pages/projectx-gateway-api.md#rate-limits)). Past the vendor's depth a
+   page returns **empty with no error** — Simulated-tier minute bars are a rolling ~63 days, hourly about a
+   year ([wiki — history depth](wiki/pages/projectx-gateway-api.md#expired-contracts-and-history-depth--measured-2026-09-06-on-the-simulated-tier))
+   — so the walk still issues those pages rather than inventing a skip that would also skip the empty-range
+   memo (`R-1.7`). The tool payload reports the range that actually came back as `available.earliest` /
+   `available.latest` (`R-1.16`, gh#695). Every bar is **stamped
    with the contract it was fetched from**, here and nowhere else: one layer up, the series is keyed by the
    symbol alone and the fact is gone ([ADR-0011](adr/0011-contract-roll-boundary.md)).
 
@@ -728,8 +733,10 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
 
 - **stdio** — what an MCP client launches locally. **All logging goes to stderr**; anything on stdout corrupts
   the protocol frame, and it surfaces as a confusing handshake error rather than as a logging problem. The
-  host still starts Kestrel in this mode, on an **ephemeral loopback port** it never serves from — a
-  well-known one stopped a second session starting at all (gh#392).
+  host still starts in this mode, but it **binds no HTTP port** unless the operator named one for
+  health or metrics — the aspnet image's inherited 8080 is not that opt-in, and two stdio containers
+  sharing a namespace collided on it (gh#696). A well-known port stopped a second *host* session
+  starting at all (gh#392).
   **Console logging is the floor, not the ceiling** — where the lines go *beyond* the console is
   [ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md): logs, traces and metrics leave the host as **OTLP and
   in no other form**, behind a collector the host never names, so the backend is a deployment edit rather than
@@ -749,12 +756,14 @@ One host, one tool registration, two ways in ([ADR-0007](adr/0007-dual-transport
   VPC behind an Application Load Balancer, OAuth 2.1 with Cognito-issued tokens in place of the static token,
   an ACM certificate in place of the local CA — is
   [ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md), and is never compose with one line widened.
-  The infrastructure that shape runs on — Fargate behind one load balancer per environment, Timescale on
-  EFS, CDK in C#, Cognito as the issuer, OIDC deploys — is [ADR-0023](adr/0023-aws-deployment-topology.md).
+  Hosting that shape is Docker: the [`Dockerfile`](../Dockerfile) and compose stack in this repository, or
+  the GHCR image `release.yml` publishes — see [`deployment.md`](deployment.md). [ADR-0023](adr/0023-aws-deployment-topology.md)
+  described an AWS topology that was superseded; OAuth issuer and client configuration remain product
+  settings, not CDK outputs.
 
 ### The one path that answers without a credential
 
-Under HTTP the pipeline is three calls in one order: the liveness probe, then the bearer gate, then `/mcp`.
+Under HTTP the pipeline is the liveness probe, then the bearer gate, then `/mcp` and `GET /health/recorder`.
 **`GET /health` answers `200 application/json` with no `Authorization` header** — `{status, store, version,
 digest}` — and **every other path, method and casing stays behind the gate**, `/healthz` and
 `/health/anything` included. A load balancer's target-group probe has no credential to send, so without this
@@ -770,6 +779,17 @@ Two things about it are easy to undo by accident:
   no round trip. A probe every 30 s per task that opened a database connection would be load rather than a
   measurement of it. An unavailable store is still `200`: this is **liveness**, and the tools needing no store
   answer normally, so killing the task would replace a degraded server with no server.
+
+`GET /health/recorder` is a different request (R-5.14, gh#756). It returns the same payload as
+`get_recorder_health` — hub connection, the last stored print of each contract active in the elapsed
+session, `TapeCoverage` holes in that session, and whether the database answers now — and it is mapped
+after the gate, so it stays authenticated. A contract whose prints and coverage ended before the session
+is not a row. It is not the probe: a down feed is still HTTP 200, and it does open a database connection,
+which is why it is not on the 30 s check. The body carries no connection string and no token. A declared
+early close shortens only this report's session. The report span is `recorder.health`, and the HTTP span
+carries the same `outcome`. Tracing excludes only the exact
+`/health` probe, matched ordinally, the same comparison the probe uses, so `/Health` stays behind the gate
+and is still traced.
 
 `version` and `digest` come from the optional `Deployment__Version` / `Deployment__ImageDigest`, `unknown`
 when unset. Nothing here declares a version in a file — the tag is the version
@@ -797,7 +817,20 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.ticks` | counter, prints | `symbol` | `TradeTapeRecorder`, where the print landed |
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
+| `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
+| `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`). One measurement per pass for a repeated outcome |
+| `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
+| `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent \| drive_orphan_pending · `operation` = upload \| lock · `reason` = uploaded \| retried \| upload_timeout \| permanent \| failed \| disabled \| orphan_pending \| identity_busy \| lock_lost \| lock_fault | `TapeExportPass` records `drive_disabled` once when Drive is off, `drive_orphan_pending` for receipts still pending, and exactly one terminal measurement per file. `drive_uploaded` only when the receipt is `uploaded`. `drive_failed` with `identity_busy` or `lock_lost` when the lock does not stay held. A lost lock wins over a Drive failure on the same file: the receipt is `LockLost`, and the counter and the `tape.upload` span are `lock_lost` once, not also `failed`, `permanent`, or `upload_timeout`. The uploader records `drive_retried` only. The pass records a Drive timeout, a permanent failure, or another Drive failure after the probe shows the lock is still held. A lock-session exception that is not a dropped connection is `lock_fault` once and `export_failed`, and the pass continues. The `tape.upload` span covers that file's upload and its retries. When `lock_lost` supersedes a Drive failure, the span tag `drive.failure_type` names that Drive error (gh#755, gh#804, `R-10.6`). `drive_retried` counts the retries, not one event per attempt. A lock lost after the bytes land is `lock_lost`, not `drive_uploaded` |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
+| `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
+
+`mcp.recorder.health.reads` reuses the `outcome` tag key. Its values are `ok`, `degraded`, `unavailable` and
+`timeout`, not the cache `hit` / `miss` / `partial` set. `ok` means the hub is up, every reported contract is
+listening, the database answered, and the elapsed session has no hole. `timeout` means the database check
+exceeded its deadline; the wire still says `database` Unavailable, and a caller who cancelled is not this
+value and is not counted. This process reuses a report for five seconds, so a tight poll does not scan the
+tape again and does not count a second read. A reused reply carries `cachedAtUtc` and `ageMs`; a reply that
+was just built omits both. A build the caller cancelled is not stored.
 
 **`resolution` and `session` are alternatives, never both, and which one a measurement carries is what says
 which kind of series it was over** (gh#501). A session series has no resolution — its window is wall-clock
@@ -863,7 +896,8 @@ branches registered ahead of it. Under **`StaticToken`** — the default, the co
 what it was before gh#512. Under **`OAuth`** — the non-loopback instance of
 [ADR-0021](adr/0021-a-non-loopback-instance-is-supported.md), Amazon Cognito issuing — the pipeline is four
 calls in one order: the liveness probe, the **protected-resource metadata** (a second terminal branch, for the
-same reason as the first: a connector reads it before it has a token), the **OAuth gate**, then `/mcp`.
+same reason as the first: a connector reads it before it has a token), the **OAuth gate**, then `/mcp` and
+`GET /health/recorder`.
 
 The OAuth gate is `Microsoft.AspNetCore.Authentication.JwtBearer` doing the cryptography — the signing keys
 discovered from `{issuer}/.well-known/openid-configuration`, `iss` compared byte for byte with
@@ -892,7 +926,7 @@ carrying the fix, rather than a dead process (ADR-0007):
 
 | Absent | What still works | What refuses |
 |---|---|---|
-| Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts` | Anything reading bars, indicators, levels or observations, with an `McpException` naming the fix — start the store, or set `ConnectionStrings__Default`. The **log** names the target too — `host`, `port`, `database`, `user`, never the password — but the caller does not (gh#551). `Store__StartupWaitSeconds` bounds how long startup retries first (gh#514) |
+| Database | The tool list, `list_instruments`, `get_market_session`, `search_contracts`, and `get_recorder_health` (it answers with `database` Unavailable and `gaps` omitted, R-5.14) | Anything reading bars, indicators, levels or observations, with an `McpException` naming the fix — start the store, or set `ConnectionStrings__Default`. The **log** names the target too — `host`, `port`, `database`, `user`, never the password — but the caller does not (gh#551). `Store__StartupWaitSeconds` bounds how long startup retries first (gh#514) |
 | Credentials | Everything served from the store, plus session and instrument reference | Contract resolution, account reads, and any cache miss |
 | Embedding key | Recording and searching observations — search matches text instead of meaning | Nothing |
 | OTLP endpoint | Everything — no exporter is registered, no background exporter thread runs, and nothing warns about a collector that is not there | Nothing; the server simply emits no telemetry ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)) |
@@ -930,7 +964,18 @@ the database row are load-bearing once this runs somewhere without an operator w
 
 The one thing that still fails hard is a migration that fails against a database which **did** answer. That is
 a defect here, not an environment fact, and serving reads against an unverified schema is worse than not
-starting.
+starting. `Migrations__CommandTimeoutSeconds` (1..604800, default 3600, `ValidateOnStart`) is the command
+timeout for that migration only. `604800` is a typo guard. The limit that stops a deploy is the
+orchestrator's health check, which is shorter, because the migration runs before the process listens
+([`deployment.md`](deployment.md)). Npgsql's 30-second default is shorter than a per-chunk index build on a
+large `Trades` hypertable, and a cancel there leaves an invalid index that the next start drops and rebuilds
+under the same cap (gh#756). The previous timeout is restored when the migration returns, including when
+it throws. The five statements
+that build `IX_Trades_Instrument_TradeTimeUtc` share one connection; the session advisory lock and the
+per-chunk mark do not survive a reconnect, and a second replica waits on the lock rather than receiving
+`55P03` — that code is raised only when `lock_timeout` is set, which this migration does not do.
+`dotnet ef migrations script` emits the Timescale reloption unconditionally, because the skip lives in the
+context interceptor rather than in the script.
 
 ## The embedding write
 
@@ -1076,9 +1121,113 @@ cannot hide as `SingleContract` — or omitted when the tape cannot prove a flip
 is live only; a historical `asOfUtc` omits `gatewayContractId` and `agree` rather than
 dating today's pick. It does not fetch bars and does not write a roll row.
 
+## The tape export — a copy that outlives the container
+
+`Trades`, closed `TapeCoverage` and `FootprintCells` are the rows a reset can destroy and no venue call
+can put back (`R-10`, gh#755). `TapeExportWorker` is a `BackgroundService` registered beside the recorder.
+It runs only when the transport is HTTP **and** `TapeExport__Enabled` is true (default false). It waits
+until `TapeExport__Schedule` (default `06:00` UTC, exact `HH:mm`) and runs only while this process holds
+a recorder lease. A restart does not export before the next schedule. `export-tape` and `import-tape`
+call the same pass and do not read `Enabled`.
+
+**Where the files go.** Exports write to a mounted volume at `TapeExport__Path`, default
+`/data/tape-exports`. The process creates `trades/`, `tape-coverage/`, `footprint-cells/` and
+`manifests/` under it and does not create the volume. An `s3://` URI and a relative path are refused
+as that path. `TapeExport__Format` accepts only `csv.gz+parquet`: both files, not a choice of one.
+Trades and closed coverage are one pair per contract per day,
+`trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.vN.csv.gz` and `.parquet` (coverage under
+`tape-coverage/`). `N` is the generation. Footprint cells have no contract column, so those files are
+`footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.vN.csv.gz` and `.parquet`. The manifest is
+`manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`), written last by a temp file, fsync, and rename, and
+it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
+An older generation is left on disk.
+The image user is uid 64198. Railway allows one volume per service and mounts it as root at `/data`.
+Since gh#767 the image `ENTRYPOINT` is `scripts/prepare-tape-volume.sh`
+([deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755)). Started as 64198 (the default) it
+execs `dotnet` unchanged. Started as root it refuses symlinks, `chown -h` only top-level entries of `/data`
+that are not already uid 64198, then `setpriv` drops to 64198 and execs `dotnet` as PID 1. Export on Railway
+stays blocked by the template (gh#774, `[export-blocked]`) until `EXPORT_UNBLOCKED` is flipped; do not set
+`RAILWAY_RUN_UID=0` or enable the export on Railway before then. A volume the application cannot write is
+still a skipped pass, not a crash and not a silent success.
+A key placed after start stays root-owned mode 0644 until the next start, or until it is chowned
+and chmodded at placement time. The committed compose file forwards the environment variables and
+does not mount the volume.
+
+**Drive is optional and additive** (`R-10.6`, [ADR-0026](adr/0026-drive-file-scope-for-tape-export.md)).
+`TapeExport__Drive__FolderId` plus a credential turn it on. Prefer
+`TapeExport__Drive__ServiceAccountJsonPath` (on Railway, `/data/keys/drive-sa.json`). Inline
+`TapeExport__Drive__ServiceAccountJson` is visible to anyone who can inspect the container. Empty
+leaves Drive off and the disabled uploader records nothing; the pass counts one `drive_disabled`.
+The OAuth scope is `drive.file`. The identity is `appProperties` plus the stored file id, not the
+display name. Nothing is trashed. Day folders are created with `appProperties` and re-listed after
+create; two processes converge on the lexicographically first id and may leave one empty extra
+folder. A 404 drops the process-wide folder cache. Two uploads of one identity share one direct
+session `pg_advisory_lock` for the pass (not the pooled EF connection, and not transaction-mode
+PgBouncer). The key is `hashtextextended` of the identity (`objsubid` 1), which does not collide with
+the trading coordinator's two-int advisory locks (`objsubid` 2). The connection sets
+`lock_timeout` to 30 seconds and TCP socket keepalive to 30 seconds (not Npgsql's keepalive query),
+and it is not returned to the pool. The lock is released in a `finally` before the next file, not
+only when the connection is disposed. A drop mid-upload is `LockLost`: that file is failed, any
+returned file id is kept, the counter is `lock_lost` rather than `drive_uploaded`, and the pass
+reopens the same connection for the next file. A Drive failure on that same file is not a second
+count. The lost lock is the one terminal measurement, because that is the receipt. A lock timeout is `IdentityBusy` and the pass
+continues. Both record a `tape.upload` span and a counter tagged with operation and reason. `pending` is committed before the upload. The file id is
+committed after. Rows still `pending` at the start of a pass are logged and counted
+`drive_orphan_pending`, then retried. A `drive_disabled` day is finished only while Drive is off;
+turning Drive on exports it. A transient failure waits with exponential backoff and jitter, or
+`Retry-After` when the response sends one (an HTTP-date is read from the process clock), capped at
+30 seconds, up to three attempts and a two-minute deadline. A deadline that fires during the wait
+records `Timeout` and the pass continues to the next file. The Google client's own 503 backoff is
+off. HTTP 408, 429, 500, 502, and 503 stay transient. A permanent failure is not retried. The local
+file, the Postgres rows, and the last good file id stay. Spans are `tape.export` (a day the pass
+touches) and `tape.upload` (one file, across its retries). The pass sets that span's outcome tags
+when it ends, after the lock probe. `TapeExportReceipts` records `pending`,
+`drive_disabled`, `uploaded`, or `failed` (`R-10.7`). That is not a retention check.
+
+**The copy is additive.** A day is the UTC calendar day of `TradeTimeUtc`, of a closed coverage
+`RangeStart`, or of a footprint `BucketStart`, half-open `[dayStart, dayEnd)`. It is exported once
+`now` is at or after `dayEnd`. The current day is left for a later pass. A re-read of the files must
+match the manifest. Local rows are not deleted, on a verified day or on a refused one. Timescale
+`policy_retention` on `Trades` stays empty ([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)).
+`Retention__*` is not read. Dropping raw tape is out of scope and needs its own ADR (gh#758).
+
+A candidate day is one whose rows have no matching receipt, or whose receipt hash no longer matches
+the file. Key discovery for the day is one short repeatable-read transaction. Each contract is then
+streamed in its own read, so the snapshot is not held across the file write. A contract that commits
+after that snapshot waits for the next pass. A day whose receipt hash matches is not read. A day an
+open listen still overlaps is skipped. An empty database does not rediscover a day. A path lock
+(`.export.lock`) skips the pass when another process holds it. `import-tape` inserts with
+`ON CONFLICT DO NOTHING` and writes nothing for a day that fails verification.
+
+`mcp.tape.exports` counts the outcomes above, once per pass when the count is positive.
+`mcp.tape.uploads` counts `drive_disabled`, `drive_retried`, `drive_uploaded`, `drive_failed`,
+`drive_permanent`, and `drive_orphan_pending`, each tagged with `outcome`, `operation`, and `reason`.
+`drive_uploaded` is only the receipt state `uploaded`. `upload_timeout`, `identity_busy`, `lock_lost`, and
+`lock_fault` are reasons on `drive_failed`. The lock reasons use operation `lock`. One file has one terminal
+measurement. When the upload fails and the lock probe also fails, that measurement is `lock_lost` only.
+The span tag `drive.failure_type` names the Drive error that receipt replaced. It is not a counter tag.
+`upload_timeout` is not the recorder-health `timeout` value. A non-Postgres `NpgsqlException` is a lost
+lock only when its chain contains an `IOException`, a `SocketException`, or a `TimeoutException`. A bare
+`NpgsqlException`, a command already in progress, and any other provider error are not `lock_lost`.
+That error fails the one file. The receipt is `failed` and is not left `pending`. The measurement is
+`lock_fault`. The pass counts `export_failed`, marks the day's `tape.export` span Error, and continues
+with the remaining files. The unlock in `finally` cannot replace the original exception.
+`mcp.tape.export.duration` is the pass, in seconds, with no tags. A thrown pass is logged by the worker
+and does not fault the host. Loading the files back with DuckDB or pandas is
+[tape-export-reload.md](tape-export-reload.md).
+
 ## What is deliberately absent
 
-- **No order path.** Not a guarded one ([ADR-0002](adr/0002-read-only-venue-boundary.md)).
+- **Venue writes go through `TradingRiskGate` only** ([ADR-0024](adr/0024-gated-trading-actions-practice-v1.md),
+  which supersedes [ADR-0002](adr/0002-read-only-venue-boundary.md)). **`Trading__*` configuration is wired and
+  validated** (gh#708) — master enable off by default, kill switch, secondary account allowlist, contract caps
+  and a symbol denylist. The five MCP tools `place_order`, `modify_order`, `cancel_order`, `close_position`
+  and `partial_close_position` are registered only when `Trading__Enabled` is true, and each one calls that
+  gate and no other write path (gh#750). The kill switch blocks cancel
+  and close; that block is pending Adam's decision and is unchanged. Idempotency is the pre-send `Unknown`
+  audit row, unique per account, tool and key, not process memory. `check-no-order-path.sh` still confines
+  order-method names to the execution seam. Bracket fields,
+  `confirm_trading_action` and the OAuth trade scope are later slices (gh#713, gh#717, gh#719).
 - **Market-hub recording is opted in, not implied by HTTP.** The standing choice not to subscribe is reversed
   ([ADR-0016](adr/0016-subscribe-to-the-market-hub.md)). The first first-party `BackgroundService` records
   prints to `Trades` (gh#216) only when the transport is HTTP **and** `MarketData__RecordTape` is on —
@@ -1098,12 +1247,53 @@ dating today's pick. It does not fetch bars and does not write a roll row.
   moment it noticed; waiting to be told would leave both processes writing under different
   `Sequence` keys, which is doubled volume rather than a collapsed duplicate. Clock skew beyond one
   term is the acknowledged residual (ADR-0016).
+  A session conflict stops that loop instead of reconnecting (gh#757, ADR-0016): the recorder and
+  the trading platform share one TopstepX login, and another login disconnects the platform.
+  `MarketData__StopOnSessionConflict` defaults on. A hub close that names a documented validate
+  error (`invalid session` or `session not found`), a validate body of `InvalidSession` or
+  `SessionNotFound`, or HTTP 401, disconnects, waits `MarketData__SessionConflictBackoff`, and
+  does not subscribe again. The recorder does not call `loginKey` while that is suspected or after
+  the stop. The held token is renewed with `POST /api/Auth/validate` whenever the venue client is
+  configured, well before the client's 54-minute refresh, so a quiet process does not log in on a
+  timer. A latched stop posts no further validate. A renewal failure closes login only while the
+  token is still fresh; `ExpiredToken`, or a token that has reached its refresh window, allows a
+  budgeted `loginKey` so the process can recover. That login disconnects any live session on the
+  account, including a healthy trading platform. A failed recovery waits, from 30 seconds doubling
+  to 5 minutes, before the next REST call tries again. With the switch off, replicas (gh#772) kick
+  each other about once per 54-minute cycle; with it on, the other replica latches until restart.
+  Freshness follows a monotonic clock, which does not advance across a Linux suspend. An inconclusive probe does not
+  reconnect and does not latch login; a still-fresh token is probed again on its own interval
+  (one second, doubling to 30 seconds), and no fresh token stops the recorder rather than logging in
+  without closing login for REST tools. The one-way latch is only a documented hub name, HTTP 401,
+  `InvalidSession`, or `SessionNotFound`. `AutoReconnect` stays off for both hubs while the recorder
+  is alive, because they share one options instance. A validate result of valid is connected by
+  this process with automatic reconnect left off. The refusal the tape tools return names the
+  platform, the switch, and that limit.
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
-  of the store probe, which is set once at startup and never re-probed. `get_footprint` and
-  `get_volume_profile` refuse when **that instrument's** tape is not listening, with a sentence naming the fix. It resolves the
+  of the store probe, which is set once at startup and never re-probed.   `get_footprint` and
+  `get_volume_profile` aggregate **closed** coverage from stored prints in memory when this process
+  is not the recorder for that instrument, write nothing, and set `live` false, with `reason`
+  (gh#728). `live` true means this process is listening, not that the cells are current. A gap at
+  the start or a cut at the end is `covered.narrowed`, the only short-window flag, and
+  `covered.end` is when the data ends. The ask is floored to the bar open, and its end is
+  aligned up to the bar close, before the ledger confines it. When coverage reaches that
+  open, `covered.start` is that open; a ledger that begins later in the bar is not
+  backdated. When coverage reaches that close, `covered.end` is that close; a ledger that
+  ends sooner is not extended past the tape. The recorder status is read
+  once per call. A window with no closed tape still refuses with a sentence naming the fix,
+  and that sentence does not say to stop the
+  recorder. A recorder that is reconnecting, not
+  subscribed, or stopped still refuses, closed cells included, as do a claim taken over and a claim
+  lapsed — those are not "another recorder holds the claim". A still-open sentinel is coverage only while that
+  instrument is listening. A read that is actually returned with `live` false is counted. A refusal is not. The recorder resolves the
   scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
   stay out of this phase, and there is still no `get_quote`.
+- **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
+  the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
+  in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).
+  A declared early close shortens only that session. This process reuses a built report for five seconds.
+  `/health` stays liveness and the one unauthenticated path.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push
   subscriber, not a background poll of a quote endpoint the venue does not have. A second stdio process must
   not subscribe to the same tape, and a second HTTP one is refused a claim rather than trusted not to

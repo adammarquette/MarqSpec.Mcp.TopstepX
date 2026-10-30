@@ -70,7 +70,8 @@ public sealed class VenueCallGuard(HostTelemetry telemetry)
             throw new VenueException(
                 "The gateway rejected the credentials. Note that ProjectX__ApiKey is the USERNAME and "
                 + "ProjectX__ApiSecret is the API key -- putting the key in both authenticates as a user who "
-                + "does not exist, and the gateway reports that as a bare unknown error.");
+                + "does not exist, and the gateway reports that as a bare unknown error.",
+                errorCode: 401);
         }
         catch (HttpRequestException ex)
         {

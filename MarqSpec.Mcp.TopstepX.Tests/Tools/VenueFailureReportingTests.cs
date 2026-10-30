@@ -139,7 +139,9 @@ public sealed class VenueFailureReportingTests
 
         List<Type> toolTypes =
         [
-            .. assembly.GetTypes().Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null),
+            .. assembly.GetTypes().Where(t => t.IsClass && (t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null
+                || t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                    .Any(method => method.GetCustomAttribute<McpServerToolAttribute>() is not null))),
         ];
 
         toolTypes.Should().NotBeEmpty("the reflection filter must actually match something");

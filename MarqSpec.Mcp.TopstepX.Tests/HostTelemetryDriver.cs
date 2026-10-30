@@ -156,15 +156,35 @@ internal static class HostTelemetryDriver
 
             foreach (MethodInfo method in RecordingMethods())
             {
+                ParameterInfo[] parameters = method.GetParameters();
+                if (parameters.Length == 2
+                    && parameters.All(parameter => parameter.ParameterType == typeof(string)))
+                {
+                    foreach (string operation in ExecutionOperation.All)
+                    {
+                        foreach (string refusal in ExecutionWriteRefusal.All)
+                        {
+                            method.Invoke(telemetry, [operation, refusal]);
+                        }
+                    }
+
+                    continue;
+                }
+
                 foreach (string candidate in Candidates)
                 {
                     object?[] arguments =
-                        [.. method.GetParameters().Select(parameter => ArgumentFor(method, parameter, candidate))];
+                        [.. parameters.Select(parameter => ArgumentFor(method, parameter, candidate))];
 
                     object? returned = method.Invoke(telemetry, arguments);
 
                     // A scope records on DISPOSE — that is where mcp.venue.calls and mcp.venue.call.duration
                     // are written — so a drive that only called the method would measure nothing at all.
+                    if (returned is HostTelemetry.ExecutionWriteScope writeScope)
+                    {
+                        writeScope.Outcome(candidate);
+                    }
+
                     (returned as IDisposable)?.Dispose();
                 }
             }

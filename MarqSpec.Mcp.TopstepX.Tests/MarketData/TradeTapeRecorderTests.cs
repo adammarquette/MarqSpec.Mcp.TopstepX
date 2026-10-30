@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX.Api.Models;
+using MarqSpec.Client.ProjectX.Authentication;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
@@ -237,7 +238,7 @@ public sealed class TradeTapeRecorderTests
     [Fact]
     public async Task APrintOnTheFirstContract_IsStillRecorded_WhenALaterSubscribeThrows()
     {
-        // Shipped default is ES,NQ. The connect-throws test never reaches subscribe, and the
+        // Two instruments, ES then NQ. The connect-throws test never reaches subscribe, and the
         // rest of this suite configures ES alone, so a throw on instrument 1 used to leave the
         // ES subscription live with no drain: prints TryWrite into an unread channel, then
         // log as full-channel drops, and Trades stays empty while ExecuteTask looks clean.
@@ -283,7 +284,7 @@ public sealed class TradeTapeRecorderTests
     [Fact]
     public async Task GetFootprintAndGetVolumeProfile_ForNq_Refuse_WhenOnlyEsIsSubscribed()
     {
-        // Shipped default is ES,NQ. ES subscribe succeeds; NQ is refused. Process-wide
+        // Two instruments, ES then NQ. ES subscribe succeeds; NQ is refused. Process-wide
         // Listening would let get_footprint("NQ") return stored cells while NQ's tape is silent.
         (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
             Build(
@@ -647,9 +648,12 @@ public sealed class TradeTapeRecorderTests
                 RecordedAt = leftoverStart,
             });
             await database.SaveChangesAsync();
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
 
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => hub.TradeSubscriptions.Count > 0);
+            // The fake hub records the subscription before the recorder persists the open range;
+            // Listening is set only after that write lands, so wait for it before reading rows (gh#819).
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
 
             DateTimeOffset listenStart = clock.GetUtcNow();
             IReadOnlyList<TapeCoverageRecord> rows = CoverageRows(database);
@@ -1857,7 +1861,7 @@ public sealed class TradeTapeRecorderTests
             clock.Advance(timeToLive / 3);
 
             await WaitUntil(
-                () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder,
+                () => tape.For("ES").Reason == TapeUnavailableReason.ClaimTakenOver,
                 "a renewal that finds the row taken is a loss, and the loser stands down");
 
             hub.TradeSubscriptions.Should().BeEmpty(
@@ -1920,7 +1924,7 @@ public sealed class TradeTapeRecorderTests
 
             clock.Advance(timeToLive / 3);
             await WaitUntil(
-                () => tape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder);
+                () => tape.For("ES").Reason == TapeUnavailableReason.ClaimTakenOver);
 
             TapeCoverageRecord range = CoverageRows(database).Should().ContainSingle().Subject;
             TradeRecord overlap = TradeRows(database).Should().ContainSingle().Subject;
@@ -2226,7 +2230,8 @@ public sealed class TradeTapeRecorderTests
                 new FootprintProjector(database, NullLogger<FootprintProjector>.Instance),
                 clock,
                 NullLogger<FootprintCacheService>.Instance,
-                _telemetry));
+                _telemetry),
+            _telemetry);
     }
 
     private static TradeUpdate Print(
@@ -2425,6 +2430,952 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    [Fact]
+    public async Task TradeTapeRecorder_HubSessionConflict_StopsAndDoesNotResubscribe()
+    {
+        // A hub close that names another session is enough. A probe that would say the session is
+        // still valid must not override it, and a reconnect that lands during the backoff must not
+        // subscribe again — that login is what knocks the trading platform off.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        CollectingLogger logger = new();
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> conflicts = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.TapeSessionConflictsInstrument);
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                telemetry: telemetry,
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int delaysBeforeStop = clock.DelayCalls;
+            hub.SimulateSessionConflict("invalid session");
+
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.StoppedForSessionConflict
+                && clock.DelayCalls > delaysBeforeStop
+                && conflicts.GetMeasurementSnapshot().Count == 1
+                && logger.Warnings.Count > 0);
+
+            tape.For("ES").Explanation.Should().Contain("trading platform");
+            tape.For("ES").Explanation.Should().Contain("will not reconnect");
+            tape.For("ES").Explanation.Should().Contain("MarketData__StopOnSessionConflict=false");
+            logger.Warnings.Should().Contain(message =>
+                message.Contains("will not reconnect", StringComparison.Ordinal)
+                && message.Contains("trading platform", StringComparison.Ordinal)
+                && message.Contains("(hub)", StringComparison.Ordinal)
+                && message.Contains("loginKey", StringComparison.Ordinal)
+                && !message.Contains("invalid session", StringComparison.Ordinal));
+            hub.MarketDisconnects.Should().BeGreaterThanOrEqualTo(1);
+            probe.Calls.Should().Be(0);
+            sockets.AutoReconnect.Should().BeFalse();
+
+            CollectedMeasurement<long> counted = conflicts.GetMeasurementSnapshot().Should().ContainSingle().Subject;
+            counted.Value.Should().Be(1);
+            counted.Tags[HostTelemetry.SourceTag].Should().Be(SessionConflictSource.Hub);
+            counted.Tags.Should().NotContainKey(HostTelemetry.SymbolTag);
+
+            int subscribes = hub.SubscribeAttempts;
+            hub.SimulateMarketReconnect();
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+            hub.SubscribeAttempts.Should().Be(subscribes);
+            hub.TradeSubscriptions.Should().NotContain(CountingGateway.DefaultContractId);
+            tape.For("ES").Reason.Should().Be(TapeUnavailableReason.StoppedForSessionConflict);
+            sockets.AutoReconnect.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_HubSessionConflict_LogsTheReasonAndWaitsOutTheBackoff()
+    {
+        // The stop parks on the recorder's clock for the configured backoff. Finishing early would
+        // release the claim while a reconnect was still in flight; ignoring the clock would hang
+        // the host for a wall-clock wait this test does not give it.
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromSeconds(30));
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int delaysBeforeStop = clock.DelayCalls;
+            hub.SimulateSessionConflict("session not found");
+            await WaitUntil(() => clock.DelayCalls > delaysBeforeStop);
+
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            logger.Warnings.Should().Contain(message => message.Contains("trading platform", StringComparison.Ordinal));
+
+            int fired = clock.Fired;
+            clock.Advance(TimeSpan.FromSeconds(29));
+            clock.Fired.Should().Be(fired);
+            recorder.ExecuteTask.IsCompleted.Should().BeFalse();
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask);
+            recorder.ExecuteTask.IsFaulted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_HubSessionConflict_DisablesVenueAutoReconnect()
+    {
+        // The client's reconnect policy reads this flag on every attempt. Leaving it true is the
+        // login that disconnects the trading platform.
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+            sockets.AutoReconnect.Should().BeFalse();
+            SessionLoginGate.FirstAutomaticRetryDelay(sockets).Should().BeNull();
+
+            int delaysBeforeStop = clock.DelayCalls;
+            hub.SimulateSessionConflict("invalidsession");
+            await WaitUntil(() => clock.DelayCalls > delaysBeforeStop);
+
+            sockets.AutoReconnect.Should().BeFalse();
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+            sockets.AutoReconnect.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_ApiInvalidSessionAfterDisconnect_StopsAndDoesNotResubscribe()
+    {
+        // A transport drop carries no sentence. InvalidSession on validate is the other way the
+        // venue says this login was taken, and it stops the same way a hub phrase does.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Conflict };
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                sessionProbe: probe);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int delaysBeforeStop = clock.DelayCalls;
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.StoppedForSessionConflict
+                && clock.DelayCalls > delaysBeforeStop
+                && probe.Calls >= 1);
+
+            logger.Warnings.Should().Contain(message =>
+                message.Contains("(api)", StringComparison.Ordinal)
+                && message.Contains("will not reconnect", StringComparison.Ordinal));
+
+            int subscribes = hub.SubscribeAttempts;
+            hub.SimulateMarketReconnect();
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+            hub.SubscribeAttempts.Should().Be(subscribes);
+            hub.TradeSubscriptions.Should().NotContain(CountingGateway.DefaultContractId);
+            tape.For("ES").Reason.Should().Be(TapeUnavailableReason.StoppedForSessionConflict);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_TransportDisconnectWithAValidSession_StillResubscribes()
+    {
+        // A drop the probe cannot call a conflict is still a transport fault. The recorder itself
+        // reconnects, and the client's automatic reconnect is turned back on.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                hub.MarketConnects >= 2
+                && hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            probe.Calls.Should().BeGreaterThanOrEqualTo(1);
+            sockets.AutoReconnect.Should().BeFalse();
+            SessionLoginGate.FirstAutomaticRetryDelay(sockets).Should().BeNull();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+            sockets.AutoReconnect.Should().BeTrue();
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_InconclusiveSessionProbe_DoesNotReconnectOrLogIn()
+    {
+        // Expiry, an unknown code, a timeout, or a probe that could not land is not another session.
+        // It is also not a reason to connect: connecting would read the token, and an aged token logs in.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Inconclusive };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                sessionProbe: probe);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int connects = hub.MarketConnects;
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => probe.Calls >= 1 || hub.MarketConnects > connects);
+
+            hub.MarketConnects.Should().Be(connects);
+            probe.Calls.Should().Be(1);
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            tape.For("ES").Reason.Should().NotBe(TapeUnavailableReason.StoppedForSessionConflict);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_StopOnSessionConflictBeforeConnect_GatesTheFirstSignalRRetry()
+    {
+        // The client's first NextRetryDelay is scheduled before Reconnecting fires. The flag has to
+        // be off before Connect, or that retry still runs.
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+            InitialReconnectDelaySeconds = 1,
+            MaxReconnectDelaySeconds = 5,
+        };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            sockets.AutoReconnect.Should().BeFalse();
+            SessionLoginGate.FirstAutomaticRetryDelay(sockets).Should().BeNull();
+
+            await recorder.StopAsync(CancellationToken.None);
+            sockets.AutoReconnect.Should().BeTrue();
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_ProbeInFlight_HoldsAutoReconnectOff()
+    {
+        // Startup already turned the flag off. Turning it back on and then dropping the hub must
+        // turn it off again for the whole probe, or the test is not looking at the probe path.
+        ScriptedSessionProbe probe = new()
+        {
+            Gate = new TaskCompletionSource<SessionProbeVerdict>(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+            sockets.AutoReconnect = true;
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => probe.Calls >= 1);
+
+            sockets.AutoReconnect.Should().BeFalse();
+            hub.FollowAutomaticResubscribe(sockets);
+            hub.AutoResubscribes.Should().Be(0);
+            hub.MarketConnects.Should().Be(1);
+
+            probe.Gate!.SetResult(SessionProbeVerdict.Inconclusive);
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_SecondDisconnectWhileAProbeIsInFlight_DoesNotStartAnotherProbe()
+    {
+        ScriptedSessionProbe probe = new()
+        {
+            Gate = new TaskCompletionSource<SessionProbeVerdict>(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                sessionProbe: probe);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => probe.Calls >= 1);
+            hub.RaiseAnotherDisconnect();
+
+            recorder.PendingLifecycleCount.Should().Be(1);
+            probe.Calls.Should().Be(1);
+
+            probe.Gate!.SetResult(SessionProbeVerdict.Valid);
+            await WaitUntil(() => hub.MarketConnects >= 2 && recorder.PendingLifecycleCount == 0);
+            probe.Calls.Should().Be(1);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_HubConflictDuringAValidProbe_StopWinsAndDoesNotReconnect()
+    {
+        ScriptedSessionProbe probe = new()
+        {
+            Verdict = SessionProbeVerdict.Valid,
+            Gate = new TaskCompletionSource<SessionProbeVerdict>(TaskCreationOptions.RunContinuationsAsynchronously),
+        };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => probe.Calls >= 1);
+            int delaysBeforeStop = clock.DelayCalls;
+            hub.SimulateSessionConflict("invalid session");
+            probe.Gate!.SetResult(SessionProbeVerdict.Valid);
+
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.StoppedForSessionConflict
+                && clock.DelayCalls > delaysBeforeStop);
+
+            hub.MarketConnects.Should().Be(1);
+            sockets.AutoReconnect.Should().BeFalse();
+            probe.Calls.Should().Be(1);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_HubConflictWhileReconnecting_DoesNotTearDownTheReconnect()
+    {
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1));
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int delaysBeforeStop = clock.DelayCalls;
+            hub.SimulateReconnecting("invalid session");
+            await WaitUntil(() => clock.DelayCalls > delaysBeforeStop);
+
+            hub.MarketDisconnects.Should().Be(0);
+            hub.MarketHubState.Should().Be(MarqSpec.Client.ProjectX.WebSocket.ConnectionState.Reconnecting);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_NoFreshHeldToken_StopsWithoutLogin()
+    {
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Inconclusive };
+        HeldSession held = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                sessionProbe: probe,
+                heldSession: held);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int delaysBeforeStop = clock.DelayCalls;
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                tape.For("ES").Explanation != null
+                && tape.For("ES").Explanation!.Contains("loginKey", StringComparison.Ordinal)
+                && clock.DelayCalls > delaysBeforeStop);
+
+            hub.MarketConnects.Should().Be(1);
+            tape.For("ES").Reason.Should().Be(TapeUnavailableReason.Stopped);
+            tape.For("ES").Explanation.Should().Contain("will not call loginKey");
+
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_NoFreshHeldToken_StopsWithoutClosingLogin()
+    {
+        // Standing down is not a conflict. The one-way latch must stay clear, or every REST tool
+        // fails until the process restarts. A gated read with no fresh token then calls loginKey.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Inconclusive };
+        HeldSession held = new();
+        SessionLoginGate gate = new();
+        LoginDouble inner = new();
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets,
+                heldSession: held,
+                loginGate: gate);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int delaysBeforeStop = clock.DelayCalls;
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                tape.For("ES").Explanation != null
+                && tape.For("ES").Explanation!.Contains("REST tools", StringComparison.Ordinal)
+                && clock.DelayCalls > delaysBeforeStop);
+
+            gate.StopLatched.Should().BeFalse();
+            gate.LoginPermitted.Should().BeTrue();
+            hub.MarketConnects.Should().Be(1);
+            sockets.AutoReconnect.Should().BeFalse();
+
+            using HostTelemetry loginTelemetry = new();
+            GatedAuthenticationService gated = new(inner, held, gate, clock, loginTelemetry);
+            string token = await gated.GetAccessTokenAsync(CancellationToken.None);
+            token.Should().Be("from-login");
+            inner.GetCalls.Should().Be(1);
+
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+            sockets.AutoReconnect.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData("stop")]
+    [InlineData("armed")]
+    [InlineData("suspecting")]
+    public async Task TradeTapeRecorder_RestoreGuard_OneFlagDoesNotPassTheGuard(string which)
+    {
+        // SubscribeOne has the same three checks. This counter is incremented after Restore's own
+        // check, so removing one disjunct here goes red even while SubscribeOne still refuses.
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                stopOnSessionConflict: false);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && recorder.PendingLifecycleCount == 0);
+
+            ArmOneGuard(recorder, which);
+            int past = recorder.RestoresPastTheGuard;
+            await recorder.InvokeRestoreForTests(CancellationToken.None);
+
+            recorder.RestoresPastTheGuard.Should().Be(past);
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData("stop")]
+    [InlineData("armed")]
+    [InlineData("suspecting")]
+    public async Task TradeTapeRecorder_SubscribeGuard_OneFlagDoesNotSubscribe(string which)
+    {
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                stopOnSessionConflict: false);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && recorder.PendingLifecycleCount == 0);
+
+            ArmOneGuard(recorder, which);
+            int subscribes = hub.SubscribeAttempts;
+            bool subscribed = await recorder.InvokeSubscribeOneForTests(CancellationToken.None);
+
+            subscribed.Should().BeFalse();
+            hub.SubscribeAttempts.Should().Be(subscribes);
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_ConnectedWhileStopLatchedAndIdle_DoesNotRestoreAndDisconnects()
+    {
+        // The lifecycle loop is idle: a later guard inside Restore must not be what keeps
+        // SubscribeAttempts still. The handler has to return before enqueueing restore, and the
+        // Connected transition has to drop the hub the stop is no longer using.
+        SessionLoginGate gate = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                stopOnSessionConflict: false,
+                loginGate: gate);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && recorder.PendingLifecycleCount == 0);
+
+            int restores = recorder.RestoreEntries;
+            int subscribes = hub.SubscribeAttempts;
+            gate.LatchStop();
+            hub.SimulateMarketDisconnect();
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() => hub.MarketDisconnects >= 1 && recorder.PendingLifecycleCount == 0);
+
+            recorder.RestoreEntries.Should().Be(restores);
+            hub.SubscribeAttempts.Should().Be(subscribes);
+            hub.MarketDisconnects.Should().Be(1);
+            hub.MarketHubState.Should().Be(MarqSpec.Client.ProjectX.WebSocket.ConnectionState.Disconnected);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_ConnectedWhileSuspectingAndIdle_DoesNotRestore()
+    {
+        // No probe is in flight. Removing the Suspecting check on Connected enqueues restore.
+        SessionLoginGate gate = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                stopOnSessionConflict: false,
+                loginGate: gate);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && recorder.PendingLifecycleCount == 0);
+
+            gate.BeginSuspecting();
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => recorder.PendingLifecycleCount == 0);
+            int restores = recorder.RestoreEntries;
+            int subscribes = hub.SubscribeAttempts;
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() => recorder.PendingLifecycleCount == 0);
+
+            recorder.RestoreEntries.Should().Be(restores);
+            hub.SubscribeAttempts.Should().Be(subscribes);
+            recorder.PendingLifecycleCount.Should().Be(0);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_SuspectingBetweenProbes_DropsPrintsAndDoesNotRestore()
+    {
+        // BeginSuspecting is the only thing closed here: the probe has ended, so ProbeInFlight is
+        // false. OnTrade, restore, and a Connected that arrives before the next probe must all notice.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Inconclusive };
+        SessionLoginGate gate = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.Zero,
+                sessionProbe: probe,
+                loginGate: gate);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            long recorded = recorder.RecordedPrints;
+            int delaysBefore = clock.DelayCalls;
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                probe.Calls >= 1 && !gate.ProbeInFlight && clock.DelayCalls > delaysBefore);
+            gate.Suspecting.Should().BeTrue();
+            recorder.PendingLifecycleCount.Should().Be(0);
+
+            hub.RaiseUnfiltered(Print(Utc(13, 45, 0), TradeLogType.Buy, price: 5000m));
+            DateTimeOffset until = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(200);
+            while (DateTimeOffset.UtcNow < until && recorder.RecordedPrints == recorded)
+            {
+                await Task.Delay(10);
+            }
+
+            recorder.RecordedPrints.Should().Be(recorded);
+
+            int restores = recorder.RestoreEntries;
+            int pending = recorder.PendingLifecycleCount;
+            hub.SimulateMarketReconnect();
+            until = DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(200);
+            while (DateTimeOffset.UtcNow < until
+                && recorder.RestoreEntries == restores
+                && recorder.PendingLifecycleCount == pending)
+            {
+                await Task.Delay(10);
+            }
+
+            recorder.RestoreEntries.Should().Be(restores);
+            recorder.PendingLifecycleCount.Should().Be(pending);
+            probe.Calls.Should().Be(1);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_ZeroStopBackoff_ReprobesNoSoonerThanOneSecond()
+    {
+        // SessionConflictBackoff is the stop delay. Zero must not turn the inconclusive path into
+        // a tight validate loop. The re-probe interval starts at one second and then doubles.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Inconclusive };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.Zero,
+                sessionProbe: probe);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int delaysBefore = clock.DelayCalls;
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => probe.Calls >= 1 && clock.DelayCalls > delaysBefore);
+            probe.Calls.Should().Be(1);
+
+            int delaysBeforeSecond = clock.DelayCalls;
+            clock.Advance(TimeSpan.FromSeconds(1));
+            await WaitUntil(() => probe.Calls >= 2 && clock.DelayCalls > delaysBeforeSecond);
+
+            int fired = clock.Fired;
+            clock.Advance(TimeSpan.FromSeconds(1));
+            clock.Fired.Should().Be(fired);
+            probe.Calls.Should().Be(2);
+
+            clock.Advance(TimeSpan.FromSeconds(1));
+            await WaitUntil(() => probe.Calls >= 3);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_NoSharedLoginGate_LogsThePrivateFallback()
+    {
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                leaseTimeToLive: TimeSpan.FromHours(1));
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            logger.Warnings.Should().Contain(message =>
+                message.Contains("private session-login gate", StringComparison.Ordinal));
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_SharedLoginGate_DoesNotLogThePrivateFallback()
+    {
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                loginGate: new SessionLoginGate());
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            logger.Warnings.Should().NotContain(message =>
+                message.Contains("private session-login gate", StringComparison.Ordinal));
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_LatchedFromOutside_StopsAsAnApiConflict()
+    {
+        // The renewer latches without going through this recorder's probe. The recorder has to
+        // notice and disconnect, once, with source api.
+        CollectingLogger logger = new();
+        SessionLoginGate gate = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                logger: logger,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                loginGate: gate);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int delaysBeforeStop = clock.DelayCalls;
+            gate.LatchStop();
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.StoppedForSessionConflict
+                && clock.DelayCalls > delaysBeforeStop);
+
+            logger.Warnings.Should().Contain(message => message.Contains("(api)", StringComparison.Ordinal));
+            hub.MarketDisconnects.Should().BeGreaterThanOrEqualTo(1);
+            gate.LoginPermitted.Should().BeFalse();
+
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_OperatorAutoReconnectFalse_IsRestoredNotForcedTrue()
+    {
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = false };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+            sockets.AutoReconnect.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+            sockets.AutoReconnect.Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task TradeTapeRecorder_StopOnSessionConflictDisabled_KeepsRecordingAfterAHubConflict()
+    {
+        // The switch is the operator's choice to keep the session and let the platform be the one
+        // that drops. A hub phrase must not stop the recorder when that choice is off.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Conflict };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                stopOnSessionConflict: false,
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            int subscribesBefore = hub.SubscribeAttempts;
+            hub.SimulateSessionConflict("invalid session");
+            hub.SimulateMarketReconnect();
+            await WaitUntil(() =>
+                hub.SubscribeAttempts > subscribesBefore
+                && hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            probe.Calls.Should().Be(0);
+            sockets.AutoReconnect.Should().BeTrue();
+            tape.For("ES").Reason.Should().NotBe(TapeUnavailableReason.StoppedForSessionConflict);
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    private static void ArmOneGuard(TradeTapeRecorder recorder, string which)
+    {
+        switch (which)
+        {
+            case "stop":
+                recorder.LoginGateForTests.LatchStop();
+                break;
+            case "armed":
+                recorder.MarkConflictArmedForTests();
+                break;
+            case "suspecting":
+                recorder.LoginGateForTests.BeginSuspecting();
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(which), which, "Unknown guard.");
+        }
+    }
+
     /// <summary>How many measurements carry a given <c>change</c> or <c>transition</c> value.</summary>
     private static long Counted(MetricCollector<long> collector, string value) =>
         collector.GetMeasurementSnapshot()
@@ -2436,7 +3387,7 @@ public sealed class TradeTapeRecorderTests
         FakeMarketHub Hub,
         TopstepXDbContext Database,
         ServiceProvider Services,
-        FakeTimeProvider Clock)
+        RecordingClock Clock)
         Build(
             McpTransport transport,
             bool recordTape,
@@ -2450,10 +3401,16 @@ public sealed class TradeTapeRecorderTests
             SaveChangesInterceptor? extraInterceptor = null,
             string? sharedDatabaseName = null,
             TimeSpan? leaseTimeToLive = null,
-            HostTelemetry? telemetry = null)
+            HostTelemetry? telemetry = null,
+            bool stopOnSessionConflict = true,
+            TimeSpan? sessionConflictBackoff = null,
+            ISessionConflictProbe? sessionProbe = null,
+            MarqSpec.Client.ProjectX.Configuration.WebSocketOptions? webSocketOptions = null,
+            HeldSession? heldSession = null,
+            SessionLoginGate? loginGate = null)
     {
         FakeMarketHub hub = new();
-        FakeTimeProvider clock = new(_receipt);
+        RecordingClock clock = new(_receipt);
         string databaseName = sharedDatabaseName ?? Guid.NewGuid().ToString();
         DbContextOptionsBuilder<TopstepXDbContext> builder = new DbContextOptionsBuilder<TopstepXDbContext>()
             .UseInMemoryDatabase(databaseName)
@@ -2470,7 +3427,13 @@ public sealed class TradeTapeRecorderTests
 
         DbContextOptions<TopstepXDbContext> options = builder.Options;
 
-        MarketDataOptions market = new() { Instruments = instruments, RecordTape = recordTape };
+        MarketDataOptions market = new()
+        {
+            Instruments = instruments,
+            RecordTape = recordTape,
+            StopOnSessionConflict = stopOnSessionConflict,
+            SessionConflictBackoff = sessionConflictBackoff ?? MarketDataOptions.DefaultSessionConflictBackoff,
+        };
         McpOptions mcp = new()
         {
             Transport = transport,
@@ -2487,6 +3450,27 @@ public sealed class TradeTapeRecorderTests
         {
             services.AddSingleton(hub);
             services.AddSingleton<MarqSpec.Client.ProjectX.WebSocket.IProjectXWebSocketClient>(hub);
+        }
+
+        if (sessionProbe is not null)
+        {
+            services.AddSingleton(sessionProbe);
+        }
+
+        if (webSocketOptions is not null)
+        {
+            services.AddSingleton<IOptions<MarqSpec.Client.ProjectX.Configuration.WebSocketOptions>>(
+                Options.Create(webSocketOptions));
+        }
+
+        if (heldSession is not null)
+        {
+            services.AddSingleton(heldSession);
+        }
+
+        if (loginGate is not null)
+        {
+            services.AddSingleton(loginGate);
         }
 
         services.AddSingleton(tape);
@@ -2509,6 +3493,80 @@ public sealed class TradeTapeRecorderTests
             leaseTimeToLive ?? TapeLease.DefaultTimeToLive);
 
         return (recorder, hub, database, provider, clock);
+    }
+
+    /// <summary>
+    /// The suite clock, counting each <see cref="TimeProvider.Delay"/> after the timer is armed.
+    /// A session-conflict backoff parks here, so a test can tell the wait has started.
+    /// </summary>
+    private sealed class RecordingClock : FakeTimeProvider
+    {
+        private int _delays;
+        private int _fired;
+
+        public RecordingClock(DateTimeOffset startDateTime)
+            : base(startDateTime)
+        {
+        }
+
+        public int DelayCalls => Volatile.Read(ref _delays);
+
+        public int Fired => Volatile.Read(ref _fired);
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            TimerCallback counted = timerState =>
+            {
+                Interlocked.Increment(ref _fired);
+                callback(timerState);
+            };
+            ITimer timer = base.CreateTimer(counted, state, dueTime, period);
+            Interlocked.Increment(ref _delays);
+            return timer;
+        }
+    }
+
+    private sealed class LoginDouble : IAuthenticationService
+    {
+        public int GetCalls { get; private set; }
+
+        public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken = default)
+        {
+            GetCalls++;
+            return Task.FromResult("from-login");
+        }
+
+        public Task RefreshTokenAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task<bool> ValidateSessionAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(false);
+
+        public Task LogoutAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    /// <summary>A session probe whose answer a test chooses.</summary>
+    private sealed class ScriptedSessionProbe : ISessionConflictProbe
+    {
+        public SessionProbeVerdict Verdict { get; set; } = SessionProbeVerdict.Valid;
+
+        public TaskCompletionSource<SessionProbeVerdict>? Gate { get; set; }
+
+        public int Calls { get; private set; }
+
+        public async Task<SessionProbeVerdict> ProbeAsync(CancellationToken cancellationToken)
+        {
+            Calls++;
+            if (Gate is not null)
+            {
+                return await Gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            return Verdict;
+        }
     }
 
     /// <summary>

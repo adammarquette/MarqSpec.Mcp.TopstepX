@@ -62,6 +62,11 @@ rm ./certs/localhost.key   # the PFX carries the key, encrypted
 docker compose up -d       # Postgres (TimescaleDB + pgvector) and the HTTPS server on :8443
 ```
 
+If the server is up but venue login fails because `api.topstepx.com` does not resolve inside the
+container, that is Docker's user-defined-network DNS, not a missing credential — see
+[vendor DNS on a custom Docker network](documentation/deployment.md#vendor-dns-on-a-custom-docker-network-gh697)
+(gh#697).
+
 **Only the server needs any of that.** `docker compose up -d postgres` and the containerised test loop under
 [Local development](CONTRIBUTING.md#local-development) render and run with **no `.env` and no certificate** —
 verified, because compose interpolates the whole file before it picks a service and an earlier draft of this
@@ -131,6 +136,22 @@ say so. Each absent dependency produces a refusal naming the fix, rather than a 
 would report as a bare transport failure ([ADR-0007](documentation/adr/0007-dual-transport.md)). So you can
 register it first and configure it after.
 
+**Footprint and volume profile under stdio read a tape this process does not record.** stdio never
+subscribes: two subscribers on one tape would double every volume
+([ADR-0016](documentation/adr/0016-subscribe-to-the-market-hub.md)). Run a separate HTTP process
+against the **same database** with `MarketData__RecordTape=true` (HTTP alone is not enough; the
+switch defaults off). `get_footprint` and `get_volume_profile` then aggregate that recorder's
+**closed** tape in memory and set `live` to false, with `reason`. `live` true means this process
+is listening, not that the cells are current. A gap at the start or a cut at the end sets
+`covered.narrowed`, and `covered.end` is when the data ends. An ask that starts inside a bar
+is floored to that bar's open when the tape covers it, and `covered.start` is that open.
+An ask that ends inside a bar is aligned up to that bar's close when the tape covers it,
+and `covered.end` is that close.
+The read does not write cells. A still-open listen is not reported as history. A window
+with no closed tape still refuses and names the fix: run that separate HTTP recorder.
+The sentence does not say to stop one. There is no backfill for
+the period before that recorder started.
+
 ### The stdio transport in the container
 
 The image's own entrypoint speaks **stdio**. [`Dockerfile`](Dockerfile) pins no transport, and it is
@@ -140,6 +161,9 @@ published image is already the thing an MCP client launches, and it needs neithe
 not stall waiting on it. The recipe tracks `latest` rather than pinning a release: an unread literal here
 would go stale the moment the next tag is cut, silently, and nothing in this repository re-reads a version
 written into prose (gh#471):
+
+The package is private (gh#849): run `docker login ghcr.io` first, with the token described under
+"Private image" in [deployment.md](documentation/deployment.md).
 
 ```bash
 docker pull ghcr.io/adammarquette/marqspec.mcp.topstepx:latest
@@ -163,12 +187,13 @@ info: startup[0]
       Shutdown was requested before the server finished starting, so it stopped without listening. On stdio this is what `docker run` WITHOUT `-i` looks like: stdin is closed before the handshake, so there is no client to serve. Pass `-i` (or start the server from an MCP client, which holds stdin open) to keep a session. No background service faulted on the way here, so this exit code is not covering for one.
 ```
 
-**`Now listening on: http://[::]:8080` is expected here, and it is not the HTTP transport.**
-`mcr.microsoft.com/dotnet/aspnet:10.0` bakes `ASPNETCORE_HTTP_PORTS=8080` into the image, so inside a
-container an address is always named and `WebApplication`'s Kestrel binds it under either transport
-([ADR-0007](documentation/adr/0007-dual-transport.md)). Nothing is served there — your session is the pipe —
-and the command above publishes no port at all. `EXPOSE 8443` in the `Dockerfile` describes the composed
-deployment rather than this one.
+**stdio binds no HTTP port.** `mcr.microsoft.com/dotnet/aspnet:10.0` still bakes
+`ASPNETCORE_HTTP_PORTS=8080` into the image — the HTTP transport needs that inherited port — but the
+host ignores it under stdio, so a second `docker run --rm -i` on host networking no longer dies on
+`AddressInUse` ([ADR-0007](documentation/adr/0007-dual-transport.md), gh#696). Your session is the
+pipe. An operator who wants a health or metrics listener under stdio names one with
+`ASPNETCORE_URLS` or `ASPNETCORE_HTTPS_PORTS`. `EXPOSE 8443` in the `Dockerfile` describes the
+composed deployment rather than this one.
 
 **Do not reach for `--entrypoint`.** It *replaces* the image's entrypoint rather than adding to it, so the
 container that runs is no longer this server: an image whose entrypoint named an assembly that did not exist
@@ -215,6 +240,22 @@ and a single probe would degrade it for the life of the task. Compose does not n
 is refused outside `0..600`, and none of it makes the store required — an absent one still degrades to a
 refusal at the point of use ([ADR-0007](documentation/adr/0007-dual-transport.md)).
 
+`Migrations__CommandTimeoutSeconds` is how long one migration command may run, in seconds. The default is
+`3600`. Npgsql's own default is 30, which is shorter than a per-chunk index-build migration on a large
+`Trades` hypertable: the command is cancelled, the invalid index is dropped, and the next start re-runs
+the index-build migration under the same cap. The previous timeout is restored after the migration,
+including when it throws. Values outside `1..604800` are refused. `604800` is a typo guard. `0` is refused
+on purpose — Npgsql treats it as no timeout. On Railway the image build does not count. The healthcheck
+window starts after the image is built and the container is deployed, and this migration runs before the
+process listens. A missed healthcheck stops the failed container and marks the deploy failed, while the
+previous deployment keeps serving. Set `RAILWAY_HEALTHCHECK_TIMEOUT_SEC` so that healthcheck timeout ≥
+`Store__StartupWaitSeconds` + `Migrations__CommandTimeoutSeconds` + ~300s (3900 with the defaults). A
+`healthcheckTimeout` in the Railway service config overrides that variable. The server and the recorder
+share the advisory lock, and their waits overlap. The second service's wait is one `CALL`, cancelled at
+the command timeout with Postgres error `57014`, whatever the healthcheck allows. If the first service's
+index-build migration runs close to 3600 seconds, the second fails anyway: redeploy it once the first is
+healthy ([`documentation/deployment.md`](documentation/deployment.md)).
+
 Two things this recipe deliberately does **not** carry over from `docker compose up`:
 
 - **No TLS.** The composed endpoint's HTTPS on `:8443` is gh#416's answer to one client's requirement, not
@@ -242,21 +283,24 @@ loopback HTTP — without standing up the composed stack to do it.
 
 ### Use it remotely
 
-Two hostnames, same tool surface, OAuth 2.1 — not the compose stack's shared bearer token:
+Two hostnames, same tool surface. **For now both use a static bearer token**, each environment with its
+own value, until an OAuth provider is chosen
+([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)'s 2026-10-29 update, #855):
 
 | Environment | Origin | MCP resource |
 |---|---|---|
 | Staging | `https://topstepx-mcp.staging.marqspec.com` | `https://topstepx-mcp.staging.marqspec.com/mcp` |
 | Production | `https://topstepx-mcp.marqspec.com` | `https://topstepx-mcp.marqspec.com/mcp` |
 
-A remote client is a **pre-registered** confidential app in that environment's Cognito user pool (the
-`claude-connector` client on authorization-code + PKCE). There is no Dynamic Client Registration and no
-shared secret in this file. Point the connector at the MCP resource; an unauthenticated call returns
-`401` with a `resource_metadata` challenge whose document names the issuer. `/health` answers anyone.
+Point the client at the MCP resource and send `Authorization: Bearer <your token>` on every request. The
+operator hands out each environment's token; it is never written in this repository. A call without it
+returns `401` with a bare `Bearer` challenge, and `/health` answers anyone. This is temporary: the app
+still supports [the OAuth mode](#the-oauth-mode-a-resource-server-for-the-remote-instance) below, and that
+mode comes back once a provider exists.
 
-Production is reached only after an `aws-production` approval on a digest that already passed staging
-(gh#520). How a release gets there — and how to roll one back — is
-[the runbook](documentation/deployment.md).
+Published releases only push a container image to GHCR (after the `production` approval on `release.yml`); there
+is no deploy job in that workflow. To run a release on your host, use Docker or compose — see
+[deployment](documentation/deployment.md) and [Run it](#run-it) above.
 
 ### The OAuth mode — a resource server for the remote instance
 
@@ -341,12 +385,10 @@ time in the sibling repo:
   so `docker compose up` with credentials and no tier does not fail startup.
 
 Two hosting knobs behind this transport, both configuration only (gh#515): `Logging__Console__FormatterName=json`
-switches the console to one JSON object per line, which is what the AWS deployment (gh#509) will set once it
-exists, for CloudWatch Logs Insights. `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` makes
-`HttpContext.Connection.RemoteIpAddress` the caller's own address behind a load balancer rather than the
-ALB's — and clears the framework's loopback-only trust on that header, safe there only because the ALB is the
-sole way to reach a Fargate task. Client IPs for a human will be the ALB's own access logs, not this
-application's console.
+switches the console to one JSON object per line, which helps log aggregation behind Docker or a reverse
+proxy. `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` makes `HttpContext.Connection.RemoteIpAddress` the caller's
+own address when a trusted reverse proxy forwards `X-Forwarded-For` — use it only when that proxy is the
+sole path to the server ([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)).
 
 ### See what it is doing
 
@@ -430,12 +472,14 @@ and exits instead of serving — no transport is started, no MCP client is invol
 ```bash
 docker compose run --rm server rebuild-indicators
 docker compose run --rm server reselect-bars MES 2026-06-01T00:00:00Z 2026-07-01T00:00:00Z
+docker compose run --rm server export-tape
+docker compose run --rm server import-tape 2026-10-01
 ```
 
-**Both report only through the log.** Under stdio, stdout carries the protocol, so neither verb prints to the
-console; the numbers arrive as log lines. Both dispose the host before returning, because the console logger
-writes from a queue and the OTLP exporter batches on a timer — without that the **last** lines, the summary
-among them, are exactly the ones a process exit drops.
+**Each verb reports only through the log.** Under stdio, stdout carries the protocol, so none of them prints
+a result to the console; the numbers arrive as log lines. Each disposes the host before returning, because
+the console logger writes from a queue and the OTLP exporter batches on a timer — without that the **last**
+lines, the summary among them, are exactly the ones a process exit drops.
 
 ### `rebuild-indicators [symbol]`
 
@@ -512,6 +556,32 @@ the cap is per resolution and the verb takes none — the resolutions are whatev
 `Warning` after the migration ran rather than a refusal before it. And a window entirely in the future is
 accepted; it finds no stored series and says so.
 
+### `export-tape [yyyy-MM-dd]` and `import-tape [yyyy-MM-dd]`
+
+Copies recorded tape to a directory, and puts a verified copy back (`R-10`, gh#755). The optional day is
+exact `yyyy-MM-dd`. With no day, export walks every UTC day the store still holds and import walks every
+manifest. Neither verb reads `TapeExport__Enabled`.
+
+Files are gzip CSV and Parquet under `TapeExport__Path` (default `/data/tape-exports`), one pair per
+contract per day for trades and coverage. That path is a **mounted volume**; the process does not
+create the volume. `TapeExport__Format` is `csv.gz+parquet`. A UTC day is copied only after it has
+ended, and only when the manifest sha256 and row counts match. Local rows are not deleted.
+Drive (`TapeExport__Drive__FolderId` and a service-account JSON or path) is a second copy and is off
+when those are empty; a repeat replaces the file, and a failed upload leaves the local copy.
+`Retention__*` is not read; dropping raw tape needs its own ADR (gh#758). Import inserts with
+`ON CONFLICT DO NOTHING` and inserts nothing for a day that fails verification. Loading the files
+with DuckDB or pandas is [documentation/tape-export-reload.md](documentation/tape-export-reload.md).
+
+| Exit | Meaning |
+|---:|---|
+| `0` | Every day the pass touched verified. |
+| `1` | At least one day failed verification or was refused on import. |
+| `2` | The day argument is not exact `yyyy-MM-dd`. |
+| `3` | The store could not be migrated. |
+
+The full environment contract, including the names gh#758 must use, is in
+[`documentation/deployment.md`](documentation/deployment.md#config-contract-for-758).
+
 ---
 
 ## For AI agents & new readers — start here
@@ -548,10 +618,28 @@ signatures: [the tool catalogue](documentation/mcp-tool-catalog.md).
 | Account (read) | `list_accounts` · `get_positions` · `get_orders` · `get_trades` |
 | Composed | `get_market_snapshot` — bars, indicators, levels and session state in one call |
 | Observations | `record_observation` · `search_observations` — writes to *this* database, never the venue |
+| Orders (off unless enabled) | `place_order` · `modify_order` · `cancel_order` · `close_position` · `partial_close_position` — practice accounts only, through the risk gate ([ADR-0024](documentation/adr/0024-gated-trading-actions-practice-v1.md)) |
+
+`Trading__Enabled` defaults to false. The five order tools are registered only when that flag is true at
+process start, so listing them needs a restart. A reload does change, without a restart,
+`Trading__Enabled` (a call then refuses), `Trading__KillSwitch`, `Trading__KillSwitchFile`,
+`Trading__DeniedSymbols`, `Trading__AllowedAccountIds`, `Trading__MaxContractsPerOrder` and
+`Trading__MaxContractsPerDay`. A reload into a configuration that fails validation refuses the call and does
+not keep the last good values.
 
 **There is no `get_quote`.** ProjectX publishes no REST quote endpoint; live bid/ask is SignalR-only. The HTTP
 transport can opt in to recording the trade tape (`MarketData__RecordTape`), which is prints and volume, not
-quotes. A tool called `get_quote` that returned a bar close would be a lie an agent trades on.
+quotes. Whenever the venue client is configured, the process keeps the held TopstepX session fresh with
+`POST /api/Auth/validate` and does not call `loginKey` on a timer. That renewal is not tied to the recorder.
+A session conflict latches login closed and stops further validate calls. A recovery `loginKey`, used
+when the held bearer is dead, disconnects whatever session is live on the account — including the
+trading platform — and a failed recovery waits before it tries again. With the switch off, two
+replicas kick each other about once per 54-minute cycle (gh#772). A drop that is not a
+conflict stops the recorder without closing login for REST tools. Recorded tape is also copied to
+`TapeExport__Path` (default `/data/tape-exports` on a mounted volume) as gzip CSV and Parquet, one pair
+of files per contract per day. The copy does not delete the rows in Postgres (`R-10`, gh#755). Drive is
+off unless `TapeExport__Drive__FolderId` and a service account are set. A tool called `get_quote` that
+returned a bar close would be a lie an agent trades on.
 
 ## How the cache works
 

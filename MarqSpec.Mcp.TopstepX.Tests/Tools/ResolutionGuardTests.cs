@@ -175,7 +175,8 @@ public sealed class ResolutionGuardTests : IDisposable
                 new FootprintProjector(_database, NullLogger<FootprintProjector>.Instance),
                 _clock,
                 NullLogger<FootprintCacheService>.Instance,
-                _telemetry));
+                _telemetry),
+            _telemetry);
 
         _roll = new ContractRollTools(
             resolver, _database, _gateway, new LevelMethodCatalog(calendar), front, _clock);

@@ -1,0 +1,141 @@
+# railway-seed-check.yml -- the staging seed still fits the schema, and is idempotent (gh#758).
+#
+# Applies every EF migration with the same migrator and interceptor as startup (`dotnet ef database update`:
+# EF's Migrate on one connection, with TopstepXDbContext's TradeInstrumentIndexBuildInterceptor; it does not
+# apply MigrationCommandTimeout) to the same pinned Timescale image, requires Trades to be a hypertable, runs
+# the synthetic seed TWICE, and requires identical counts. A migration that renames a seeded column fails
+# here, on the PR, instead of on the next staging deploy. Touches no Railway, holds no secret.
+name: railway-seed-check
+
+on:
+  pull_request:
+    paths:
+      - "scripts/railway/seed/**"
+      - "scripts/railway/seed-staging.sh"
+      - "scripts/railway/embed-seed.sh"
+      - "scripts/railway/latest-migration.sh"
+      - ".railway/railway.ts"
+      - "MarqSpec.Mcp.TopstepX.Data/Migrations/**"
+      - ".github/workflows/railway-seed-check.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: timescale/timescaledb-ha:pg17@sha256:cae378810532f8402c306d5a2bc6acc2c7550193d12f2b5ef9b2532efe0e98c0
+        env:
+          POSTGRES_USER: topstepx
+          POSTGRES_DB: topstepx_mcp
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U topstepx -d topstepx_mcp" --health-interval 5s --health-retries 20
+    env:
+      PGHOST: localhost
+      PGUSER: topstepx
+      PGDATABASE: topstepx_mcp
+      PGPASSWORD: ci-only-not-a-secret
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+      # NOT `migrations script --idempotent` | psql: that wraps each migration in a DO block, and
+      # AddTradeInstrumentTimeIndex needs a top-level CALL (with an inner COMMIT) and a Timescale
+      # transaction_per_chunk build, which cannot run inside DO or a transaction. The interceptor that makes
+      # the build conditional is also invisible to a script. `database update` uses the same migrator and
+      # interceptor as startup, on one connection. It skips MigrationCommandTimeout (EF's default applies).
+      # Trades must be a hypertable here, so the transaction_per_chunk build ran, not the plain fallback.
+      - name: Apply migrations (EF migrator, as at startup)
+        env:
+          ConnectionStrings__Default: Host=localhost;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=ci-only-not-a-secret
+        run: |
+          dotnet tool install --global dotnet-ef --version 10.0.11
+          dotnet restore MarqSpec.Mcp.TopstepX.slnx
+          dotnet ef database update \
+            --project MarqSpec.Mcp.TopstepX.Data --startup-project MarqSpec.Mcp.TopstepX \
+            --connection "$ConnectionStrings__Default"
+          psql -v ON_ERROR_STOP=1 -tAc 'SELECT count(*) FROM "__EFMigrationsHistory"'
+          psql -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM timescaledb_information.hypertables WHERE hypertable_schema = 'public' AND hypertable_name = 'Trades'" | grep -qx 1 \
+            || { echo "::error::Trades is not a Timescale hypertable; the per-chunk index build did not run"; exit 1; }
+          psql -v ON_ERROR_STOP=1 -tAc "SELECT indisvalid FROM pg_index WHERE indexrelid = 'public.\"IX_Trades_Instrument_TradeTimeUtc\"'::regclass" | grep -qx t \
+            || { echo "::error::IX_Trades_Instrument_TradeTimeUtc is missing or invalid"; exit 1; }
+      # Staging's database is NOT empty: the recorder writes live rows into the same tables (gh#839). Put
+      # one non-fixture row in each table first, so every check below runs against a database that already
+      # has data, and must count only venue 'synthetic' and leave the other rows alone. Their count and md5
+      # per table are saved as a baseline, which every seed below must leave byte-for-byte the same.
+      - name: Pre-existing non-fixture rows (like staging's recorder writes)
+        run: |
+          psql -v ON_ERROR_STOP=1 -q <<'SQL'
+          INSERT INTO "Trades" ("Venue", "Instrument", "ContractId", "TradeTimeUtc", "Sequence", "Direction",
+                                "Price", "Size", "RecordedAt")
+          VALUES ('recorded', 'MNQ', 'CON.F.US.MNQ.Z26', '2026-10-22 13:30:00+00', 0, 1, 21000, 1,
+                  '2026-10-22 13:30:01+00');
+          INSERT INTO "Bars" ("Venue", "Instrument", "ResolutionMinutes", "BucketStart", "ContractId", "Open",
+                              "High", "Low", "Close", "Volume", "RecordedAt")
+          VALUES ('recorded', 'MNQ', 1, '2026-10-22 13:30:00+00', 'CON.F.US.MNQ.Z26',
+                  21000, 21000, 21000, 21000, 1, '2026-10-22 13:31:00+00');
+          INSERT INTO "TapeCoverage" ("Venue", "Instrument", "ContractId", "RangeStart", "RangeEnd",
+                                      "RecordedAt")
+          VALUES ('recorded', 'MNQ', 'CON.F.US.MNQ.Z26', '2026-10-22 13:30:00+00', '2026-10-22 13:31:00+00',
+                  '2026-10-22 13:31:00+00');
+          SQL
+          fp() { echo "(SELECT count(*)||':'||md5(coalesce(string_agg(r::text, '|' ORDER BY r::text), ''))
+            FROM \"$1\" r WHERE \"Venue\" <> 'synthetic')"; }
+          echo "SELECT $(fp Trades)||'/'||$(fp Bars)||'/'||$(fp TapeCoverage);" > "$RUNNER_TEMP/other.sql"
+          psql -v ON_ERROR_STOP=1 -tA -f "$RUNNER_TEMP/other.sql" | tee "$RUNNER_TEMP/other.base"
+          grep -Eqx '1:[0-9a-f]{32}/1:[0-9a-f]{32}/1:[0-9a-f]{32}' "$RUNNER_TEMP/other.base" \
+            || { echo "::error::expected one non-fixture row per table"; exit 1; }
+      - name: Seed twice, compare
+        run: |
+          syn='WHERE "Venue" = '"'"'synthetic'"'"''
+          sep="||'/'||"
+          q="SELECT (SELECT count(*) FROM \"Trades\" $syn)$sep(SELECT count(*) FROM \"Bars\" $syn)"
+          q="$q$sep(SELECT count(*) FROM \"TapeCoverage\" $syn)"
+          psql -v ON_ERROR_STOP=1 -q -f scripts/railway/seed/staging-seed.sql
+          first="$(psql -tAc "$q")"
+          psql -v ON_ERROR_STOP=1 -q -f scripts/railway/seed/staging-seed.sql
+          second="$(psql -tAc "$q")"
+          echo "trades/bars/coverage after run 1: $first, after run 2: $second"
+          [ "$first" = "4800/240/2" ] || { echo "::error::unexpected seed counts $first"; exit 1; }
+          [ "$first" = "$second" ] || { echo "::error::seed is not idempotent"; exit 1; }
+          other="$(psql -v ON_ERROR_STOP=1 -tA -f "$RUNNER_TEMP/other.sql")"
+          [ "$other" = "$(cat "$RUNNER_TEMP/other.base")" ] \
+            || { echo "::error::the seed changed non-fixture rows: $other"; exit 1; }
+      # The script the staging `seed` service runs, under the same env shape the template gives it (minus the
+      # Railway host), run twice: it must wait for the newest migration, seed, and print the line
+      # seed-staging.sh waits for, with the expected counts both times.
+      - name: run-seed.sh (the seed service's script) seeds and reports
+        env:
+          POSTGRES_PRIVATE_HOST: localhost
+          PGPORT: "5432"
+          SEED_FOR_DIGEST: sha256:0000000000000000000000000000000000000000000000000000000000000000
+          SEED_RUN_ID: 123-1
+        run: |
+          SEED_AFTER_MIGRATION="$(scripts/railway/latest-migration.sh)"
+          SEED_SQL="$(cat scripts/railway/seed/staging-seed.sql)"
+          export SEED_AFTER_MIGRATION SEED_SQL
+          for run in 1 2; do
+            out="$(timeout 60 bash scripts/railway/seed/run-seed.sh)"
+            echo "$out"
+            [ "$out" = "seed-staging: ok $SEED_RUN_ID $SEED_FOR_DIGEST 4800/240/2" ] \
+              || { echo "::error::run-seed.sh run $run printed '$out'"; exit 1; }
+          done
+          other="$(psql -v ON_ERROR_STOP=1 -tA -f "$RUNNER_TEMP/other.sql")"
+          [ "$other" = "$(cat "$RUNNER_TEMP/other.base")" ] \
+            || { echo "::error::run-seed.sh changed non-fixture rows: $other"; exit 1; }
+      - name: Seeder refuses anything but staging
+        run: |
+          for e in production prod Staging ""; do
+            digest="sha256:$(printf '0%.0s' {1..64})"
+            if RAILWAY_TOKEN=x scripts/railway/seed-staging.sh "$e" "$digest" 123-1 1 2>/dev/null; then
+              echo "::error::seeded '$e'"; exit 1
+            fi
+          done
+          echo ok

@@ -75,6 +75,8 @@ difference between the two entry points is a handful of lines.
 | [2026-09-06](#update-2026-09-06--the-remote-instance-is-decided-in-adr-0021) | The remote instance the 2026-09-01 TLS update left undecided is decided in ADR-0021 — the "same machine" scoping is superseded, the TLS decision and the composed shape are not |
 | [2026-09-06](#update-2026-09-06--the-route-table-gained-a-path-that-answers-without-a-credential) | `GET /health` answers unauthenticated in front of the gate, which stays global — and ordering alone would not have carved it out |
 | [2026-09-08](#update-2026-09-08--the-cowork-custom-connector-dialog-was-measured-on-this-plan) | The maintainer measured Cowork's custom-connector dialog on this plan — two screens, what each offered, and what was not shown (gh#510) |
+| [2026-10-17](#update-2026-10-17--stdio-binds-no-http-port) | stdio binds no HTTP port; the image-baked 8080 is not an opt-in (gh#696) |
+| [2026-10-23](#update-2026-10-23--the-refusal-line-cannot-be-forged) | The OAuth refusal line escapes controls, line separators, bidi marks and a literal backslash, and caps the escaped text (gh#747) |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -1242,3 +1244,59 @@ update carries the screen-by-screen observation only.
 - Callback / redirect URL.
 - Whether choosing `Use your own OAuth client` expands to client id + secret fields.
 - Any stated HTTPS or path requirement on the URL field.
+
+## Update (2026-10-17) — stdio binds no HTTP port
+
+The 2026-09-03 update recorded that a stdio container binds `http://[::]:8080` because the aspnet
+image names `ASPNETCORE_HTTP_PORTS=8080`, and it accepted that bind: separate network namespaces,
+`MapMcp` inside the HTTP branch, clearing the variable in the `Dockerfile` rejected because it
+would drop the HTTP transport to `localhost:5000`.
+
+**The collision half of that acceptance is false under host networking** (gh#696). Two
+`docker run --rm -i` instances sharing a namespace contend for 8080, and the second dies on
+`AddressInUse` before any tool is reachable — the same failure class as gh#392, through the door
+that update left open.
+
+**stdio now binds no HTTP port** unless the operator named a listener with `ASPNETCORE_URLS` or
+`ASPNETCORE_HTTPS_PORTS` (health or metrics). The image-baked `ASPNETCORE_HTTP_PORTS` is not that
+opt-in. The HTTP transport is untouched, and the variable is still not cleared in the image — that
+measurement stands. `WebApplication` still starts `GenericWebHostService`; gh#76's rejection of a
+second host type is not reopened. The server that service starts under default stdio is one that
+opens no socket.
+
+`TransportBindingTests` pins both sides: two stdio hosts inherit the image port and start
+together with empty `Urls`; an explicit URL or HTTPS port still survives.
+
+## Update (2026-10-23) — the refusal line cannot be forged
+
+The gate's own refusal line logs the request method and path (gh#747). Both are chosen by the caller, and
+under this mode the listener is reachable from the internet, so a CR or LF in either value is a second log
+entry — CodeQL `cs/log-forging` at `OAuthBearerGate.UseOAuthBearerGate`. `LogText.Sanitize` escapes CR, LF,
+the other C0/C1 controls, U+2028, U+2029, the bidi overrides and isolates (U+202A–U+202E, U+2066–U+2069),
+LRM and RLM (U+200E, U+200F), ALM (U+061C), ZWSP (U+200B), BOM (U+FEFF), a lone surrogate, a literal
+backslash, and an opening bracket, each as a backslash, the letter u, and four hexadecimal digits. A
+well-formed surrogate pair stays one character. Escaping the backslash means the six characters of a written
+carriage-return escape in the input are not the escape a real CR becomes. The escaped text is capped at 1024
+characters, on an escape boundary and not through the middle of a pair, with ` [truncated]` appended when it
+is longer. The bracket is escaped in that same replace, so a copy of the marker is not that suffix, and a
+bracket followed by a backslash stays distinct from a bracket alone. One control
+expands to six characters, and an 8 KB path of them would otherwise be about 48 KB. The call passes the
+results as structured parameters. The same helper covers `sub` and `client_id` on the success scope, and
+the `reselect-bars` command-line refusal. The reason is still a type name or a fixed phrase naming a claim.
+The token is still never logged. `LogTextTests` pins each character class, the forged escape, the output
+cap, the escape boundary, the emoji on the cap, the caller-supplied marker, the marker on the cap
+boundary, the plain marker kept distinct from one that already contains a backslash, and a missing value.
+`AForgedMethodOrPath_CannotOpenASecondLogEntry` pins the forged line;
+`APercentEncodedLineBreakInThePath_CannotOpenASecondLogEntry` pins a `%0D%0A` path;
+`AnEightKilobyteControlPath_IsCappedOnTheRefusalLine` pins the cap on the gate's own record;
+`ASubjectOrClientIdWithALineBreak_CannotForgeTheScope` pins the scope;
+`ACarriageReturnInTheCommandLine_IsEscapedOnTheRefusalLine` pins the reselect refusal;
+`AnOrdinaryRefusal_LogsTheMethodAndPath` pins that an ordinary refusal is unchanged.
+
+The heading date is the local calendar day of the instant that introduced this update. `git log -1
+--format=fuller 4c1869d` records author and committer `Sat Oct 24 01:24:51 2026 +0000`. The commit that
+wrote this ADR, `c04d86f4`, stores `-0500`, and that offset puts the same instant on 2026-10-23. This
+repository does not document UTC for an update heading, so the heading follows that local day. The
+acceptance date in the header is unchanged: 2026-08-21.
+
+The handler filter and the query-string URL note above are unchanged.

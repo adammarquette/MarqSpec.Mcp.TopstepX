@@ -1,0 +1,174 @@
+# railway-staging.yml -- deploy ONE pinned GHCR image to the Railway staging environment (gh#758).
+#
+# Manual only (workflow_dispatch). There is no push trigger: develop publishes no release image, and this
+# deploys only an image release.yml already published, named by tag AND digest. There is NO production job
+# here; production goes through railway-promote.yml, which needs a passing staging record from this one.
+#
+# Staging Postgres keeps its data on a volume (gh#846); each deploy seeds it with an idempotent
+# synthetic fixture (a staging-only one-shot `seed` service; see deployment.md).
+# Order: verify the image -> pin (and embed the seed, tagged with this run's id) -> template checks
+# (deployable mode, Trading__Enabled literal "false") -> plan (saved) -> apply that plan -> /health reports
+# the pinned version and digest -> seed -> an authenticated MCP call (static token) -> record the digest as
+# a GitHub deployment + artifact.
+#
+# SECRETS: RAILWAY_TOKEN is a project token scoped to the Railway staging environment, held on the GitHub
+# `staging` environment, beside MCP_HTTP_BEARER_TOKEN (staging's static MCP token, ADR-0021 exception).
+# It reaches steps only via `env:`, never an argument, and no step uses `set -x`.
+# Railway's plan redacts variable values by default; --show-values is never passed.
+name: railway-staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to deploy, X.Y.Z (no v)"
+        required: true
+      digest:
+        description: "Image index digest for that tag, sha256:<64 hex>"
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+  deployments: write
+
+concurrency:
+  group: railway-staging
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/adammarquette/marqspec.mcp.topstepx
+  RAILWAY_CLI_VERSION: "5.71.0"
+
+jobs:
+  deploy:
+    name: deploy + seed (staging)
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 30
+    outputs:
+      digest: ${{ steps.record.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate inputs
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be X.Y.Z"; exit 1; }
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::digest must be sha256:<64 hex>"; exit 1; }
+
+      # Deploy identity: the tag must exist in GHCR and resolve to exactly this digest, so what ships is what
+      # was named. A digest that is not this tag's is refused rather than deployed under the wrong version.
+      - name: Verify the tag resolves to the digest
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null
+          actual="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          [ "$actual" = "$DIGEST" ] || { echo "::error::$IMAGE:$VERSION is $actual, not $DIGEST"; exit 1; }
+          echo "ok: $IMAGE:$VERSION = $DIGEST"
+
+      - name: Pin the template (local commit, not pushed)
+        env:
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          scripts/railway/pin-image.sh "$VERSION" "$DIGEST"
+          git -c user.name=ci -c user.email=ci@invalid commit -q -m "pin $VERSION" .railway/railway.ts
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Template checks (deployable mode; Trading__Enabled literal "false")
+        run: |
+          scripts/check-railway-template.sh --mode deployable
+          scripts/check-no-order-path.sh
+
+      - name: Install the Railway CLI
+        run: npm install -g "@railway/cli@$RAILWAY_CLI_VERSION" && railway --version
+
+      # Root package.json, exact pin + lockfile, checked against scripts/railway (gh#832).
+      - name: Install the Railway SDK
+        run: scripts/railway/install-sdk.sh
+
+      - name: Plan (saved)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway config plan --environment staging --out railway-plan.json
+
+      - name: Apply exactly that plan
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: railway config apply --environment staging --plan railway-plan.json --yes
+
+      # Fail if nothing shipped: /health must report THIS version and digest, not an older deployment's.
+      - name: /health reports the pinned image
+        env:
+          BASE_URL: ${{ vars.RAILWAY_STAGING_BASE_URL }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 600
+
+      # The seed runs ON Railway, in the staging-only one-shot `seed` service the apply just (re)deployed;
+      # this waits for its "seed-staging: ok <run-id> <digest> 4800/240/2" log line, where <run-id> is
+      # this run's "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" (embedded at pin time), so an older run's line never
+      # passes. No `railway ssh`: a project token cannot register the SSH key it needs (run 40767891986).
+      - name: Seed the synthetic fixture (staging only)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          scripts/railway/seed-staging.sh staging "$DIGEST" "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" 900
+
+      # Stays up: the seed must not have knocked anything over.
+      - name: /health still reports the pinned image
+        env:
+          BASE_URL: ${{ vars.RAILWAY_STAGING_BASE_URL }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 120
+
+      # An authenticated MCP call, not just /health. Staging and production both run the static token until an
+      # OAuth provider is chosen (ADR-0021 2026-10-29 update, #855), so check-deployment.sh runs in
+      # StaticToken mode here, for staging. MCP_HTTP_BEARER_TOKEN is a `staging` environment secret holding
+      # the same value as Railway's staging shared MCP_HTTP_BEARER_TOKEN; it reaches the script only via env:,
+      # and the script never prints it. This job checks staging only.
+      - name: MCP answers with the static token (staging only)
+        env:
+          BASE_URL: ${{ vars.RAILWAY_STAGING_BASE_URL }}
+          VERSION: ${{ inputs.version }}
+          MCP_CHECK_AUTH_MODE: StaticToken
+          MCP_CHECK_ENVIRONMENT: staging
+          MCP_CHECK_BEARER_TOKEN: ${{ secrets.MCP_HTTP_BEARER_TOKEN }}
+        run: scripts/check-deployment.sh "$BASE_URL" "$VERSION"
+
+      # The record railway-promote.yml requires: a successful `staging` GitHub deployment whose payload names
+      # this exact digest. Written only after deploy, health and seed all passed.
+      - name: Record the digest that passed
+        id: record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          DIGEST: ${{ inputs.digest }}
+        run: |
+          id="$(jq -n --arg ref "$GITHUB_SHA" --arg v "$VERSION" --arg d "$DIGEST" --arg img "$IMAGE" \
+                 '{ref:$ref, environment:"staging", auto_merge:false, required_contexts:[], transient_environment:true,
+                   description:("railway staging passed " + $v), payload:{image:$img, version:$v, digest:$d, checks:["deploy","health","seed","mcp"]}}' \
+               | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - -q .id)"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=success \
+            -f environment_url="${{ vars.RAILWAY_STAGING_BASE_URL }}" -f description="deploy, health, seed and mcp passed" >/dev/null
+          jq -n --arg v "$VERSION" --arg d "$DIGEST" --arg id "$id" --arg run "$GITHUB_RUN_ID" \
+            '{version:$v, digest:$d, deployment_id:$id, run_id:$run}' > staging-passed.json
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "### Staging passed: \`$IMAGE:$VERSION@$DIGEST\` (deployment $id)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: staging-passed
+          path: staging-passed.json
+          retention-days: 90

@@ -60,6 +60,12 @@ jobs:
       - name: Check documentation links
         run: ./scripts/check-doc-links.sh
 
+      # The image entrypoint, scripts/prepare-tape-volume.sh (gh#767). Ownership is proven as root.
+      # The hosted runner is not uid 0, so this step uses sudo. A symlink is refused, a non-root
+      # caller skips and runs its command, and a root caller chowns with -h and drops to 64198.
+      - name: Check the tape volume entrypoint
+        run: sudo ./scripts/check-tape-volume-prepare.sh
+
       # gh#293. The `-u` on this gate's file-list sort is load-bearing under a conflicted `--cached` index
       # (same defect as gh#240) and a no-op on a clean one, which is exactly when nothing would redden if
       # it were tidied away. This runs the gate against a fixture whose index genuinely conflicts and
@@ -81,6 +87,18 @@ jobs:
       # clean" keeps meaning something. Ordered after it so a genuinely drifted row is reported first.
       - name: Prove the size gate can still fail
         run: ./scripts/check-doc-sizes-selftest.sh
+
+      # gh#802. commit-hygiene (branch-policy.yml) runs check-commit-trailers.sh on the PR range; this proves it
+      # still rejects each known trailer fault by name, skips pre-cutoff and rebased-old commits, and passes a
+      # sound pair and a Dependabot-shaped message.
+      - name: Prove the commit-trailer gate can still fail
+        run: ./scripts/check-commit-trailers-selftest.sh
+
+      # gh#824. issue-link (branch-policy.yml) runs check-issue-link.sh; this proves it still rejects each known
+      # citation fault by name (no closing binding into develop, another repo, code-only citations) and passes
+      # each exemption (Dependabot, ladder promotions, stacked PRs, the Issue-stays-open opt-out).
+      - name: Prove the issue-link gate can still fail
+        run: ./scripts/check-issue-link-selftest.sh
 
       # gh#182. `R-#` is half this repo's symbol table (AGENTS.md), and check-doc-links.sh proves only that a
       # relative LINK resolves -- nothing proved an ID did. gh#172 found two citations naming another
@@ -124,19 +142,74 @@ jobs:
       - name: Prove the claim script can still tell a live claim from a dead one
         run: ./scripts/claim-selftest.sh
 
-  # ADR-0002's enforcement. Its own job rather than a step inside build-test, so a failure reads as "the
-  # read-only boundary was crossed" rather than as a build break -- and so it is a required check in its own
-  # right, which a step buried in another job cannot be.
+  # ADR-0024's TRIPWIRE (gh#718; was ADR-0002's enforcement) -- a text check backed by review, CODEOWNERS on
+  # the allowlisted files and the Gate=ADR-0024 tests, not a proof. Red until TradingRiskGate (gh#711) exists.
   #
-  # Needs no SDK: it is a grep over source, and it should answer in seconds.
+  # Its own job rather than a step inside build-test, so a failure reads as "the gated order boundary was
+  # crossed" rather than as a build break -- and so it is a required check in its own right. The JOB NAME IS
+  # UNCHANGED on purpose: it is a required context on all three rungs (bootstrap.sh step 3), and renaming it
+  # would drop that requirement in silence.
+  #
+  # The static checks need no SDK and answer in seconds, so they run first. The SDK is installed only for the
+  # last step, which RUNS the [Trait("Gate","ADR-0024")] tests and fails unless tests EXECUTED and passed --
+  # a filter that silently selects zero (or only skipped) tests is the green-on-nothing this repository keeps
+  # paying for.
   no-order-path:
     name: no-order-path
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: No order path in product code
+      - name: Prove the order-path gate can still fail
+        run: ./scripts/check-no-order-path-selftest.sh
+
+      # !cancelled(), not the default success(): a red self-test or boundary check must not hide whether the
+      # gate tests exist and pass. Each step still fails the job on its own.
+      - name: Order path only behind the ADR-0024 gate
+        if: ${{ !cancelled() }}
         run: ./scripts/check-no-order-path.sh
+
+      - uses: actions/setup-dotnet@v6
+        if: ${{ !cancelled() }}
+        with:
+          dotnet-version: 10.0.x
+
+      # Counts tests that EXECUTED and passed: skipped [Fact(Skip=...)] tests do not satisfy it (gh#718 review).
+      - name: ADR-0024 gate tests exist and run
+        if: ${{ !cancelled() }}
+        run: |
+          dotnet test MarqSpec.Mcp.TopstepX.Tests/MarqSpec.Mcp.TopstepX.Tests.csproj \
+            --configuration Release \
+            --filter "Gate=ADR-0024" \
+            --logger "trx;LogFileName=gate-tests.trx" \
+            --results-directory "$RUNNER_TEMP/gate-tests"
+          ./scripts/check-gate-tests-ran.sh "$RUNNER_TEMP/gate-tests/gate-tests.trx"
+
+  # gh#758. The Railway template (.railway/railway.ts) is the only reviewable copy of what a Railway deploy
+  # runs -- dashboard edits are not CI-verifiable (AGENTS.md). This compiles it against the pinned SDK and
+  # evaluates it offline for staging and production (`--mode template`, which admits the image sentinel);
+  # it holds no token and calls no Railway API.
+  #
+  # Its own job, not a no-order-path step: red here means "the template drifted", which is a different claim
+  # from "the read-only boundary was crossed". Trading__Enabled in .railway/ IS covered by the required
+  # no-order-path job. This context is NOT YET REQUIRED -- a context nobody adds to the rulesets only reports
+  # (gh#26); adding it is the maintainer's branch-rule change.
+  railway-template:
+    name: railway-template
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Prove the template gate can still fail
+        run: ./scripts/check-railway-template-selftest.sh
+
+      - name: The Railway template holds its invariants
+        if: ${{ !cancelled() }}
+        run: ./scripts/check-railway-template.sh
 
   # gh#43. The pacer that keeps the bar paging loop inside the vendor's 50-requests-per-30-seconds allowance
   # is unit-tested; its CONNECTION to the loop was not, and deleting the await left all 208 tests green.
@@ -200,19 +273,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./scripts/check-release-gate-selftest.sh
-
-      # gh#520. The deploy jobs and deploy.yml are YAML full of the same class of silent-green faults
-      # as the approval gate: an unversioned {{resolve:ssm}}, a put-parameter over stack-owned history,
-      # an expression-named environment, a :latest deploy. This reads the files. The required-context
-      # table is unchanged — release-gate still only reports.
-      - name: The deploy workflows keep the digest-as-parameter shape
-        run: ./scripts/check-deploy-workflows.sh
-
-      - name: Self-test — that check still rejects a broken deploy path
-        run: ./scripts/check-deploy-workflows-selftest.sh
-
-      - name: Self-test — deploy-environment.sh still refuses :latest and never writes SSM
-        run: ./scripts/deploy-environment-selftest.sh
 
   build-test:
     name: build & unit tests
@@ -312,52 +372,6 @@ jobs:
           --logger "trx;LogFileName=unit-tests.trx"
           --collect:"XPlat Code Coverage"
           --results-directory ./TestResults
-
-      # gh#516. The infrastructure under infra/ is CDK in C#, in the solution, so the Restore, Format and
-      # Build steps above already cover it; these two steps are what make a pull request PROVE the template
-      # it proposes (ADR-0023 §7). They ride in this job because `build & unit tests` is already required
-      # on all three rungs -- no ruleset write, and nothing is added to `image`'s or `coverage`'s `needs`,
-      # so the skip argument in documentation/agents/platform.md is untouched.
-      #
-      # NO CREDENTIALS, by construction: the runner holds none, `--no-lookups` makes a context miss fail
-      # the synth rather than call AWS, and infra/cdk.context.json carries the hosted-zone and AZ lookups.
-      # A green run here therefore licenses exactly this: the app runs, every stack synthesises, and the
-      # template says what the tests assert. It says nothing about whether the account will accept it.
-      #
-      # The template tests are the cheaper, sharper half and run first. NO `--collect`: the coverage gate
-      # measures the PRODUCT (scripts/check-coverage-floor.py), and instrumenting the infra assembly would
-      # move that figure for a change in code no tool call ever executes.
-      #
-      # Both need Node on PATH at RUN time (the constructs are jsii; the tests spawn the same kernel);
-      # ubuntu-latest ships one, and setup-node pins the major and caches the CLI install.
-      - name: Infrastructure template tests
-        run: >-
-          dotnet test infra/MarqSpec.Mcp.TopstepX.Infra.Tests/MarqSpec.Mcp.TopstepX.Infra.Tests.csproj
-          --configuration Release --no-build
-          --logger "trx;LogFileName=infra-tests.trx"
-          --results-directory ./TestResults
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: infra/package-lock.json
-
-      # EVERY SHAPE, because the tasks' outbound path is a fork ADR-0023's decision log leaves to the
-      # maintainer: the app refuses to synthesise without `-c outbound=…`, and this step passes each value
-      # the property admits rather than picking one. When the maintainer decides, the loop collapses to one
-      # plain `npx cdk synth` and the choice becomes a literal in infra/…/Program.cs. Each iteration is a
-      # separate `dotnet run`; the loop aborts on the first failure under this shell's `-e`, and the listing
-      # afterwards is what shows three templates per shape actually landed.
-      - name: Synthesise every outbound shape, with no credentials
-        working-directory: infra
-        run: |
-          npm ci --no-audit --no-fund
-          for outbound in PublicIpPerTask NatGateway VpcEndpointsWithPublicIp VpcEndpointsWithNatGateway; do
-            echo "== outbound=$outbound"
-            npx cdk synth --quiet --no-lookups -c "outbound=$outbound"
-          done
-          ls -1 cdk.out/*.template.json
 
       # gh#521. `scripts/check-deployment.sh` asks a DEPLOYED hostname whether it answers -- /health and the
       # release it names, the 401 and the metadata document a connector reads before it has a token, a

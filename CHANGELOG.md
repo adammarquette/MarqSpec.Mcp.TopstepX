@@ -13,6 +13,267 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-30
+
+`v0.6.0` was published as a pre-release tagged on `develop` and never got a section in `CHANGELOG.md`, so this
+section covers everything since `[0.5.0]`. gh#843 is not in this release; it is planned for 0.7.1.
+
+### Added
+
+- **The image entrypoint prepares the tape volume, then drops to uid 64198** (gh#767). `ENTRYPOINT` is now
+  `scripts/prepare-tape-volume.sh` ahead of `dotnet`. `USER` stays 64198, so every service starts as before
+  and logs one skip line. Started as root (`RAILWAY_RUN_UID=0`), it refuses symlinks, `chown -h`s `/data`
+  and its top-level entries (not recursive), then `setpriv` execs `dotnet` as 64198, keeping it PID 1.
+  Export on Railway stays blocked by the template until `EXPORT_UNBLOCKED` is flipped in a config change.
+
+- **Five gated order tools, with a durable idempotency claim** (gh#750). `place_order`, `modify_order`,
+  `cancel_order`, `close_position` and `partial_close_position` call `TradingRiskGate` only. They are registered
+  only when `Trading__Enabled` is true, and each method still refuses when it is false. Before a send the gate
+  writes an `Unknown` audit row keyed by account, tool and idempotency key. A unique index makes that claim
+  survive a restart, a redeploy and a second replica. The migration that creates it temporarily disables the
+  append-only update trigger, reclassifies duplicate Unknown rows, and re-enables the trigger. A throw during
+  the send, including a timeout, or an audit write that fails after an ack, returns structured `OutcomeUnknown`
+  and does not rethrow. Only a fault the gate classified as before the send is a retryable error. Anything
+  thrown after the send has started, including a daily-cap unlock or a telemetry listener, is `OutcomeUnknown`.
+  Those two disposals catch, log a constant line and count the failure. The disposal itself does not throw.
+  After the send, the gate raises a failed unlock into the post-send handler, which returns structured
+  `OutcomeUnknown`. The gate is scoped. Send-started state is per call, and a second operation on the same
+  instance throws before any vendor call. Only `PreSendFaultException` is retryable. The tool catch-all is
+  defensive: any other exception is `OutcomeUnknown` with no refusal and result code `-1`. A replay ignores a
+  `Refused` row written before the claim, and a later refusal with a different request hash. A refusal recorded
+  after the claim with the same hash is replayed as that refusal. The master switch is read through
+  `IOptionsMonitor`, so turning trading off, the kill switch, the denylist, the allowlist and the contract caps
+  take effect without a restart. A reload into an invalid configuration refuses and does not keep the last good
+  values. The five tools stay listed or unlisted as they were at process start until a restart. A key longer
+  than 256 characters is `idempotency_key_too_long` and writes no row. Modify charges the full new size. When
+  trading is enabled, an empty `Trading__AllowedAccountIds` fails startup. The kill switch still blocks cancel
+  and close; that block is pending Adam's decision.
+
+- **`get_recorder_health` and `GET /health/recorder` (gh#756).** Read-only report of `feedConnected`, `feed`,
+  `database`, `lastTickUtc`, `gaps`, `contractId`, `session`, `cachedAtUtc` and `ageMs` for the configured
+  symbols and the contracts active in the elapsed session. The HTTP path is behind the bearer gate. `/health`
+  stays the unauthenticated liveness probe. `lastTickUtc`, `contractId`, `session`, `gaps`, `cachedAtUtc` and
+  `ageMs` are omitted when they do not apply. `cachedAtUtc` and `ageMs` apply when this process reused a
+  report from the last five seconds. `ageMs` is that read's clock minus the instant the report was stored.
+  The `(Instrument, TradeTimeUtc)` index uses a per-chunk build on a hypertable and a plain index when
+  Timescale is absent. Startup applies `Migrations__CommandTimeoutSeconds` (default 3600) for that migration
+  and restores the previous command timeout. A second replica waits on the build's session advisory lock;
+  `55P03` is raised only when `lock_timeout` is set, and the migration does not set it. The lock is released
+  once. `dotnet ef migrations script` includes the Timescale reloption unconditionally, and the five build
+  statements have to share one connection.
+
+- **The trade-tape recorder stops on a TopstepX session conflict** (gh#757). The recorder and the
+  trading platform share one login, and another login disconnects the platform.
+  `MarketData__StopOnSessionConflict` defaults to true. A hub close that names a documented
+  validate error (`invalid session` or `session not found`), or `POST /api/Auth/validate` returning
+  `InvalidSession`, `SessionNotFound`, or HTTP 401, disconnects, waits
+  `MarketData__SessionConflictBackoff` (default five seconds, from zero through two minutes), and
+  does not reconnect. The probe uses only the token already held. It does not call `loginKey`,
+  including when that token is inside the client's refresh window (about 54 minutes). An
+  inconclusive probe does not reconnect and does not latch login: a fresh token is probed again
+  on its own interval (one second, doubling to 30 seconds), and no fresh token stops the recorder
+  instead of logging in, without closing login for REST tools. The held token is renewed with
+  `POST /api/Auth/validate` whenever the venue client is configured, before the client's 54-minute
+  refresh, so a quiet process does not call `loginKey` on a timer. A renewal failure closes login
+  only while that token is still fresh. `ExpiredToken`, or a token that has reached its refresh
+  window, allows a budgeted `loginKey` so the process can recover. The first attempt runs
+  immediately; a failure, including the venue client returning the bearer that was just rejected,
+  waits from 30 seconds, doubling up to 5 minutes. That login disconnects whatever session is live
+  on the account, including a healthy trading platform. With the switch off, replicas (gh#772) kick
+  each other about once per 54-minute cycle; with it on, the other replica latches until restart.
+  A conflict with the switch off backs off the same way instead of re-validating every 30 seconds.
+  A latched stop posts no further validate. Freshness follows a monotonic clock, which stalls
+  across a Linux suspend; REST then fails until the next validate, at most 35 minutes. After a
+  conflict stop, tools may keep using the held token until it ages out and then fail rather than
+  calling `loginKey`. `mcp.tape.session_conflicts` and the `tape.session_conflict` span record
+  `source` = `hub` or `api`. `mcp.session.renewal_refusals` and the `session.renewal_refusal` span
+  record a refusal (`latched`, `outage`, `conflict`, `closed_suspecting`, `closed_probe`,
+  `closed_backoff`, `closed_latched`). `mcp.session.renewal_reopens` records `expired` and
+  `exhausted`. `mcp.session.recovery_logins` records each budgeted recovery attempt. This
+  repository does not log the vendor's sentence. The venue client still logs its own text when its
+  login methods run.
+
+- **Scheduled tape export (gh#755, `R-10`).** `TapeExportWorker` writes `Trades`, closed `TapeCoverage`
+  and `FootprintCells` as gzip CSV and Parquet under `TapeExport__Path` (default `/data/tape-exports`,
+  a mounted volume the process does not create). Trades and coverage are one pair of files per contract
+  per day; footprint files are per instrument and resolution because a cell has no contract.
+  `TapeExport__Format` accepts only `csv.gz+parquet`. Off unless the transport is HTTP and
+  `TapeExport__Enabled=true`. `TapeExport__Schedule` defaults to `06:00` UTC. The worker waits for that
+  time and runs only while this process holds a recorder lease. A UTC day is copied only after it has
+  ended and no open listen still overlaps it. Files are `yyyy-MM-dd.vN`, the manifest is renamed into
+  place last, and a matching receipt hash is not read again. The export is additive: local rows, older
+  generations, and Drive files are not deleted. Google Drive is a second copy, off unless
+  `TapeExport__Drive__FolderId` and a service-account JSON or path are set. Prefer the path. Inline JSON
+  is visible to anyone who can inspect the container. The scope is `drive.file` (ADR-0026). The same
+  identity updates one file. A transient failure backs off. A permanent failure is not retried and keeps
+  the last file id. `TapeExportReceipts` records `pending`, `drive_disabled`, `uploaded`, or `failed`.
+  `export-tape` and `import-tape` archive or restore one day
+  or every day; import refuses an unverified day and inserts nothing for it. `mcp.tape.exports`,
+  `mcp.tape.uploads` and `mcp.tape.export.duration` record the pass, and spans `tape.export` and
+  `tape.upload` trace it. Timescale `policy_retention` on `Trades` stays empty. gh#758's template uses
+  `TapeExport__Schedule`, `TapeExport__Path` and `TapeExport__Format`, plus the Drive keys above.
+  `Retention__*` is not read; dropping raw tape is out of scope and needs its own ADR.
+
+- **`live` and `reason` on `get_footprint` and `get_volume_profile` (gh#728).**
+  `live` true means this process is listening, not that the cells are current. `reason` is a closed
+  code. A window that is not the ask — a gap at the start, a cut at the end, a hole, or a roll —
+  is `covered.narrowed`, and `covered.end` is when the data ends. A read served with `live` false
+  is counted, tagged with the reason, and only after the answer is actually returned.
+
+- **`TradingRiskGate` (gh#711).** Central practice-only gate with allowlist, symbol denylist, per-order and
+  daily caps, dry-run preview, and append-only audit rows before every outcome. Future MCP order tools will call
+  this type
+  instead of `IExecutionGateway` directly (ADR-0024).
+
+- **`TradingExecutionOptions` — master enable, kill switch, allowlist, caps and symbol denylist (gh#708).**
+  `Trading__Enabled` defaults to false. `Trading__KillSwitch` and an optional watched
+  `Trading__KillSwitchFile` halt writes without redeploying; `Trading__AllowedAccountIds` is a secondary
+  filter only and cannot override the practice-only stage rule in ADR-0024 v1. Caps:
+  `Trading__MaxContractsPerOrder` and `Trading__MaxContractsPerDay`. No MCP trading tools or venue order calls
+  ship in this change — configuration, validation, and refusal tests only.
+
+- **`TradingAuditLog` — append-only trading audit table.** EF entity and migration for every trading attempt
+  (preview and live): timestamp, account id, parsed stage, tool, idempotency key, request hash, dry-run flag,
+  outcome, and venue error code — no secrets. Postgres triggers refuse updates and deletes (gh#709, ADR-0024
+  Proposed §5, gh#707).
+
+- **`available` on every bar-series payload.** `get_bars`, `get_latest_bars`, `get_session_bars` and
+  `get_latest_session_bars` report `available.earliest` / `available.latest` — the first and last bar this
+  call actually returned. Both keys are omitted when the series is empty. A requested window past the
+  vendor's depth comes back short with no error; the timestamps are how a caller tells that from a quiet
+  market. Paging at the silent 1000-bar cap and pacing at 50 requests / 30 seconds were already in the
+  gateway; unit tests now drive that walk against a scripted `retrieveBars` (gh#695, `R-1.16`).
+
+- **`adx`, `plus-di` and `minus-di` in the indicator catalogue, at Wilder's default 14.** Readable on
+  `get_indicators` / `get_indicator_at` and on the session twins, at the primary period and at any additional
+  `Indicators__AdditionalAdxPeriods` an operator configures. The three share one period: ADX is a smoothing of
+  the spread between the DI, so separate windows would publish an ADX no pair of this server's own DI
+  explains. `adx` warms up in `2n` bars where the DI need `n + 1` — it smooths a value that is itself
+  smoothed — so a freshly rolled contract carries DI rows for buckets `adx` has none for. A flat series
+  reports both DI as absent rather than zero, and a DX with no denominator restarts ADX's warm-up rather than
+  resuming a value from before the break (gh#670).
+
+### Removed
+
+- **AWS CDK deployment infrastructure.** The `infra/` CDK application, OIDC deploy workflows, and related CI
+  gates are gone. **`release.yml` ends at the GHCR push** (no post-publish deploy jobs). Run published images
+  with the root `Dockerfile` and `docker-compose.yml` ([`documentation/deployment.md`](documentation/deployment.md)).
+  ADR-0023 is superseded.
+
+### Changed
+
+- **MCP clients authenticate with `Authorization: Bearer <token>`** (gh#855, via #856). Both staging and
+  production serve the static bearer token (`Mcp__Auth__Mode=StaticToken`, from the shared
+  `MCP_HTTP_BEARER_TOKEN`) until an OAuth provider is chosen; this is the ADR-0021 exception. OAuth returns
+  with a provider.
+
+- **The GHCR image is private** (gh#849, via #854). Pulling `ghcr.io/adammarquette/marqspec.mcp.topstepx`,
+  on Railway or with `docker pull`, needs a `read:packages` credential. On Railway that is Registry
+  Credentials, which need the Pro plan. `bootstrap.sh` step 5 reports a private package as expected.
+
+- **Server and recorder restart retries go from unset (null) to 100** (gh#848, via #853). Railway restart
+  policy stays ON_FAILURE with `restartPolicyMaxRetries: 100`, so a `Store__Required` exit rides out a
+  Postgres outage of a couple of hours. The first deploy of this release plans `null -> 100` and redeploys
+  both services once. Checked by `[app-restart]`.
+
+- **The `postgres-data` volume region is pinned to `us-east4-eqdc4a`** (gh#850, via #852), so plans stop
+  trying to null it and production's volume is created in the same region. Checked by `[pg-volume]`.
+
+- **A swallowed daily-cap release follows the same post-send rule** (gh#780). When the coordinator reports
+  `LastReleaseFailed` and no cleanup exception was stored, a send that has already started is
+  `OutcomeUnknown` and is not safe to retry. The result keeps the acked broker order id and the parsed
+  stage in the outcome-unknown cases, and leaves the id null when nothing was sent. The id is not kept
+  when the send throws, or when the audit write fails after the ack.
+  A release that fails before the send leaves the refusal that was already decided.
+
+- **Railway staging deploy and production promotion** (gh#758). These are manual workflows. `railway-staging`
+  succeeded on 2026-10-29 (7:40 and 8:40 PM CT); `railway-promote` has not run against production yet.
+  `railway-staging` deploys a GHCR tag+digest to staging (template checks, saved plan,
+  `/health` identity, synthetic seed), then records the digest that passed. `railway-promote` deploys only
+  such a digest to production, behind the `production` environment. `railway-staging-preflight` reports what
+  staging is missing (names only), and `railway-seed-check` keeps the seed in step with the migrations.
+- **Railway deploy template** (gh#758). `.railway/railway.ts` describes three image-sourced services:
+  `postgres` (Timescale pg17, pinned by digest), a public `server` behind the static bearer token (gh#855),
+  and a private single-replica `recorder`. Both server roles run one pinned image, and `/health` reports its
+  tag and digest. Production and staging keep Postgres on the `postgres-data` volume (gh#846); other
+  environments are disposable, with no volume and no export.
+  Secrets are Railway shared variables. A new `railway-template` CI job checks the template offline for every
+  environment name; it is not a required check yet. `no-order-path` now refuses any `Trading__Enabled` in
+  `.railway/` that is not the literal `"false"`. Nothing is deployed by this change. ADR-0025 (Railway as the
+  target) is a draft; retention keys are proposed names only, pending their own ADR. See
+  [`documentation/deployment.md`](documentation/deployment.md#railway-gh758).
+  The gh#755 tape export stays off everywhere: the image now drops root itself (gh#767, this release), but the
+  template keeps export blocked until `EXPORT_UNBLOCKED` is flipped in a follow-up config PR; the check
+  already enforces the #765 contract for when it is enabled. Both checks read env keys the way .NET does
+  (case-insensitive, `:` equals `__`) and refuse colon keys, colliding keys and miscased known keys.
+
+- **Tape export uploads hold a session lock, not a transaction lock** (gh#755, gh#767, gh#774).
+  `pending` commits before the Drive call and the file id commits after, on one direct connection for
+  the pass. That connection is not pooled, sets `lock_timeout` and TCP socket keepalive (not Npgsql's
+  keepalive query), and a drop fails that file without aborting the rest. `IdentityBusy` and `LockLost`
+  record a span and a counter. A lock lost after the bytes land is not counted as uploaded. A deadline
+  during backoff records `Timeout` with reason `upload_timeout` and continues.
+  Transient retries honour `Retry-After` up to 30 seconds. The Google client's own 503 backoff is off.
+  Railway allows one volume per service, mounted at `/data`. The image entrypoint that
+  prepares it now exists (gh#767, via #860): it refuses symlinks, uses `chown -h`, and does not `chown -R`
+  the volume. An unwritable path inside the application is still logged and skipped. The recorder's
+  tape-export config is still off: the template (gh#774) blocks export until `EXPORT_UNBLOCKED` is flipped
+  in a follow-up config PR.
+- **`no-order-path` now gates the order path instead of forbidding it** (gh#718, ADR-0024). The required
+  check of the same name changes meaning: from "no order path exists" (ADR-0002) to a tripwire for "orders
+  only through `TradingRiskGate` -> `IExecutionGateway`, `Trading__Enabled` off by default, Practice accounts
+  only". It discovers product projects (any csproj without a test SDK / `IsTestProject`), fails on any search it could not run, confines order names and the
+  gateway to the seam (Program.cs to its `AddScoped` registrations), checks the master-switch default across
+  options, code (including `nameof(Enabled)` and `["Enabled"]` key idioms), appsettings, compose, Dockerfile and `.env.example`, requires the gate at
+  `Configuration/TradingRiskGate.cs` with the disabled/halted check first in every member, and requires
+  `Gate=ADR-0024` tests that actually execute. Railway variables are outside what CI can see.
+  New: `scripts/check-no-order-path-selftest.sh`, `scripts/check-gate-tests-ran.sh`, CODEOWNERS entries for the
+  allowlisted files.
+
+- **Default `MarketData__Instruments` includes the common micros.** The shipped list is
+  `ES,NQ,MES,MNQ,MGC,MCL` — the same string in `MarketDataOptions`, `.env.example` and compose —
+  so MES / MNQ / MGC / MCL no longer return "Unknown instrument" out of the box (gh#694).
+
+### Fixed
+
+- **`get_footprint` and `get_volume_profile` under stdio.** When this process is not the recorder,
+  the closed window is aggregated from stored prints in memory and nothing is written. `live` is
+  false. A window up to now is cut back to the last closed run (`covered.narrowed`). The ask
+  is floored to the bar open before the ledger confines it, on both paths, so an edge bar the
+  tape covers is complete and `covered.start` is that open. The end is aligned up to the bar
+  close before the ledger confines it, so an edge bar the tape covers is complete and
+  `covered.end` is that close. A ledger that begins later in the bar is not backdated over a
+  hole, and a ledger that ends sooner is not extended past the tape. A window
+  with no closed tape still refuses and names a separate HTTP recorder; it does not say to stop
+  one. A claim this process lost still refuses. The still-open sentinel is not served as history
+  (gh#728, R-5.8, R-9.6).
+
+- **The OAuth refusal line cannot be forged.** `LogText.Sanitize` escapes CR, LF, the other C0/C1 controls,
+  U+2028, U+2029, the bidi overrides and isolates, LRM, RLM, ALM, ZWSP, BOM, a lone surrogate, and a literal
+  backslash, and an opening bracket, then caps the escaped text — on an escape boundary, and not through a
+  surrogate pair — so an 8 KB control-character path cannot expand to about 48 KB. Escaping the bracket keeps
+  a caller-supplied ` [truncated]` distinct from one that already contains a backslash, and distinct from the
+  suffix the cap appends. The gate logs method, path, reason, `sub` and `client_id` through it, and the
+  `reselect-bars` command-line refusal does too. The token is still never logged (gh#747,
+  [ADR-0007](documentation/adr/0007-dual-transport.md)).
+
+- **Migration command timeout (gh#756, PR #761).** The previous command timeout is restored when
+  `MigrateAsync` throws, including when a migration command fails, and when the call is cancelled. Startup
+  passes the host stopping token into that migration, the same token the reach probe already uses. The
+  index-build probe and unlock use the migration command's timeout, on the async failure path as well as
+  the sync one. The async unlock uses the async query API. An unlock that throws a database, timeout, or
+  invalid-operation error is logged and does not replace the original command error. A non-fatal failure
+  while resolving or writing that log is discarded. Out of memory and the other fatal exceptions still
+  propagate. A missing logger is `NullLogger`. Cancellation still propagates.
+  `documentation/deployment.md` records that a missed Railway healthcheck stops the failed container and
+  marks the deploy failed, while the previous deployment keeps serving. The image build does not count:
+  the window starts after deploy. Size it as the startup wait plus the command timeout plus about 300
+  seconds. A Railway `healthcheckTimeout` overrides `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`. The server and the
+  recorder both migrate against the same advisory lock. Their waits overlap. The second service's wait is
+  one call, cancelled at the command timeout with `57014`. If the first index-build migration runs close
+  to that timeout, redeploy the second once the first is healthy. A plain-Postgres index-build migration
+  on `Trades` blocks writes for its duration. The seven-day ceiling stays a typo guard.
+
 ## [0.5.0] - 2026-09-11
 
 A **minor** bump: a published release now deploys staging by digest (then production
@@ -1044,7 +1305,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.0...v0.3.1

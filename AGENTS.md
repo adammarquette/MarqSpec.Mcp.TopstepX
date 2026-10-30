@@ -36,7 +36,6 @@ Solution `MarqSpec.Mcp.TopstepX.slnx`, seven projects on `net10.0`:
 | `…​.Domain` | Pure: `Bar`, `InstrumentId`, `InstrumentSpec`, `IIndicator` and `ILevelMethod` + implementations, `BarSessionCalendar`, `BarGapDetector`, `KeyLevels`, `SessionLevels`, `VolumeLevels`, `FootprintAggregator`, `VolumeProfileAggregator`, `TapeVolumeFront`, `ContractExpiry`, `ContractMonthCycle`, `HistoricalContractPolicy`. **References nothing** |
 | `…​.Data` | EF Core entities, `DbContext`, migrations |
 | `…​.Tests` / `…​.IntegrationTests` | Unit; and Testcontainers-backed integration |
-| `infra/…​.Infra` / `infra/…​.Infra.Tests` | The AWS deployment as CDK in C#, and its template tests — synthesised in CI with no credentials ([ADR-0023](documentation/adr/0023-aws-deployment-topology.md)). **References no product project and no venue package** |
 
 The venue is reached through the **[`MarqSpec.Client.ProjectX`](https://github.com/adammarquette/MarqSpec.Client.ProjectX)
 NuGet package** — not a submodule ([ADR-0003](documentation/adr/0003-client-as-package.md)).
@@ -58,12 +57,20 @@ it before starting, and add dated entries only when nothing formal fits.
 
 ## The six that are never traded away
 
-- **No order path exists in this repository.** The gateway client this depends on has a complete order
-  surface — `PlaceOrderAsync`, `ModifyOrderAsync`, `CancelOrderAsync`, `ClosePositionAsync`. **None of it may
-  be called from product code**, and `scripts/check-no-order-path.sh` fails CI if it is
-  ([ADR-0002](documentation/adr/0002-read-only-venue-boundary.md)). If a task seems to need one, the task is
-  wrong or it belongs in `trading-copilot`. Do not add a flag, a guard or a "safe" wrapper — the boundary is
-  the *absence of the call*, and anything reachable is reachable.
+- **Orders only behind the ADR-0024 gate.** [ADR-0024](documentation/adr/0024-gated-trading-actions-practice-v1.md)
+  (Accepted) supersedes [ADR-0002](documentation/adr/0002-read-only-venue-boundary.md). The venue's order surface
+  (`PlaceOrder`, `ModifyOrder`, `CancelOrder`, `ClosePosition`, `PartialClosePosition`, with or without `Async`,
+  and their request types) is reached only through `TradingRiskGate` -> `IExecutionGateway`, behind
+  `Trading__Enabled` (default **false**), disabled/halted checked first, **Practice accounts only** (gh#718).
+  `scripts/check-no-order-path.sh` is a **tripwire, not a guarantee**: it catches the obvious breaches
+  (order names or the gateway outside the seam, `\u` escapes, reflection, route literals, a non-false
+  default) but cannot see a reflection call on a built string, an innocuous wrapper inside an allowlisted
+  file, or a venue method it does not list. The boundary is held by that tripwire **plus** review,
+  [CODEOWNERS](.github/CODEOWNERS) on the allowlisted files (not independent review for PRs authored from
+  the owning account), and the `Gate=ADR-0024` tests. On Railway, the repo template
+  (`.railway/railway.ts`) is CI-checked to carry the literal `"false"`, but **variables edited in the Railway
+  dashboard are not CI-verifiable**: after deploy the off-by-default rests on the code default (gh#758).
+  Do not widen the script's allowlists to get green.
 - **No secrets in source.** Credentials arrive through the Options pattern and environment; never a literal,
   never a tracked `appsettings.json`, never a log line. **This repository is public**, and the sibling ProjectX
   client has already leaked and rotated a real credential once.
@@ -91,16 +98,18 @@ it before starting, and add dated entries only when nothing formal fits.
   describes updates **the affected section of that document, in the same PR** — the PRD (`R-#`), the
   architecture doc, the data dictionary, the [tool catalogue](documentation/mcp-tool-catalog.md), the ADRs,
   this file. Update the section, not the whole file. A stale doc is a build break in the top layer.
-- **Issue-first — no orphaned PRs.** Every PR cites an issue opened before it (`Closes #N` / `Related to #N`);
-  cite issues as `gh#N`. **Task specs and acceptance criteria belong in the issue**, never as files under
-  `documentation/` — a parallel spec duplicates the tracker and drifts from it.
+- **Issue-first — no orphaned PRs.** Every PR cites an issue opened before it; into `develop` that is
+  `Closes #N` (or `Part of #N` plus `Issue-stays-open: <reason>`, CONTRIBUTING.md); cite issues as `gh#N`.
+  **Task specs and acceptance criteria belong in the issue**, never as files under `documentation/` — a
+  parallel spec duplicates the tracker and drifts from it.
 - **Maximal metadata on every issue and PR:** assignee, milestone, `work:*` and `Work Estimate` labels. Issues
   are the board cards; the board auto-adds pull requests too, but a PR item is **not** a card — never move
   one. Epics decompose into sub-issues. A thin issue is a defect — the next
   agent rebuilds context from these fields.
   Detail: [board workflow](documentation/project-board-workflow.md).
-- **Commits:** Conventional Commits, plus **both** an `Assisted-by:` and a `Co-Authored-By:` trailer on
-  AI-authored changes. **PR documentation** carries the `Assisted-by:` line on every body section, comment
+- **Commits:** Conventional Commits. AI-assisted commits end with an `Assisted-by:` trailer in the form
+  CONTRIBUTING describes (see [*AI-assisted commits*](CONTRIBUTING.md#ai-assisted-commits)). `Co-Authored-By`
+  isn't required. **PR documentation** carries the `Assisted-by:` line on every body section, comment
   and review — more than one tool can write the same PR. Full type list: [`CONTRIBUTING.md`](CONTRIBUTING.md).
 - **Branch off `develop` and PR back into it.** `develop` is the sole integration branch, never a workspace.
   Promotion is one-way with one source per step: `staging` ← `develop`, `main` ← `staging`. Never branch off or

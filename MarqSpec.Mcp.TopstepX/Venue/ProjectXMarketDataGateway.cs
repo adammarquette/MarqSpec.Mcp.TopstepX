@@ -15,7 +15,7 @@ namespace MarqSpec.Mcp.TopstepX.Venue;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>This type calls no order method, and the CI gate proves it</b> (ADR-0002). The client underneath has a
+/// <b>This type calls no order method, and the CI gate proves it</b> (ADR-0024). The client underneath has a
 /// complete order surface — this is the first point in the repository where those calls are actually
 /// reachable, and it is precisely why <c>scripts/check-no-order-path.sh</c> exists.
 /// </para>
@@ -36,6 +36,7 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     private readonly VenueCallGuard _calls;
     private readonly bool _live;
     private readonly ILogger<ProjectXMarketDataGateway> _logger;
+    private readonly IAccountStageResolver _stageResolver;
 
     /// <summary>Creates the gateway.</summary>
     /// <param name="client">The vendor client.</param>
@@ -51,13 +52,15 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
     /// and this is the only place in the process that can do it: <c>MarqSpec.Client.ProjectX</c> 3.0.0 has no
     /// activity source of its own (ADR-0019, gh#536).
     /// </param>
+    /// <param name="stageResolver">Shared account-stage parser for reads and trading gates.</param>
     public ProjectXMarketDataGateway(
         IProjectXApiClient client,
         InstrumentRegistry registry,
         VenueRequestPacer historyPacer,
         IOptions<VenueOptions> options,
         ILogger<ProjectXMarketDataGateway> logger,
-        HostTelemetry telemetry)
+        HostTelemetry telemetry,
+        IAccountStageResolver stageResolver)
     {
         ArgumentNullException.ThrowIfNull(options);
 
@@ -67,6 +70,7 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         _calls = new VenueCallGuard(telemetry);
         _live = options.Value.DataTier == ProjectXDataTier.Live;
         _logger = logger;
+        _stageResolver = stageResolver;
     }
 
     /// <inheritdoc />
@@ -366,7 +370,7 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
             () => _client.GetAccountsAsync(onlyActive, cancellationToken),
             "listing accounts").ConfigureAwait(false);
 
-        return [.. accounts.Select(ProjectXMapping.ToAccount)];
+        return [.. accounts.Select(account => ProjectXMapping.ToAccount(account, _stageResolver))];
     }
 
     /// <inheritdoc />

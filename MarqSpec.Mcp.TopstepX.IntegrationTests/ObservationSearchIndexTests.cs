@@ -18,8 +18,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class ObservationSearchIndexTests(SchemaFixture fixture)
+public sealed class ObservationSearchIndexTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     private const string Model = "index-probe-v1";
 
     /// <summary>Enough rows that an index scan is genuinely the cheaper plan.</summary>

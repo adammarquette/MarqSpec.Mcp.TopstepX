@@ -78,6 +78,7 @@ decides that one host speaks stdio and streamable HTTP; grep it for `signalr`, `
 | [2026-08-29](#update-2026-08-29--live-tape-health-is-read-at-the-point-of-use) | Live tape health, written from lifecycle and required by footprint tools (gh#218) |
 | [2026-08-30](#update-2026-08-30--a-failed-open-persist-drops-the-subscribe) | A store fault after a confirmed subscribe drops the venue subscription (gh#376) |
 | [2026-08-31](#update-2026-08-31--one-recorder-per-instrument-is-a-claim-not-a-convention) | "Two subscribers on one tape" becomes a store-backed claim the second recorder is refused (gh#404) |
+| [2026-10-24](#update-2026-10-24--a-process-that-is-not-the-recorder-still-serves-closed-coverage) | A process that is not the recorder serves closed coverage and flags it not-live (gh#728) |
 
 ## Update (2026-08-28) — the standing choice is reversed
 
@@ -406,6 +407,207 @@ It does not deduplicate prints a past double-recording already wrote, and it doe
 discard predicate — the claim simply runs *before* it, so a refused start never reaches it and can
 no longer supersede a live listen. It says nothing about quotes, depth or the user hub.
 
+## Update (2026-10-24) — a session conflict stops the recorder (gh#757)
+
+TopstepX allows one device session. The recorder and the trading platform share the login, and the
+client's automatic reconnect logs in again, which disconnects the platform.
+
+`MarketData__StopOnSessionConflict` defaults to **true**. `MarketData__SessionConflictBackoff` defaults
+to five seconds and must be from zero through two minutes inclusive; startup refuses anything outside
+that range and names the configuration key `MarketData:SessionConflictBackoff`. Zero finishes the stop
+immediately.
+
+### What is documented
+
+Validate codes are `ValidateErrorCode` in the live gateway schema
+[https://api.topstepx.com/swagger/v1/swagger.json](https://api.topstepx.com/swagger/v1/swagger.json):
+0 Success, 1 `InvalidSession`, 2 `SessionNotFound`, 3 `ExpiredToken`, 4 `UnknownError`.
+`ValidateResponse` also carries `newToken`. The realtime guide
+[https://gateway.docs.projectx.com/docs/realtime/](https://gateway.docs.projectx.com/docs/realtime/)
+does not publish hub close sentences, and neither does that schema. The intro is
+[https://gateway.docs.projectx.com/docs/intro](https://gateway.docs.projectx.com/docs/intro).
+
+The recorder treats a hub close as a conflict only when its error or exception text contains one of
+those documented names (`invalid session`, `invalidsession`, `session not found`, `sessionnotfound`).
+Phrases such as "another session" or "another device" are **not** matched: they are not in the vendor
+docs, and no captured close text is cited here. `ExpiredToken` (3) is not a conflict — the session
+aged out, and the bearer can never become valid. The recorder still does not log in on that code.
+HTTP 401 from validate is treated as a killed session
+and stops the recorder. That status is this server's reading of a refused bearer, not a documented
+`ValidateErrorCode`.
+
+### No login while a conflict is suspected or after a stop
+
+The probe reads `HeldSession` and posts that bearer to `POST /api/Auth/validate`. It does not call
+`GetAccessTokenAsync`. The client's method returns the cache when it is outside a one-minute buffer
+and otherwise posts `/api/Auth/loginKey`. The cache lifetime in the client is 55 minutes, so the
+refresh starts about 54 minutes after the token was stored. A probe that called it would log in.
+
+`GatedAuthenticationService` is the process's `IAuthenticationService`, which is what SignalR's
+`AccessTokenProvider` and the REST `AuthenticationHandler` both call. The concrete
+`AuthenticationService` is not registered, so a resolve cannot skip the gate. A token that is still
+fresh is returned and not logged. When it is not fresh, `loginKey` runs only if no probe is in
+flight, no conflict is suspected, and no stop is latched. A renewal backoff also closes login while
+the token is still fresh. Once the token is inside the one-minute refresh buffer, that backoff alone
+does not keep login closed: the next read recovers then, rather than waiting for the renewer's next
+validate (that wait is up to the 5-minute failure cap). Logins take one lock and check the gate
+again after `loginKey` returns. A result that lost that race is not remembered and not returned. A
+`loginKey` request already sent cannot be recalled — that window is irreducible, and the call may
+still have opened a session at the venue. Marking the suspicion does not take the login lock. The
+SignalR callback must return without waiting for the HTTP timeout.
+`RefreshTokenAsync` remembers a refresh that has already completed, so the next read does not log in
+a second time. `ValidateSessionAsync` throws: the client's implementation clears its cache on any
+unsuccessful body, and the next read then logs in. A `newToken` on a **valid** validate body is
+stored in `HeldSession` (another 55 minutes) only when the held bearer is still the one that was
+posted. A valid body with no `newToken` stores the same bearer again so that window slides. The
+token is never written to a log. The validate body is not logged. Vendor text is not passed to the
+logger from this path.
+
+A recovery login is budgeted. `ExpiredToken`, or a failed renewal once the held token is inside its
+refresh window, arms one attempt. The first attempt runs immediately and calls `RefreshTokenAsync`
+before it reads the bearer. A failure, including the client returning the bearer that was just
+rejected, waits 30 seconds and doubles up to 5 minutes. The next REST call does not post `loginKey`
+again until that wait has elapsed. In `MarqSpec.Client.ProjectX` 3.0.0, `GetAccessTokenAsync`
+returns `_accessToken` while `_tokenExpiration` is more than one minute away, and a successful
+`loginKey` sets that expiry to 55 minutes from `UtcNow`. `RefreshTokenAsync` always posts
+`loginKey`. The compare is what treats a cached copy of the rejected bearer as a failed attempt.
+
+That recovery `loginKey` disconnects whatever session is live on the account. `ExpiredToken` means
+**this process's** bearer is dead. The trading platform's session can still be healthy, and the
+recovery login kicks it. The same kick happens when a validate outage lasts until the held token is
+inside its refresh window. Across replicas (gh#772, still open), with the switch on, a recovery
+login on one replica kicks the other, which then sees `InvalidSession` and latches until restart.
+With the switch off on both, each replica's held token ages out while login is open, so they kick
+each other about once per 54-minute cycle. A crash-looping pod is one `loginKey` per restart.
+
+The held token is kept fresh by a periodic `POST /api/Auth/validate` with the bearer already held.
+That call creates no new session and does not use `loginKey`. It runs whenever the venue client is
+configured, not only while the recorder is running. The steady interval is 30 minutes, plus or minus
+5 minutes of jitter, and it is clamped so a renewal still fires at least 10 minutes before the
+client's 54-minute refresh. A renewal that fails backs off from 30 seconds, doubling up to 5 minutes,
+and closes login while the held token is still fresh. That close is not the one-way stop. Login
+opens again when a later validate succeeds, when validate returns `ExpiredToken` (the bearer can
+never become valid), or when the token's remaining life is inside the one-minute refresh buffer.
+`ExpiredToken` drops the held bearer only when it is still the bearer that was validated. A latched
+stop does not reopen login, and the renewer posts no further validate once the stop is latched. With
+the switch off, a positive conflict does not latch, and the renewer uses that same failure backoff
+instead of validating the refused bearer every 30 seconds. No token has been stored yet is a short
+poll that leaves login permitted, so the first connect can still log in.
+Freshness is monotonic elapsed time (`TimeProvider.GetTimestamp` and `GetElapsedTime`), so a forward
+jump of the wall clock does not bring that hourly `loginKey` back. The monotonic clock does not
+advance while Linux is suspended, so after a long suspend the held token can look fresh here and be
+dead at the venue. REST then fails until the renewer's next timer fires and validate returns
+`ExpiredToken`, at most the 35-minute happy-path interval. That bound is self-healing. Freshness
+stays on the monotonic clock so an NTP step cannot force `loginKey`. A probe and a renewal validate
+take one shared lock, and the bearer is read after the lock is taken, so a call queued behind a
+rotation posts the new bearer. `mcp.session.renewal_refusals` and the `session.renewal_refusal` span
+record `reason` = `latched`, `outage`, `conflict`, `closed_suspecting`, `closed_probe`,
+`closed_backoff`, or `closed_latched`. `mcp.session.renewal_reopens` and the
+`session.renewal_reopen` span record `expired` and `exhausted`, which open login. 
+`mcp.session.recovery_logins` and the `session.recovery_login` span record `recovery_failed`,
+`recovery_cached_token`, or `recovery_succeeded`. This replaces the hourly `loginKey` the client
+would otherwise post once the cache was inside its last minute, which is the login that kicks the
+platform.
+
+**The one-way stop latches only on positive conflict evidence:** a hub close whose text contains a
+documented validate name, HTTP 401, `InvalidSession`, or `SessionNotFound`. A missing token, a
+timeout, `ExpiredToken`, `UnknownError`, a missing code, or a call that does not land does **not**
+latch it. A renewal failure closes login only while the held token is still fresh. `ExpiredToken`
+does not.
+
+**Safe default when the probe is inconclusive:** do not connect and do not call `loginKey`.
+`AutoReconnect` stays off. If a token is still held and still fresh, wait and probe it again. That
+wait is not `SessionConflictBackoff`. It starts at one second and doubles up to 30 seconds, so a
+stop backoff of zero cannot become a tight validate loop. The stop backoff, including zero, only
+finishes a stop. If no fresh token is held, stop and release the claim. That stand-down is
+`TapeAvailability.Stopped`, not a session-conflict counter, and it does not latch the login gate.
+Restart to record again. REST tools may call `loginKey` after that stand-down.
+
+A **valid** probe may call `ConnectMarketHubAsync` while the stop is not latched and the hub is not
+already connecting or reconnecting. It does not set `AutoReconnect` back to true.
+
+### The first retry, and the operator's flag
+
+`HubConnectionFactory` and `ReconnectPolicy` are internal to the venue client. The policy reads
+`WebSocketOptions.AutoReconnect` on every `NextRetryDelay` and returns no delay when it is false
+(Client gh#69). SignalR schedules that delay **before** `Reconnecting` fires, so turning the flag
+off inside the disconnect handler misses the first retry (default one second). While the switch is
+on, the recorder forces the flag off **before** `Connect`, and again when a probe starts.
+
+The previous value is remembered once. It is restored only when this process exits without a latched
+stop and without a no-token stand-down, and it is restored to that previous value, including
+`false`. A latched stop does not restore it. A stand-down does not latch, and it still leaves the
+flag off. Market and user hubs share one `WebSocketOptions` instance, so `AutoReconnect` stays off
+for **both** hubs for the recorder's lifetime. A valid probe must not turn it back on: the stop
+latch is set synchronously, before any await, and a probe that is already running checks the latch
+before it connects. A `Connected` that arrives after the stop is latched disconnects the market hub,
+so a reconnect that finishes after the conflict cannot leave a stopped recorder holding a connected,
+subscribed hub.
+
+One probe is in flight. A second drop does not start another. `DisconnectMarketHubAsync` is not
+called while the hub is `Connecting` or `Reconnecting`, because that would abort a SignalR retry
+already in progress. The recorder still does not subscribe again.
+
+### What the refusal promises
+
+The recorder will not reconnect the market hub and will not call `loginKey`. Tools may keep calling
+the venue with the token already held until that token ages out; after that they fail instead of
+logging in. The log line and the `get_footprint` / `get_volume_profile` refusal say that. They do
+not say the process never touches the venue while a fresh token remains.
+
+`mcp.tape.session_conflicts` counts a conflict stop, tagged `source` = `hub` or `api`. The span is
+`tape.session_conflict` with that tag only. `mcp.session.renewal_refusals` counts a renewal or login
+refusal, tagged `reason`, and the span is `session.renewal_refusal`. `mcp.session.renewal_reopens`
+counts an open (`expired`, `exhausted`). `mcp.session.recovery_logins` counts one budgeted recovery
+login. The log line is this server's own sentence.
+
+**Residual.** The user hub is not connected by this recorder. The shared options still keep
+automatic reconnect off for it while the recorder is alive. With the switch off, a documented hub
+name is a transport drop and the recorder keeps reconnecting, which is the operator's choice to keep
+this process's session. An already-scheduled SignalR retry is not aborted; the flag has to have been
+off before that retry was armed. This repository does not log vendor close text, validate bodies, or
+tokens. The venue client still logs its own `loginKey` and validate text when those methods run
+inside the package. Not calling `loginKey` is how that client's login body stays out of the log.
+This repository cannot suppress a line the package writes itself. A `loginKey` that was already on
+the wire when a suspicion started cannot be recalled.
+
+## Update (2026-10-24) — a process that is not the recorder still serves closed coverage
+
+gh#218 required the tape tools to `Require()` that instrument's tape and refuse when it was not
+listening. That check only knows whether **this process** is recording. A stdio client — the
+transport most MCP clients launch — therefore refused `get_footprint` and `get_volume_profile`
+even when a separate HTTP recorder had already closed a `TapeCoverage` run in the shared store
+(gh#728). R-5.1 puts every tool on both transports, and "Where the recorder is allowed to run"
+above is the reason stdio does not subscribe: it reads the store the HTTP recorder writes.
+
+The tools no longer refuse solely because this process is not the recorder. Closed coverage is
+aggregated from `Trades` in memory with `FootprintAggregator` — nothing is saved, so this
+record's single writer stays one — and `live` is false. The recorder does not write footprint
+cells as it listens, so a stored projection would be stale or absent. `reason` is a closed code.
+`live` true means this process is listening, not that the cells are current. A gap at the start
+or a cut at the end, including a window up to now while another process is still recording, sets
+`covered.narrowed`. That is the only short-window flag. `covered.end` is when the data ends.
+The ask is floored to the bar open before the ledger confines it, on both paths. When
+coverage reaches that open, the edge bar is complete and `covered.start` is that open; the
+floor itself is not a narrowing. When the ledger begins later in the bar, `covered.start`
+stays the ledger start, so a hole is not backdated. The end is aligned up to the bar close
+before the ledger confines it, on both paths. When coverage reaches that close, the edge
+bar is complete and `covered.end` is that close; the alignment itself is not a narrowing.
+When the ledger ends sooner, `covered.end` stays the ledger end. The recorder
+status is read once per call and passed through, so the flag and the
+window cannot disagree. The still-open sentinel stays what gh#365 made it: coverage only
+while that instrument is listening here. A window with no closed tape still refuses, and
+that fact is a typed result rather than a match on the sentence. The sentence names the fix
+and does not say to stop the recorder: under stdio it says to run a separate HTTP process
+on the same database (R-5.8, R-9.6, R-9.7). A recorder
+that is reconnecting, connected but not subscribed, or stopped still refuses, closed cells
+included — that is the gh#218 case. `ClaimTakenOver` and `ClaimLapsed` are their own reason
+codes, not `HeldByAnotherRecorder`, and they refuse the same way: this process was the recorder
+and stood down. Another symbol's subscribe does not satisfy any of those. A read that is
+actually returned with `live` false is counted, tagged with why. A refusal is not. The recorder still starts only under HTTP when
+`MarketData__RecordTape` is on.
+
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.
@@ -420,3 +622,8 @@ no longer supersede a live listen. It says nothing about quotes, depth or the us
 - gh#390 — the coverage ledger is its own type. Landed.
 - gh#404 — a store-backed per-instrument claim refuses a second concurrent recorder. Landed; recorded
   in the update above.
+- gh#772 — more than one replica. A recovery login with the switch on latches the other replica
+  until restart. With the switch off, the replicas kick each other about once per 54-minute cycle.
+  Still open.
+- gh#728 — stdio serves closed coverage another process recorded, flagged not-live. Landed in the
+  update above.

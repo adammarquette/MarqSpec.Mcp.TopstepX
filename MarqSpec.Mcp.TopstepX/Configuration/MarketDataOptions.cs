@@ -45,6 +45,12 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// <summary>The configuration section this binds to.</summary>
     public const string SectionName = "MarketData";
 
+    /// <summary>How long the recorder stays disconnected after a session conflict before it finishes stopping.</summary>
+    public static readonly TimeSpan DefaultSessionConflictBackoff = TimeSpan.FromSeconds(5);
+
+    /// <summary>The longest backoff startup will accept. Longer than this is a stuck recorder, not a pause.</summary>
+    public static readonly TimeSpan MaxSessionConflictBackoff = TimeSpan.FromMinutes(2);
+
     /// <summary>
     /// The daily session close in Central <b>wall-clock</b> time, <c>HH:mm</c>.
     /// </summary>
@@ -69,6 +75,17 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// problem for a handful of dates a year.
     /// </remarks>
     public string Holidays { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Declared early closes, comma-separated <c>yyyy-MM-dd HH:mm</c> in Central wall-clock time.
+    /// </summary>
+    /// <remarks>
+    /// Configuration rather than a feed, on the same terms as <see cref="Holidays"/>. A declared date ends
+    /// only that trade date's recorder-health session at the stated time. It does not change bar expectation,
+    /// session bars, or the next session's ordinary reopen. An undeclared early close is the same visible
+    /// cost on the health report, and the afternoon still looks like missing bars.
+    /// </remarks>
+    public string EarlyCloses { get; init; } = string.Empty;
 
     /// <summary>
     /// The largest number of rows a single windowed read returns.
@@ -98,10 +115,12 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </summary>
     /// <remarks>
     /// A closed list, so an unlisted symbol is an error naming these rather than an empty series. A wrong
-    /// symbol and a quiet market must not be indistinguishable (`R-5.3`).
+    /// symbol and a quiet market must not be indistinguishable (`R-5.3`). The shipped default is ES and NQ
+    /// plus the common micros MES, MNQ, MGC and MCL (gh#694); <c>.env.example</c> and compose state the
+    /// same string.
     /// </remarks>
     [Required]
-    public string Instruments { get; init; } = "ES,NQ";
+    public string Instruments { get; init; } = "ES,NQ,MES,MNQ,MGC,MCL";
 
     /// <summary>
     /// Whether the process may subscribe to the market hub and write prints to
@@ -128,6 +147,36 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </para>
     /// </remarks>
     public bool RecordTape { get; init; }
+
+    /// <summary>
+    /// Whether a session conflict stops the recorder instead of reconnecting.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>On by default.</b> The recorder and the trading platform share one TopstepX login, and the venue
+    /// allows one device session. Reconnecting logs in again and disconnects the platform (gh#757). A hub
+    /// message that names another session, or a validate result of <c>InvalidSession</c> or
+    /// <c>SessionNotFound</c>, disconnects and does not reconnect.
+    /// </para>
+    /// <para>
+    /// Set <c>MarketData__StopOnSessionConflict=false</c> only when this process should keep the session
+    /// and the platform is expected to be the one that drops. A transport drop whose validate result is
+    /// valid is reconnected by this process, without turning automatic reconnect back on. An inconclusive
+    /// probe does not reconnect and does not call <c>loginKey</c>. <see cref="SessionConflictBackoff"/>
+    /// is how long the stop waits, disconnected, before the recorder releases its claim. Zero finishes
+    /// the stop immediately.
+    /// </para>
+    /// </remarks>
+    public bool StopOnSessionConflict { get; init; } = true;
+
+    /// <summary>
+    /// How long to stay disconnected after a session conflict before the recorder finishes stopping.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="TimeSpan.Zero"/> through <see cref="MaxSessionConflictBackoff"/>. A value outside
+    /// that range fails startup, naming <c>MarketData:SessionConflictBackoff</c>.
+    /// </remarks>
+    public TimeSpan SessionConflictBackoff { get; init; } = DefaultSessionConflictBackoff;
 
     /// <summary>
     /// Whether the process may replay stored indicator series at startup.
@@ -174,6 +223,10 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// <summary>The declared holidays, parsed.</summary>
     /// <returns>The holiday strings, trimmed and non-empty.</returns>
     public IReadOnlyList<string> HolidayList() => SplitList(Holidays);
+
+    /// <summary>The declared early closes, parsed as <c>yyyy-MM-dd HH:mm</c> tokens.</summary>
+    /// <returns>The early-close strings, trimmed and non-empty.</returns>
+    public IReadOnlyList<string> EarlyCloseList() => SplitList(EarlyCloses);
 
     /// <summary>The configured instruments, parsed.</summary>
     /// <returns>The symbols, trimmed and non-empty.</returns>
@@ -262,13 +315,33 @@ public sealed partial class MarketDataOptions : IValidatableObject
     {
         List<ValidationResult> results = [];
 
+        if (SessionConflictBackoff < TimeSpan.Zero || SessionConflictBackoff > MaxSessionConflictBackoff)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":SessionConflictBackoff must be from 00:00:00 through 00:02:00 inclusive. "
+                + "It was '" + SessionConflictBackoff.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(SessionConflictBackoff)]));
+        }
+
         BarSessionCalendar calendar;
         try
         {
-            calendar = BarSessionCalendar.Parse(SessionCloseCentral, HolidayList());
+            calendar = BarSessionCalendar.Parse(
+                SessionCloseCentral,
+                HolidayList(),
+                earlyCloses: EarlyCloseList());
+        }
+        catch (EarlyCloseException exception)
+        {
+            results.Add(new ValidationResult(exception.Message, [nameof(EarlyCloses)]));
+            return results;
         }
         catch (FormatException)
         {
+            // A session close or a holiday that does not parse is a different key. This method leaves
+            // that failure where it already surfaces, when the calendar singleton is first resolved.
+            // Early closes are the EarlyCloseException above; matching this exception's text would
+            // move a holiday failure to boot under EarlyCloses the moment the sentence changed.
             return results;
         }
 

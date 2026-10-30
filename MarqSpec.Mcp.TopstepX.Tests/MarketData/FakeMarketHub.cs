@@ -57,6 +57,14 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     /// <summary>How many times the market hub transitioned into <see cref="ConnectionState.Connected"/>.</summary>
     public int TransitionsIntoConnected { get; private set; }
 
+    /// <summary>How many times <see cref="DisconnectMarketHubAsync"/> ran.</summary>
+    public int MarketDisconnects { get; private set; }
+
+    /// <summary>
+    /// How many times <see cref="FollowAutomaticResubscribe"/> found automatic reconnect still on.
+    /// </summary>
+    public int AutoResubscribes { get; private set; }
+
     public ConnectionState MarketHubState { get; set; } = ConnectionState.Disconnected;
 
     public ConnectionState UserHubState { get; set; } = ConnectionState.Disconnected;
@@ -106,6 +114,8 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public Task DisconnectMarketHubAsync(CancellationToken cancellationToken = default)
     {
+        MarketDisconnects++;
+        TradeSubscriptions.Clear();
         EnterMarketState(ConnectionState.Disconnected);
         return Task.CompletedTask;
     }
@@ -127,10 +137,85 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     }
 
     /// <summary>
+    /// Drops the market hub with a session-conflict message on the status change.
+    /// </summary>
+    /// <param name="message">The hub's error text. Both the message and the exception carry it.</param>
+    public void SimulateSessionConflict(string message)
+    {
+        TradeSubscriptions.Clear();
+        if (MarketHubState == ConnectionState.Disconnected)
+        {
+            ConnectionStatusChanged?.Invoke(this, new ConnectionStatusChange
+            {
+                PreviousState = ConnectionState.Connected,
+                CurrentState = ConnectionState.Disconnected,
+                Timestamp = DateTime.UtcNow,
+                ErrorMessage = message,
+                Exception = new InvalidOperationException(message),
+            });
+            return;
+        }
+
+        EnterMarketState(
+            ConnectionState.Disconnected,
+            message,
+            new InvalidOperationException(message));
+    }
+
+    /// <summary>
     /// Completes a reconnect: <see cref="ConnectionState.Connected"/> with no
     /// subscriptions. The recorder must subscribe again or prints stay silent.
     /// </summary>
     public void SimulateMarketReconnect() => EnterMarketState(ConnectionState.Connected);
+
+    /// <summary>
+    /// Moves the hub to <see cref="ConnectionState.Reconnecting"/>, the state SignalR is in after it
+    /// has already scheduled a retry. A conflict stop must not call <see cref="DisconnectMarketHubAsync"/>.
+    /// </summary>
+    /// <param name="message">Optional error text carried on the status change.</param>
+    public void SimulateReconnecting(string? message = null)
+    {
+        TradeSubscriptions.Clear();
+        EnterMarketState(
+            ConnectionState.Reconnecting,
+            message,
+            message is null ? null : new InvalidOperationException(message));
+    }
+
+    /// <summary>
+    /// Raises another leave-Connected event without changing state, so a second drop during a probe
+    /// is visible to the recorder. <see cref="SimulateMarketDisconnect"/> no-ops once already disconnected.
+    /// </summary>
+    public void RaiseAnotherDisconnect()
+    {
+        ConnectionStatusChanged?.Invoke(this, new ConnectionStatusChange
+        {
+            PreviousState = ConnectionState.Connected,
+            CurrentState = MarketHubState,
+            Timestamp = DateTime.UtcNow,
+            ErrorMessage = null,
+            Exception = null,
+        });
+    }
+
+    /// <summary>
+    /// What the venue client's automatic resubscribe does when <paramref name="options"/> still
+    /// allows it: reconnect. When the flag is off, this is a no-op.
+    /// </summary>
+    /// <param name="options">The options instance the recorder and the client share.</param>
+    public void FollowAutomaticResubscribe(MarqSpec.Client.ProjectX.Configuration.WebSocketOptions options)
+    {
+        if (!options.AutoReconnect)
+        {
+            return;
+        }
+
+        AutoResubscribes++;
+        if (MarketHubState != ConnectionState.Connected)
+        {
+            EnterMarketState(ConnectionState.Connected);
+        }
+    }
 
     public Task SubscribeToPriceUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
     {
@@ -221,11 +306,24 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
             return;
         }
 
+        RaiseUnfiltered(update);
+    }
+
+    /// <summary>
+    /// Raises a print even when the hub has dropped its subscriptions. A suspicion test has to deliver
+    /// the event after a disconnect, which clears <see cref="TradeSubscriptions"/>.
+    /// </summary>
+    /// <param name="update">The print.</param>
+    public void RaiseUnfiltered(TradeUpdate update)
+    {
         RaisedToListeners++;
         TradeUpdateReceived?.Invoke(this, update);
     }
 
-    private void EnterMarketState(ConnectionState current)
+    private void EnterMarketState(
+        ConnectionState current,
+        string? errorMessage = null,
+        Exception? exception = null)
     {
         ConnectionState previous = MarketHubState;
         if (previous == current)
@@ -244,6 +342,8 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
             PreviousState = previous,
             CurrentState = current,
             Timestamp = DateTime.UtcNow,
+            ErrorMessage = errorMessage ?? exception?.Message,
+            Exception = exception,
         });
     }
 }

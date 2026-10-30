@@ -4,6 +4,7 @@ using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Options;
@@ -101,6 +102,9 @@ public sealed class MarketDataToolBoundaryTests
                     typeof(VolumeProfileService),
                     typeof(VolumeFrontReader),
                     typeof(FootprintCacheService),
+                    // The closed-read counter (gh#728). A served read with live false is recorded here, so the
+                    // tool holds the telemetry type and no other market-data tool does.
+                    typeof(HostTelemetry),
                 ]
             },
             {
@@ -143,6 +147,12 @@ public sealed class MarketDataToolBoundaryTests
                     typeof(BarSessionCalendar),
                     typeof(IMarketDataGateway),
                     typeof(ToolGuards),
+                ]
+            },
+            {
+                typeof(RecorderHealthTools),
+                [
+                    typeof(RecorderHealthService),
                 ]
             },
         };

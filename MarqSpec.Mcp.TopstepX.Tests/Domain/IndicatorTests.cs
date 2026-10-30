@@ -483,6 +483,168 @@ public sealed class IndicatorTests
         root.Should().Throw<ArgumentOutOfRangeException>();
     }
 
+    // ── ADX / +DI / −DI ──────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// A rally of eight bars, then one sharp reversal — worked out by hand at period 4.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every bar of the rally holds <b>+DM 4</b> and <b>−DM 0</b> — the high rises by 4 on every one of
+    /// them, and the low never falls, so the up move is always 4 and the down move is never positive. The
+    /// low's rise is <i>not</i> a uniform 4: bar 1's climbs 8 and bar 2's holds still, which is how the true
+    /// ranges below come out uneven while the directional movement stays constant.
+    /// </para>
+    /// <para>
+    /// <b>True range deliberately VARIES across the seed window — 4, 8, 8, 12 — and that is the point.</b>
+    /// Those four sum to 32, so the mean is exactly 8 and every number below is unchanged by the variation.
+    /// A window where every bar carried 8 would be satisfied identically by a mean-of-n seed, a
+    /// first-observation seed and a last-observation seed, so nothing could make Wilder's seeding half fail:
+    /// the recursion from index 5 on is the same either way. Varying it separates them — seeding from bar 1
+    /// alone reads +DI 100 and from bar 4 alone reads 33.3, against the mean's 50.
+    /// </para>
+    /// <para>
+    /// <b>Period 4, not Wilder's 14, and that is what makes the expectations exact.</b> Wilder's smoothing
+    /// carries the previous value at <c>(period - 1) / period</c>, which at 4 is 3/4 — a terminating decimal,
+    /// so every value below is exact rather than approximate. At period 3 it would be 2/3 and every
+    /// assertion would need a tolerance wide enough to hide real drift.
+    /// </para>
+    /// <para>
+    /// Bar 7 closes at 36 rather than at its high of 40 deliberately: that is what holds bar 8's true range
+    /// to 16 instead of 20, and 16 is what keeps the smoothed range a whole 10 at the reversal.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<Bar> RallyThenReversal() =>
+    [
+        Bar(0, 12, 4, 12),
+        Bar(1, 16, 12, 14), // true range 4  — the seed window's low end
+        Bar(2, 20, 12, 18), // true range 8
+        Bar(3, 24, 16, 16), // true range 8
+        Bar(4, 28, 20, 28), // true range 12 — the high end; the four average to exactly 8
+        Bar(5, 32, 24, 32),
+        Bar(6, 36, 28, 36),
+        Bar(7, 40, 32, 36), // closes below its high, so bar 8's true range is 16
+        Bar(8, 36, 20, 22), // the reversal: −DM 12, +DM 0, true range 16
+    ];
+
+    [Fact]
+    public void DirectionalIndicators_AreNull_UntilThePeriodIsSatisfied()
+    {
+        // Directional movement is defined against the previous bar, so bar 0 can never carry one and the
+        // seed is the mean of the first `period` of them — the first value lands at index `period`.
+        IReadOnlyList<decimal?> plus = DirectionalMovement.PlusDi(RallyThenReversal(), 4);
+
+        plus[0].Should().BeNull();
+        plus[1].Should().BeNull();
+        plus[2].Should().BeNull();
+        plus[3].Should().BeNull();
+        plus[4].Should().NotBeNull();
+    }
+
+    [Fact]
+    public void DirectionalIndicators_ReadAOneSidedRally_AtTheSeed()
+    {
+        IReadOnlyList<Bar> bars = RallyThenReversal();
+
+        IReadOnlyList<decimal?> plus = DirectionalMovement.PlusDi(bars, 4);
+        IReadOnlyList<decimal?> minus = DirectionalMovement.MinusDi(bars, 4);
+
+        // Smoothed +DM is (4 + 4 + 4 + 4) / 4 = 4 and smoothed true range is (4 + 8 + 8 + 12) / 4 = 8, so
+        // +DI is 100 × 4 / 8 = 50. Not one bar of the rally moved the low down, so −DM is 0 throughout.
+        plus[4].Should().Be(50m);
+        minus[4].Should().Be(0m);
+    }
+
+    [Fact]
+    public void DirectionalIndicators_SeedOnTheWindowsMean_NotOnOneObservationInIt()
+    {
+        // Wilder seeds on the MEAN of the first `period` observations. The true ranges inside that window
+        // are 4, 8, 8 and 12, which average to 8 — so this pins the seeding half of the Wilder trap, the
+        // half a uniform window cannot test. Seeding from bar 1 alone would read 100 × 4 / 4 = 100 here,
+        // and from bar 4 alone 100 × 4 / 12 = 33.3; only the mean gives 50.
+        IReadOnlyList<decimal?> plus = DirectionalMovement.PlusDi(RallyThenReversal(), 4);
+
+        plus[4].Should().Be(50m);
+    }
+
+    [Fact]
+    public void Adx_SeedsFromTheMeanOfTheFirstPeriodDirectionalIndexValues()
+    {
+        IReadOnlyList<decimal?> adx = DirectionalMovement.Adx(RallyThenReversal(), 4);
+
+        // DX needs +DI and −DI, which arrive at index `period`; ADX then seeds on the mean of `period` of
+        // THOSE, so the first ADX cannot land before index 2 × period − 1 = 7.
+        adx[6].Should().BeNull();
+
+        // Every DX in the rally is 100 × |50 − 0| / (50 + 0) = 100, so their mean is 100 — a market moving
+        // one way and only one way reads as maximum trend strength.
+        adx[7].Should().Be(100m);
+    }
+
+    [Fact]
+    public void Adx_Falls_WhenTheDirectionalIndicatorsCross()
+    {
+        IReadOnlyList<Bar> bars = RallyThenReversal();
+
+        IReadOnlyList<decimal?> plus = DirectionalMovement.PlusDi(bars, 4);
+        IReadOnlyList<decimal?> minus = DirectionalMovement.MinusDi(bars, 4);
+        IReadOnlyList<decimal?> adx = DirectionalMovement.Adx(bars, 4);
+
+        // At the reversal the smoothed true range is (8 × 3 + 16) / 4 = 10, smoothed +DM decays to
+        // (4 × 3 + 0) / 4 = 3, and smoothed −DM arrives at (0 × 3 + 12) / 4 = 3. Both DI are 100 × 3 / 10.
+        plus[8].Should().Be(30m);
+        minus[8].Should().Be(30m);
+
+        // The DI are equal, so DX is 100 × |30 − 30| / (30 + 30) = 0 — no NET direction, which is not the
+        // same as no movement. Wilder carries the previous ADX: (100 × 3 + 0) / 4 = 75.
+        adx[8].Should().Be(75m);
+    }
+
+    [Fact]
+    public void DirectionalIndicators_AreNull_WhenTheSeriesHasNoRangeToDivideBy()
+    {
+        // A flat series gives a smoothed true range of zero, and +DI would divide by it. There is no
+        // directional strength to report here — and 0 is a REAL reading elsewhere, so returning 0 would be
+        // indistinguishable from a measured absence of upward movement in a market that did move.
+        IReadOnlyList<Bar> flat = Closes(10, 10, 10, 10, 10, 10, 10, 10, 10, 10);
+
+        DirectionalMovement.PlusDi(flat, 4)[9].Should().BeNull();
+        DirectionalMovement.MinusDi(flat, 4)[9].Should().BeNull();
+    }
+
+    [Fact]
+    public void Adx_IsNull_WhenThereIsNoDirectionalMovementToMeasure()
+    {
+        // DX divides by (+DI + −DI). Both are absent on a flat series, so there is no DX to seed from and
+        // ADX withholds rather than reporting a 0 that would read as "measured, and trendless".
+        IReadOnlyList<Bar> flat = Closes(10, 10, 10, 10, 10, 10, 10, 10, 10, 10);
+
+        DirectionalMovement.Adx(flat, 4)[9].Should().BeNull();
+    }
+
+    [Fact]
+    public void DirectionalMovement_RefusesAShuffledSeries()
+    {
+        // Same bars, same prices, one pair out of order — which does not fail on its own, it computes a
+        // different and wrong number. The in-order fixture is hand-checked a few tests up.
+        IReadOnlyList<Bar> shuffled = Transposed(RallyThenReversal(), 2, 5);
+
+        Action compute = () => DirectionalMovement.Adx(shuffled, 4);
+
+        compute.Should().Throw<ArgumentException>().WithMessage("*ascending*");
+    }
+
+    [Fact]
+    public void AdxIndicator_WarmsUpForTwicePeriod_BecauseItSmoothsASmoothedValue()
+    {
+        // ADX is a Wilder smoothing OF a value that is itself Wilder-smoothed, so a caller loading a window
+        // for projection has to reach back twice as far as the DI do or the leading values come back null
+        // and the series looks like it has a hole.
+        new AdxIndicator(14).WarmupBars.Should().Be(28);
+        new PlusDiIndicator(14).WarmupBars.Should().Be(15);
+        new MinusDiIndicator(14).WarmupBars.Should().Be(15);
+    }
+
     // ── The IIndicator wrappers ──────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -501,6 +663,9 @@ public sealed class IndicatorTests
         new BollingerMiddleIndicator(20).Name.Should().Be("bb-middle");
         new BollingerLowerIndicator(20).Name.Should().Be("bb-lower");
         new RollingVwapIndicator(20).Name.Should().Be("vwap-rolling");
+        new AdxIndicator(14).Name.Should().Be("adx");
+        new PlusDiIndicator(14).Name.Should().Be("plus-di");
+        new MinusDiIndicator(14).Name.Should().Be("minus-di");
     }
 
     [Fact]

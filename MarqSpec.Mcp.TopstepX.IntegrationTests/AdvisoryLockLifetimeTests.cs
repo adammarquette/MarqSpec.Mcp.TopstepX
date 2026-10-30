@@ -15,8 +15,9 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// <para>
 /// <b>These make an observation; they do not test a feature.</b> gh#104 asked whether fills of one series
 /// should be serialised, and required the answer to rest on what a lock <i>was seen to do</i> rather than on
-/// what the documentation says it does. Nothing in the product takes an advisory lock, and after ADR-0012
-/// nothing is expected to. What these pin is the evidence that decision was made on, so it cannot quietly go
+/// what the documentation says it does. Fills do not take an advisory lock, and after ADR-0012 they are
+/// not expected to. The trade-index migration takes one for the build and releases it (gh#756). What these
+/// pin is the evidence that decision was made on, so it cannot quietly go
 /// out of date the next time the provider is upgraded — and so the next agent who reaches for
 /// <c>pg_advisory_lock</c> meets the two traps before writing the code rather than after.
 /// </para>
@@ -34,8 +35,14 @@ namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
 /// </remarks>
 /// <param name="fixture">The shared container.</param>
 [Collection(SchemaCollection.Name)]
-public sealed class AdvisoryLockLifetimeTests(SchemaFixture fixture)
+public sealed class AdvisoryLockLifetimeTests(SchemaFixture fixture) : IAsyncLifetime
 {
+    /// <inheritdoc />
+    public Task InitializeAsync() => _fixture.ResetAsync();
+
+    /// <inheritdoc />
+    public Task DisposeAsync() => Task.CompletedTask;
+
     /// <summary>
     /// The advisory-lock class these tests take their keys under.
     /// </summary>

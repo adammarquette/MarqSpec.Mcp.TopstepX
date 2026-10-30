@@ -65,6 +65,13 @@
     -->
     <Compile Include="..\MarqSpec.Mcp.TopstepX.Tests\MarketData\BackgroundServiceTestSupport.cs"
              Link="BackgroundServiceTestSupport.cs" />
+    <!--
+      TradingDailyCapCoordinatorIntegrationTests counts a swallowed release through this listener.
+      The scope match and the concurrent add are pinned in the unit tier, which can run them without a
+      database. Linking keeps one implementation.
+    -->
+    <Compile Include="..\MarqSpec.Mcp.TopstepX.Tests\BookkeepingFaultCounter.cs"
+             Link="BookkeepingFaultCounter.cs" />
   </ItemGroup>
 
   <ItemGroup>

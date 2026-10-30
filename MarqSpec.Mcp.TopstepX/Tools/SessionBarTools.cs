@@ -94,7 +94,9 @@ public sealed class SessionBarTools(
         + "FellBackToTheFront (it listed none, so no volume decision ran for that stretch), AsTheFrontAlone "
         + "(the whole plan fell back: no cycle to decide against) or NotDecidedHere "
         + "(THIS call fetched no history — never a statement that the stored history is whole). It is "
-        + "described in full on get_bars. The session name is a closed "
+        + "described in full on get_bars. `available.earliest` and `available.latest` are the first and "
+        + "last session open this call actually returned — the same `t` as on get_bars — and both keys "
+        + "are omitted when no session bar was built. The session name is a closed "
         + "vocabulary: an unknown one is an error listing the configured names, never an empty series.")]
     public async Task<ToolPayloads.SessionBarSeries> GetSessionBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
@@ -150,7 +152,8 @@ public sealed class SessionBarTools(
         + "the sessions are served by one covering read from the first open to the last close. The remedy "
         + "for all three is the same — ask for fewer sessions. `contracts` says which contracts produced "
         + "these sessions; "
-        + "each session bar comes from exactly one, so a roll falls BETWEEN two trade dates. The session "
+        + "each session bar comes from exactly one, so a roll falls BETWEEN two trade dates. "
+        + "`available` means what it means on get_session_bars. The session "
         + "name is a closed vocabulary: an unknown one is an error listing the configured names, never an "
         + "empty series.")]
     public async Task<ToolPayloads.SessionBarSeries> GetLatestSessionBars(
@@ -200,17 +203,21 @@ public sealed class SessionBarTools(
     private static ToolPayloads.SessionBarSeries Payload(
         InstrumentId instrument,
         SessionDefinition definition,
-        SessionBarReadResult result) =>
-        new(
+        SessionBarReadResult result)
+    {
+        IReadOnlyList<ToolPayloads.SessionBarPoint> points = [.. result.Bars.Select(ToolPayloads.ToPoint)];
+        return new(
             instrument.Symbol,
             definition.Name,
             definition.BaseResolutionMinutes,
-            [.. result.Bars.Select(ToolPayloads.ToPoint)],
+            points,
             [.. result.Absent.Select(ToolPayloads.ToAbsence)],
             result.FetchedBuckets,
             result.VenueRequests,
             ToolPayloads.ToSessionCoverage(result.Bars),
-            result.History);
+            result.History,
+            ToolPayloads.ToAvailableRange(points));
+    }
 
     private async Task<SessionBarReadResult> ReadAsync(
         InstrumentId instrument,

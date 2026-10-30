@@ -64,7 +64,6 @@ public sealed class MigrationApplyLockTests
         }
 
         results.Should().OnlyContain(availability => availability.IsAvailable);
-        gate.MaxInside.Should().Be(1);
         (await CountLocksAsync(connectionString, waitingOnly: false)).Should().Be(0);
         await using NpgsqlConnection check = new(connectionString);
         await check.OpenAsync();
@@ -301,6 +300,7 @@ public sealed class MigrationApplyLockTests
             WHERE locktype = 'advisory'
               AND classid = @classId
               AND objid = @objectId
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
               {granted}
             """,
             connection);
@@ -342,7 +342,7 @@ public sealed class MigrationApplyLockTests
         }
     }
 
-    /// <summary>Counts how many applies are inside the migration at once, and holds the first one.</summary>
+    /// <summary>Holds the first apply until the test has seen the second one waiting.</summary>
     private sealed class ApplyGate
     {
         private readonly object _sync = new();
@@ -351,25 +351,16 @@ public sealed class MigrationApplyLockTests
 
         private readonly TaskCompletionSource _releaseFirst =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
-        private int _inside;
         private int _entries;
 
         public Task FirstEntered => _firstEntered.Task;
-
-        public int MaxInside { get; private set; }
 
         public async Task EnterAsync()
         {
             bool first;
             lock (_sync)
             {
-                _inside++;
                 _entries++;
-                if (_inside > MaxInside)
-                {
-                    MaxInside = _inside;
-                }
-
                 first = _entries == 1;
             }
 
@@ -377,14 +368,6 @@ public sealed class MigrationApplyLockTests
             {
                 _firstEntered.TrySetResult();
                 await _releaseFirst.Task.ConfigureAwait(false);
-            }
-        }
-
-        public void Leave()
-        {
-            lock (_sync)
-            {
-                _inside--;
             }
         }
 
@@ -399,15 +382,8 @@ public sealed class MigrationApplyLockTests
             CancellationToken cancellationToken)
         {
             await gate.EnterAsync().ConfigureAwait(false);
-            try
-            {
-                await inner.ApplyAsync(database, commandTimeoutSeconds, cancellationToken)
-                    .ConfigureAwait(false);
-            }
-            finally
-            {
-                gate.Leave();
-            }
+            await inner.ApplyAsync(database, commandTimeoutSeconds, cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 

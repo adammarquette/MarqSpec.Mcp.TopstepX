@@ -69,6 +69,37 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    /// <summary>
+    /// An unavailable store is logged once and then left alone. No lease, no hub, no tape write, and
+    /// the process is not failed from this loop (gh#843).
+    /// </summary>
+    [Fact]
+    public async Task TheRecorderDoesNotClaimOrRecord_WhenTheStoreIsUnavailable()
+    {
+        StoreAvailabilityHolder store = new();
+        store.Set(StoreAvailability.Unavailable(string.Empty));
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(McpTransport.Http, recordTape: true, logger: logger, store: store);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+
+            hub.MarketConnects.Should().Be(0);
+            hub.TradeSubscriptions.Should().BeEmpty();
+            database.Trades.Should().BeEmpty();
+            recorder.HoldsRecorderLease.Should().BeFalse();
+            logger.Errors.Should().BeEmpty();
+            logger.Warnings.Should().ContainSingle()
+                .Which.Should().Contain("store is unavailable");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
     [Fact]
     public async Task TheRecorderWritesAnAttributedUtcPrint_WhenHttpAndRecordTapeAreOn()
     {
@@ -3407,7 +3438,8 @@ public sealed class TradeTapeRecorderTests
             ISessionConflictProbe? sessionProbe = null,
             MarqSpec.Client.ProjectX.Configuration.WebSocketOptions? webSocketOptions = null,
             HeldSession? heldSession = null,
-            SessionLoginGate? loginGate = null)
+            SessionLoginGate? loginGate = null,
+            StoreAvailabilityHolder? store = null)
     {
         FakeMarketHub hub = new();
         RecordingClock clock = new(_receipt);
@@ -3490,7 +3522,8 @@ public sealed class TradeTapeRecorderTests
             tape,
             telemetry ?? _telemetry,
             channelCapacity,
-            leaseTimeToLive ?? TapeLease.DefaultTimeToLive);
+            leaseTimeToLive ?? TapeLease.DefaultTimeToLive,
+            store);
 
         return (recorder, hub, database, provider, clock);
     }

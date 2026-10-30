@@ -1,6 +1,12 @@
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Data;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Configuration.EnvironmentVariables;
+using Microsoft.Extensions.DependencyInjection;
+using Npgsql;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Configuration;
 
@@ -34,46 +40,53 @@ public sealed class StoreConnectionTests
     }
 
     /// <summary>
-    /// EF and the migration lock both call <see cref="StoreConnection.Resolve"/>. A second copy of
-    /// the lookup, or of the fallback literal, is the drift this guards.
+    /// The database EF opens is the database the lock string names, including the local fallback.
     /// </summary>
-    [Fact]
-    public void Program_ResolvesTheStoreConnectionOncePerCallSite()
+    [Theory]
+    [InlineData(null, "localhost", "topstepx_mcp")]
+    [InlineData(
+        "Host=db.example;Port=5432;Database=shared_store;Username=topstepx;Password=secret",
+        "db.example",
+        "shared_store")]
+    public void TheLockAndEfUseTheSameDatabase(string? configured, string host, string database)
     {
-        string program = File.ReadAllText(Path.Combine(FindRepoRoot(), "MarqSpec.Mcp.TopstepX", "Program.cs"));
-
-        Count(program, "StoreConnection.Resolve(").Should().Be(2);
-        program.Should().NotContain("GetConnectionString(\"Default\")");
-        program.Should().NotContain("changeme-local");
-    }
-
-    private static int Count(string text, string value)
-    {
-        int count = 0;
-        int from = 0;
-        while ((from = text.IndexOf(value, from, StringComparison.Ordinal)) >= 0)
+        WebApplicationBuilder builder = WebApplication.CreateBuilder();
+        StripAmbientEnvironment(builder);
+        Dictionary<string, string?> settings = new()
         {
-            count++;
-            from += value.Length;
+            ["Mcp:Transport"] = "Stdio",
+        };
+        if (configured is not null)
+        {
+            settings["ConnectionStrings:Default"] = configured;
         }
 
-        return count;
+        builder.Configuration.AddInMemoryCollection(settings);
+        Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
+        using WebApplication app = builder.Build();
+        using IServiceScope scope = app.Services.CreateScope();
+        string? opened = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>()
+            .Database.GetConnectionString();
+        string resolved = StoreConnection.Resolve(
+            scope.ServiceProvider.GetRequiredService<IConfiguration>());
+
+        NpgsqlConnectionStringBuilder fromEf = new(opened);
+        NpgsqlConnectionStringBuilder fromLock = new(resolved);
+        fromEf.Database.Should().Be(fromLock.Database);
+        fromEf.Host.Should().Be(fromLock.Host);
+        fromLock.Host.Should().Be(host);
+        fromLock.Database.Should().Be(database);
     }
 
-    private static string FindRepoRoot()
+    private static void StripAmbientEnvironment(WebApplicationBuilder builder)
     {
-        DirectoryInfo? dir = new(AppContext.BaseDirectory);
-        while (dir is not null)
+        IConfigurationBuilder sources = builder.Configuration;
+        foreach (EnvironmentVariablesConfigurationSource ambient in sources.Sources
+            .OfType<EnvironmentVariablesConfigurationSource>()
+            .Where(source => string.IsNullOrEmpty(source.Prefix))
+            .ToList())
         {
-            if (File.Exists(Path.Combine(dir.FullName, "MarqSpec.Mcp.TopstepX.slnx")))
-            {
-                return dir.FullName;
-            }
-
-            dir = dir.Parent;
+            sources.Sources.Remove(ambient);
         }
-
-        throw new DirectoryNotFoundException(
-            "Could not find MarqSpec.Mcp.TopstepX.slnx above " + AppContext.BaseDirectory);
     }
 }

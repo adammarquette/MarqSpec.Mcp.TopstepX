@@ -207,7 +207,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// </param>
     /// <param name="store">
     /// The startup store probe. When it says unavailable this service makes no lease or tape
-    /// attempt. Null is the available default, for a test that does not pass one.
+    /// attempt.
     /// </param>
     public TradeTapeRecorder(
         IServiceScopeFactory scopes,
@@ -220,7 +220,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         HostTelemetry telemetry,
         int channelCapacity,
         TimeSpan leaseTimeToLive,
-        StoreAvailabilityHolder? store = null)
+        StoreAvailabilityHolder store)
     {
         ArgumentNullException.ThrowIfNull(scopes);
         ArgumentNullException.ThrowIfNull(market);
@@ -230,6 +230,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(tape);
         ArgumentNullException.ThrowIfNull(telemetry);
+        ArgumentNullException.ThrowIfNull(store);
         ArgumentOutOfRangeException.ThrowIfLessThan(channelCapacity, 1);
 
         _scopes = scopes;
@@ -240,7 +241,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         _logger = logger;
         _tape = tape;
         _telemetry = telemetry;
-        _store = store ?? new StoreAvailabilityHolder();
+        _store = store;
         _ledger = new TapeCoverageLedger(scopes, clock);
         _lease = new TapeLease(scopes, clock, leaseTimeToLive);
         _channel = Channel.CreateBounded<PendingPrint>(new BoundedChannelOptions(channelCapacity)

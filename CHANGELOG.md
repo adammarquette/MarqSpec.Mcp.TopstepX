@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-30
+
+`v0.6.0` was published as a pre-release tagged on `develop` and never got a section here, so this
+section covers everything since `[0.5.0]`. gh#843 is not in this release; it is planned for 0.7.1.
+
 ### Added
 
 - **The image entrypoint prepares the tape volume, then drops to uid 64198** (gh#767). `ENTRYPOINT` is now
@@ -1285,7 +1290,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.0...v0.3.1

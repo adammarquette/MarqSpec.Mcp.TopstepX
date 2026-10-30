@@ -61,6 +61,24 @@ public sealed class StoreRequiredStartupTests
         logs.Text.Should().NotContain(Sentinel);
     }
 
+    /// <summary>
+    /// <see cref="StoreRequiredException.Explanation"/> is what the verbs log. It carries no host,
+    /// password, or connection string.
+    /// </summary>
+    [Fact]
+    public async Task MigrateAsync_WhenTheStoreIsRequired_ExplanationOmitsTheConnection()
+    {
+        await using WebApplication app = Build(required: true, logs: new CapturedLogs());
+
+        Func<Task> act = () => Program.MigrateAsync(app);
+
+        StoreRequiredException thrown =
+            (await act.Should().ThrowAsync<StoreRequiredException>()).Which;
+        thrown.Explanation.Should().NotContain("127.0.0.1");
+        thrown.Explanation.Should().NotContain(Sentinel);
+        thrown.Explanation.Should().NotContain(ClosedPort);
+    }
+
     private static WebApplication Build(bool required, CapturedLogs logs)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();

@@ -1333,7 +1333,11 @@ public static class Program
             reason);
     }
 
-    private static async Task<int> RunReselectAsync(WebApplication app, string[] args)
+    /// <summary>Runs <c>reselect-bars</c>. Tests call this rather than reflecting on it.</summary>
+    /// <param name="app">The built host.</param>
+    /// <param name="args">The verb and its arguments.</param>
+    /// <returns>The verb's exit code.</returns>
+    internal static async Task<int> RunReselectAsync(WebApplication app, string[] args)
     {
         // Both singletons, so they are taken from the root provider rather than from a scope: this runs
         // before the migration, and a scoped DbContext resolved here would be one nothing has verified a
@@ -1440,7 +1444,11 @@ public static class Program
             http);
     }
 
-    private static async Task<int> RunTapeExportAsync(WebApplication app, string[] args)
+    /// <summary>Runs <c>export-tape</c> or <c>import-tape</c>. Tests call this directly.</summary>
+    /// <param name="app">The built host.</param>
+    /// <param name="args">The verb and its arguments.</param>
+    /// <returns>The verb's exit code.</returns>
+    internal static async Task<int> RunTapeExportAsync(WebApplication app, string[] args)
     {
         try
         {

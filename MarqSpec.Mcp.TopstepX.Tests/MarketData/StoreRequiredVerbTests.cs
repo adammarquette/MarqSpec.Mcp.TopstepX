@@ -1,4 +1,3 @@
-using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.MarketData;
@@ -32,9 +31,8 @@ public sealed class StoreRequiredVerbTests
         CapturedLogs logs = new();
         await using WebApplication app = Build(logs);
 
-        int code = await InvokeAsync(
+        int code = await Program.RunReselectAsync(
             app,
-            "RunReselectAsync",
             ["reselect-bars", "ES", "2026-06-16T09:00:00Z", "2026-06-16T10:00:00Z"]);
 
         code.Should().Be(ReselectExit.Degraded);
@@ -52,22 +50,12 @@ public sealed class StoreRequiredVerbTests
         CapturedLogs logs = new();
         await using WebApplication app = Build(logs);
 
-        int code = await InvokeAsync(app, "RunTapeExportAsync", [verb]);
+        int code = await Program.RunTapeExportAsync(app, [verb]);
 
         code.Should().Be(TapeExportCommands.ExitStore);
         logs.Entries.Should().Contain(entry =>
             entry.Level == LogLevel.Error && entry.Message.Contains("cannot run", StringComparison.Ordinal));
         logs.Text.Should().NotContain(Sentinel);
-    }
-
-    private static async Task<int> InvokeAsync(WebApplication app, string methodName, string[] args)
-    {
-        MethodInfo method = typeof(Program).GetMethod(
-                methodName,
-                BindingFlags.NonPublic | BindingFlags.Static)
-            ?? throw new InvalidOperationException("Missing " + methodName + ".");
-        Task<int> pending = (Task<int>)method.Invoke(null, [app, args])!;
-        return await pending.ConfigureAwait(false);
     }
 
     private static WebApplication Build(CapturedLogs logs)

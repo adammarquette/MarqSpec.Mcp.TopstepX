@@ -4,15 +4,15 @@
 #   MCP_CHECK_CLIENT_ID=…  MCP_CHECK_CLIENT_SECRET=…  MCP_CHECK_TOKEN_URL=…  \
 #     scripts/check-deployment.sh <base-url> <expected-version>
 #
-#   MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging  MCP_CHECK_BEARER_TOKEN=…  \
+#   MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging|production  MCP_CHECK_BEARER_TOKEN=…  \
 #     scripts/check-deployment.sh <base-url> <expected-version>
 #
-#   The second form is ADR-0021's 2026-10-28 exception and nothing else: STAGING ONLY, until an OAuth issuer
-#   (Cognito user pool) exists. Assertion 2 then requires a bare `Bearer` challenge (and FAILS on an RFC 9728
+#   The second form is ADR-0021's static-token exception and nothing else: staging (2026-10-28) and production
+#   (2026-10-29, gh#855), TEMPORARY until an OAuth provider is chosen. Assertion 2 then requires a bare `Bearer` challenge (and FAILS on an RFC 9728
 #   one, which would mean the instance is not in the mode the caller claims), and assertion 3 presents the
-#   static token instead of minting one. It refuses to run unless MCP_CHECK_ENVIRONMENT=staging, and refuses
-#   any OAuth client variable beside it -- exactly one mode, as McpOptions requires of the server. Production
-#   is OAuth; evaluate-template.mjs fails a production server on StaticToken.
+#   static token instead of minting one. It refuses to run unless MCP_CHECK_ENVIRONMENT is staging or
+#   production, and refuses any OAuth client variable beside it -- exactly one mode, as McpOptions requires of
+#   the server. evaluate-template.mjs requires StaticToken on every Railway server until OAuth returns.
 #
 #   e.g.  scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
 #
@@ -130,8 +130,8 @@ usage: MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=�
   MCP_CHECK_CLIENT_ID / MCP_CHECK_CLIENT_SECRET   the Cognito deploy-check app client (ADR-0023 §9)
   MCP_CHECK_TOKEN_URL                             its `client_credentials` token endpoint
 
-  Staging only, ADR-0021 exception (2026-10-28), instead of the three above:
-  MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging  MCP_CHECK_BEARER_TOKEN=<Mcp__HttpBearerToken>
+  Staging or production, ADR-0021 exception (2026-10-28, widened 2026-10-29), instead of the three above:
+  MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging|production  MCP_CHECK_BEARER_TOKEN=<Mcp__HttpBearerToken>
 
 Credentials are read from the environment and never from arguments: an argument is visible in `ps`.
 USAGE
@@ -277,17 +277,21 @@ esac
 # as a fix: **`${VAR+x}` is how you ask whether a secret is set without asking what it is**, and it removes
 # the need to relax `-u` in a script whose whole subject is what leaks.
 # THE AUTH MODE, stated rather than inferred. OAuth unless the caller says otherwise; StaticToken is the
-# ADR-0021 staging exception (2026-10-28) and is refused anywhere but staging, and beside any OAuth variable.
+# ADR-0021 exception (staging 2026-10-28, production 2026-10-29) and is refused in any other named environment,
+# and beside any OAuth variable.
 AUTH_MODE="${MCP_CHECK_AUTH_MODE:-OAuth}"
 case "$AUTH_MODE" in
   OAuth) ;;
   StaticToken)
-    if [ "${MCP_CHECK_ENVIRONMENT:-}" != "staging" ]; then
-      die "  STATIC TOKEN OUTSIDE STAGING  MCP_CHECK_AUTH_MODE=StaticToken needs MCP_CHECK_ENVIRONMENT=staging"
-      die "The static token is ADR-0021's staging-only exception (2026-10-28). Production runs OAuth: check it"
-      die "with MCP_CHECK_CLIENT_ID / MCP_CHECK_CLIENT_SECRET / MCP_CHECK_TOKEN_URL. NOTHING HAS BEEN SENT."
-      exit 1
-    fi
+    case "${MCP_CHECK_ENVIRONMENT:-}" in
+      staging|production) ;;
+      *)
+        die "  STATIC TOKEN OUTSIDE STAGING/PRODUCTION  MCP_CHECK_AUTH_MODE=StaticToken needs MCP_CHECK_ENVIRONMENT=staging or production"
+        die "The static token is ADR-0021's exception for those two environments (2026-10-28, 2026-10-29), until an"
+        die "OAuth provider is chosen. NOTHING HAS BEEN SENT."
+        exit 1
+        ;;
+    esac
     for v in MCP_CHECK_CLIENT_ID MCP_CHECK_CLIENT_SECRET MCP_CHECK_TOKEN_URL; do
       if [ -n "$(printenv "$v" | head -c 1)" ]; then
         die "  TWO MODES  $v is set beside MCP_CHECK_AUTH_MODE=StaticToken"
@@ -677,7 +681,7 @@ if [ "$AUTH_MODE" = "StaticToken" ]; then
       exit 1
       ;;
   esac
-  ok "  OK  /mcp refuses an anonymous call with 401 and a bare Bearer challenge (StaticToken, ADR-0021 staging exception)"
+  ok "  OK  /mcp refuses an anonymous call with 401 and a bare Bearer challenge (StaticToken, ADR-0021 exception, $MCP_CHECK_ENVIRONMENT)"
 else
 if [ -z "$METADATA_URL" ]; then
   die "  NO RESOURCE_METADATA  the challenge names no metadata document: $CHALLENGE"
@@ -814,7 +818,7 @@ if [ "$HTTP_STATUS" != "200" ]; then
   die "  INITIALIZE REFUSED  POST $MCP_URL with a token answered $HTTP_STATUS, expected 200"
   if [ "$HTTP_STATUS" = "401" ] && [ "$AUTH_MODE" = "StaticToken" ]; then
     die "401 with the static token means MCP_CHECK_BEARER_TOKEN is not the server's Mcp__HttpBearerToken"
-    die "(staging's shared MCP_HTTP_BEARER_TOKEN). The value is not printed."
+    die "($MCP_CHECK_ENVIRONMENT's shared MCP_HTTP_BEARER_TOKEN). The value is not printed."
   elif [ "$HTTP_STATUS" = "401" ]; then
     die "401 with a freshly minted token means the server did not accept THIS pool's token: the issuer it is"
     die "configured with, the client id not being in Mcp__OAuth__ClientIds, or the scope claim not carrying"
@@ -954,7 +958,7 @@ else
 fi
 
 if [ "$AUTH_MODE" = "StaticToken" ]; then
-  ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, a static-token refusal, the static token accepted, and $TOOL_COUNT tools (StaticToken, staging only)."
+  ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, a static-token refusal, the static token accepted, and $TOOL_COUNT tools (StaticToken, $MCP_CHECK_ENVIRONMENT)."
 else
   ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, a refusal a connector can act on, a token, and $TOOL_COUNT tools."
 fi

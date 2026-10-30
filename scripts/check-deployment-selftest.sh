@@ -529,7 +529,7 @@ expect_accepted() {
 
 token_url_for() { printf '%s/oauth2/token' "$1"; }
 
-# StaticToken mode (ADR-0021 exception, 2026-10-28, staging only). The static token is the fixture's
+# StaticToken mode (ADR-0021 exception: staging 2026-10-28, production 2026-10-29). The static token is the fixture's
 # ACCESS_TOKEN, so the leak needles above cover it too. Extra NAME=value pairs go into the gate's environment.
 run_gate_static() {
   local base="$1" token="$2"; shift 2
@@ -703,14 +703,22 @@ stop_fixture
 expect_rejected "a self-signed certificate with an 'insecure' curlrc in scope" \
   "THE CERTIFICATE did not validate"
 
-# --- StaticToken mode: ADR-0021's staging exception (2026-10-28). Production stays OAuth. ---
+# --- StaticToken mode: ADR-0021's exception, staging (2026-10-28) and production (2026-10-29, gh#855). ---
 start_fixture static
 run_gate_static "$FIXTURE_ORIGIN" "$FIXTURE_ACCESS_TOKEN"
 stop_fixture
 expect_accepted "static-token staging deployment" \
   "bare Bearer challenge" \
   "tools/list returned $SOUND_TOOLS tools" \
-  "StaticToken, staging only"
+  "StaticToken, ADR-0021 exception, staging"
+
+start_fixture static
+run_gate_static "$FIXTURE_ORIGIN" "$FIXTURE_ACCESS_TOKEN" MCP_CHECK_ENVIRONMENT=production
+stop_fixture
+expect_accepted "static-token production deployment" \
+  "bare Bearer challenge" \
+  "tools/list returned $SOUND_TOOLS tools" \
+  "StaticToken, ADR-0021 exception, production"
 
 start_fixture static
 run_gate "$FIXTURE_ORIGIN" "$(token_url_for "$FIXTURE_ORIGIN")"
@@ -732,10 +740,10 @@ expect_rejected "a wrong static token" \
   "is not the server's Mcp__HttpBearerToken"
 
 start_fixture static
-run_gate_static "$FIXTURE_ORIGIN" "$FIXTURE_ACCESS_TOKEN" MCP_CHECK_ENVIRONMENT=production
+run_gate_static "$FIXTURE_ORIGIN" "$FIXTURE_ACCESS_TOKEN" MCP_CHECK_ENVIRONMENT=dev
 stop_fixture
-expect_rejected "StaticToken mode outside staging" \
-  "STATIC TOKEN OUTSIDE STAGING" \
+expect_rejected "StaticToken mode outside staging and production" \
+  "STATIC TOKEN OUTSIDE STAGING/PRODUCTION" \
   "NOTHING HAS BEEN SENT"
 
 start_fixture static

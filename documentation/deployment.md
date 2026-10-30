@@ -379,14 +379,16 @@ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
 CI runs [`check-deployment-selftest.sh`](../scripts/check-deployment-selftest.sh) against a loopback
 fixture so that gate can still fail without a live deployment.
 
-Every Railway server runs the static token (ADR-0021 exception), so check staging with the static-token mode
-instead. That mode still refuses any environment but staging, so production can't be checked this way yet;
-widening it is a script change for a follow-up. `railway-staging.yml` runs this after the seed, using the `staging`
-environment secret `MCP_HTTP_BEARER_TOKEN`:
+Every Railway server runs the static token (ADR-0021 exception), so check staging and production with the
+static-token mode instead. That mode needs `MCP_CHECK_ENVIRONMENT` set to `staging` or `production` and refuses
+anything else. `railway-staging.yml` runs it after the seed, using the `staging` environment secret
+`MCP_HTTP_BEARER_TOKEN`. For production, pass production's own token the same way (no workflow runs it yet):
 
 ```bash
 MCP_CHECK_AUTH_MODE=StaticToken MCP_CHECK_ENVIRONMENT=staging MCP_CHECK_BEARER_TOKEN=… \
   scripts/check-deployment.sh https://staging-topstepx-mcp.marqspec.com 0.4.0
+MCP_CHECK_AUTH_MODE=StaticToken MCP_CHECK_ENVIRONMENT=production MCP_CHECK_BEARER_TOKEN=… \
+  scripts/check-deployment.sh https://your-production-host.example 0.4.0
 ```
 
 ## Release (GHCR only)

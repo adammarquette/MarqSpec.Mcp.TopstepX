@@ -134,9 +134,9 @@ jobs:
         run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 120
 
       # An authenticated MCP call, not just /health. Staging and production both run the static token until an
-      # OAuth provider is chosen (ADR-0021 2026-10-29 update, #855), so check-deployment.sh runs in StaticToken
-      # mode here, for staging. MCP_HTTP_BEARER_TOKEN is a `staging` environment secret holding the
-      # same value as Railway's staging shared MCP_HTTP_BEARER_TOKEN; it reaches the script only via env:,
+      # OAuth provider is chosen (ADR-0021 2026-10-29 update, #855), so check-deployment.sh runs in
+      # StaticToken mode here, for staging. MCP_HTTP_BEARER_TOKEN is a `staging` environment secret holding
+      # the same value as Railway's staging shared MCP_HTTP_BEARER_TOKEN; it reaches the script only via env:,
       # and the script never prints it. This job checks staging only.
       - name: MCP answers with the static token (staging only)
         env:

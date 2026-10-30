@@ -529,8 +529,9 @@ expect_accepted() {
 
 token_url_for() { printf '%s/oauth2/token' "$1"; }
 
-# StaticToken mode (ADR-0021 exception: staging 2026-10-28, production 2026-10-29). The static token is the fixture's
-# ACCESS_TOKEN, so the leak needles above cover it too. Extra NAME=value pairs go into the gate's environment.
+# StaticToken mode (ADR-0021 exception: staging 2026-10-28, production 2026-10-29). The static token is the
+# fixture's ACCESS_TOKEN, so the leak needles above cover it too. Extra NAME=value pairs go into the gate's
+# environment.
 run_gate_static() {
   local base="$1" token="$2"; shift 2
   GATE_STATUS=0

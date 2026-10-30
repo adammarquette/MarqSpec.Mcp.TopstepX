@@ -236,8 +236,9 @@ exactly. This is an ADR-0025 open item.
 **Shared variables.** Set them per environment in Railway. CI rejects any literal secret or unknown reference.
 Staging's are `POSTGRES_PASSWORD`, the three `PROJECTX_*`, `MCP_HTTP_BEARER_TOKEN` and
 `MCP_RECORDER_BEARER_TOKEN`.
-Production's are the same names, each with its own value. `MCP_HTTP_BEARER_TOKEN` is **required** in production;
-don't delete it. No environment needs `MCP_OAUTH_ISSUER` or `MCP_OAUTH_CLIENT_IDS` (the template rejects them).
+Production's are the same names, each with its own value. `MCP_HTTP_BEARER_TOKEN` is **required** in
+production; don't delete it. No environment needs `MCP_OAUTH_ISSUER` or `MCP_OAUTH_CLIENT_IDS` (the template
+rejects them).
 
 | Shared variable | Feeds |
 |---|---|
@@ -380,8 +381,8 @@ CI runs [`check-deployment-selftest.sh`](../scripts/check-deployment-selftest.sh
 fixture so that gate can still fail without a live deployment.
 
 Every Railway server runs the static token (ADR-0021 exception), so check staging and production with the
-static-token mode instead. That mode needs `MCP_CHECK_ENVIRONMENT` set to `staging` or `production` and refuses
-anything else. `railway-staging.yml` runs it after the seed, using the `staging` environment secret
+static-token mode instead. That mode needs `MCP_CHECK_ENVIRONMENT` set to `staging` or `production` and
+refuses anything else. `railway-staging.yml` runs it after the seed, using the `staging` environment secret
 `MCP_HTTP_BEARER_TOKEN`. For production, pass production's own token the same way (no workflow runs it yet):
 
 ```bash

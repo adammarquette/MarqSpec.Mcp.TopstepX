@@ -168,10 +168,11 @@ export default defineRailway((ctx) => {
   // container mid-migration. 3990 >= store wait (90) + migration (3600) + 300 s warm-up, which the check requires.
   const HEALTHCHECK_TIMEOUT = 3990;
 
-  // ADR-0021 EXCEPTION (2026-10-28, widened to production 2026-10-29 on gh#851/gh#855), TEMPORARY: no OAuth
-  // provider is chosen yet, so EVERY environment's server runs the static gate on its own environment's shared
-  // MCP_HTTP_BEARER_TOKEN, with NO Mcp__OAuth__* key beside it (McpOptions refuses that). The app's OAuth path
-  // is unchanged; when a provider exists (ApiaryKeeper's Keycloak is a candidate), this block goes back to OAuth.
+  // ADR-0021 EXCEPTION (2026-10-28, widened to production 2026-10-29 on gh#851/gh#855), TEMPORARY: no
+  // OAuth provider is chosen yet, so EVERY environment's server runs the static gate on its own
+  // environment's shared MCP_HTTP_BEARER_TOKEN, with NO Mcp__OAuth__* key beside it (McpOptions refuses
+  // that). The app's OAuth path is unchanged; when a provider exists (ApiaryKeeper's Keycloak is a
+  // candidate), this block goes back to OAuth.
   // KEEP IN SYNC: evaluate-template.mjs [static-token-required] requires exactly this shape.
   const serverAuth = {
     Mcp__Auth__Mode: "StaticToken",

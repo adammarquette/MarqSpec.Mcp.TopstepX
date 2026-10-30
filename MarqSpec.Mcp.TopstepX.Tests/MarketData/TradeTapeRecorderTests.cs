@@ -3523,7 +3523,7 @@ public sealed class TradeTapeRecorderTests
             telemetry ?? _telemetry,
             channelCapacity,
             leaseTimeToLive ?? TapeLease.DefaultTimeToLive,
-            store);
+            store ?? new StoreAvailabilityHolder());
 
         return (recorder, hub, database, provider, clock);
     }

@@ -1332,8 +1332,9 @@ whole apply, and releases it in a finally block. `138608641` is `0x08430001`, di
 index-build lock inside `AddTradeInstrumentTimeIndex`. The lock is a guard against concurrent
 applies. The second apply waits, then finds the schema already there. Closing the connection
 releases the lock if the explicit unlock cannot run. The wait tries the lock first and logs
-once when it has to block.
-It is bounded by `Migrations__CommandTimeoutSeconds`, not by Npgsql's 30-second default, because
-the apply it waits on can be a per-chunk index build.
+once when it has to block. It is bounded by `Migrations__LockWaitSeconds` (default 300), which is
+separate from the per-command timeout. A normal multi-command apply finishes inside that default.
+A wait that reaches it is the store unavailable: with `Store__Required` false the process degrades,
+and with it true the process logs an error and exits non-zero.
 
 `/health` is unchanged. It still answers without opening a database.

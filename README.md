@@ -263,10 +263,12 @@ previous deployment keeps serving. Set `RAILWAY_HEALTHCHECK_TIMEOUT_SEC` so that
 `Store__StartupWaitSeconds` + `Migrations__CommandTimeoutSeconds` + ~300s (3900 with the defaults). A
 `healthcheckTimeout` in the Railway service config overrides that variable. The server and the recorder
 share the advisory lock, and their waits overlap. The second service tries the lock and logs
-once when it has to wait. The wait is one `CALL`, cancelled at the command timeout with Postgres
-error `57014`, whatever the healthcheck allows. If the first service's
-index-build migration runs close to 3600 seconds, the second fails anyway: redeploy it once the first is
-healthy ([`documentation/deployment.md`](documentation/deployment.md)).
+once when it has to wait. `Migrations__LockWaitSeconds` (default 300) is how long that wait may last.
+It is separate from the per-command timeout. A normal multi-command apply finishes inside the default.
+A wait that reaches it is the store unavailable: the process degrades when `Store__Required` is false,
+and logs an error and exits non-zero when it is true. If the first service's index build outlasts the
+wait, the second does not sit for the whole command. It degrades or exits, and a restart tries again
+once the first is healthy ([`documentation/deployment.md`](documentation/deployment.md)).
 
 Two things this recipe deliberately does **not** carry over from `docker compose up`:
 

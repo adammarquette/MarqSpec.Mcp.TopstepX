@@ -22,10 +22,11 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// </para>
 /// <para>
 /// The acquire tries <c>pg_try_advisory_lock</c> first. When another session already holds the
-/// lock, this logs once and then blocks on <c>pg_advisory_lock</c> for the wait timeout, which is
-/// the migration command timeout.
-/// That is longer than Npgsql's 30-second default, so a second replica can wait out a per-chunk
-/// index build, and it is finite, so a holder that stays up does not block the waiter forever.
+/// lock, this logs once and then blocks on <c>pg_advisory_lock</c> for
+/// <c>Migrations__LockWaitSeconds</c>. That wait is separate from the per-command timeout. A
+/// normal multi-command apply finishes inside the default. A wait that reaches the cap throws
+/// <see cref="MigrationLockWaitTimedOutException"/>, which startup treats as the store being
+/// unavailable. A holder that stays up does not block the waiter forever.
 /// <c>pg_advisory_lock</c> is not called when the try succeeds: the lock is re-entrant in a
 /// session, and a second acquire would need a second unlock. Closing the unpooled connection
 /// releases the lock if the explicit unlock cannot run.
@@ -87,7 +88,17 @@ internal static class MigrationApplyLock
                     connection,
                     "SELECT pg_advisory_lock(@classId, @objectId)",
                     timeoutSeconds: lockWaitTimeoutSeconds);
-                await acquire.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await acquire.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (NpgsqlException ex) when (IsLockWaitTimeout(ex, cancellationToken))
+                {
+                    // Observed on a blocked pg_advisory_lock: NpgsqlException "Exception while reading
+                    // from stream" with an inner TimeoutException "Timeout during reading attempt".
+                    // A migration command can time out the same way. This catch is only the wait.
+                    throw new MigrationLockWaitTimedOutException(lockWaitTimeoutSeconds, ex);
+                }
             }
 
             await apply(cancellationToken).ConfigureAwait(false);
@@ -124,6 +135,24 @@ internal static class MigrationApplyLock
         }
     }
 
+    private static bool IsLockWaitTimeout(NpgsqlException exception, CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return false;
+        }
+
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is TimeoutException)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static async Task<bool> TryAcquireAsync(
         NpgsqlConnection connection,
         CancellationToken cancellationToken)
@@ -142,4 +171,27 @@ internal static class MigrationApplyLock
         command.Parameters.Add(new NpgsqlParameter("objectId", NpgsqlDbType.Integer) { Value = ObjectId });
         return command;
     }
+}
+
+/// <summary>
+/// The migration lock was still held when <c>Migrations__LockWaitSeconds</c> elapsed (gh#843).
+/// </summary>
+/// <remarks>
+/// Startup treats this as the store being unavailable. It is not a schema defect, and it is not the
+/// per-command timeout: that one still fails the process so the next start can rebuild an index.
+/// </remarks>
+internal sealed class MigrationLockWaitTimedOutException : Exception
+{
+    /// <summary>Creates the exception.</summary>
+    /// <param name="seconds">The wait that elapsed.</param>
+    /// <param name="inner">The timeout Npgsql raised for the blocking acquire.</param>
+    internal MigrationLockWaitTimedOutException(int seconds, Exception inner)
+        : base("The migration lock wait timed out.", inner)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(seconds, 1);
+        Seconds = seconds;
+    }
+
+    /// <summary>How long the wait was allowed to run, in seconds.</summary>
+    internal int Seconds { get; }
 }

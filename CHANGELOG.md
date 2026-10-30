@@ -20,7 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   socket reset, or Postgres `57P01` or `57P03`, including the `InvalidOperationException` EF wraps
   around that SQLSTATE) logs an error and the process exits.
   `reselect-bars`, `export-tape` and `import-tape` return their store exit codes. The apply holds
-  one session advisory lock. The recorder makes no lease or tape attempt while the store is
+  one session advisory lock. A second process waits up to `Migrations__LockWaitSeconds`
+  (default 300), separate from the per-command timeout. A wait that times out is the store
+  unavailable. The recorder makes no lease or tape attempt while the store is
   unavailable at startup.
 
 ## [0.7.0] - 2026-10-30

@@ -10,6 +10,7 @@ using Microsoft.Extensions.Configuration.EnvironmentVariables;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Npgsql;
 
 namespace MarqSpec.Mcp.TopstepX.IntegrationTests;
@@ -63,6 +64,10 @@ public sealed class MigrationApplyLockTests
             gate.ReleaseFirst();
         }
 
+        // The default wait is 300s. The second apply sits behind the real multi-command migration
+        // and still comes back available, so that default is not shorter than the apply.
+        first.Services.GetRequiredService<IOptions<MigrationOptions>>().Value.LockWaitSeconds
+            .Should().Be(MigrationOptions.DefaultLockWaitSeconds);
         results.Should().OnlyContain(availability => availability.IsAvailable);
         (await CountLocksAsync(connectionString, waitingOnly: false)).Should().Be(0);
         await using NpgsqlConnection check = new(connectionString);
@@ -206,7 +211,7 @@ public sealed class MigrationApplyLockTests
                 lockWaitTimeoutSeconds: 1,
                 CancellationToken.None);
 
-            await waiting.Should().ThrowAsync<NpgsqlException>();
+            await waiting.Should().ThrowAsync<MigrationLockWaitTimedOutException>();
             logger.Lines.Should().ContainSingle()
                 .Which.Should().Contain("Waiting up to 1s.");
             (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(1);
@@ -222,6 +227,87 @@ public sealed class MigrationApplyLockTests
         (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(0);
     }
 
+    /// <summary>
+    /// A lock wait that reaches <c>Migrations__LockWaitSeconds</c> is the store unavailable. Optional
+    /// degrades. The per-command timeout is left at its default, so this is not that cap.
+    /// </summary>
+    [Fact]
+    public async Task MigrateAsync_WhenTheLockWaitTimesOut_AndTheStoreIsNotRequired_Degrades()
+    {
+        await using NpgsqlConnection holder = new(_fixture.ConnectionString);
+        await holder.OpenAsync();
+        await using (NpgsqlCommand hold = LockCommand(holder, "SELECT pg_advisory_lock(@classId, @objectId)"))
+        {
+            await hold.ExecuteNonQueryAsync();
+        }
+
+        ListLogger logs = new();
+        try
+        {
+            await using WebApplication app = Build(
+                _fixture.ConnectionString,
+                required: false,
+                gate: null,
+                lockWaitSeconds: 1,
+                logs: logs);
+
+            StoreAvailability availability = await Program.MigrateAsync(app);
+
+            availability.IsAvailable.Should().BeFalse();
+            availability.Explanation.Should().Contain("migration lock wait timed out");
+            logs.Lines.Should().NotContain(line => line.Contains("Store__Required", StringComparison.Ordinal));
+        }
+        finally
+        {
+            await UnlockAsync(holder);
+        }
+    }
+
+    /// <summary>
+    /// The same timed-out wait with the store required logs an error and exits non-zero.
+    /// </summary>
+    [Fact]
+    public async Task MigrateAsync_WhenTheLockWaitTimesOut_AndTheStoreIsRequired_Exits()
+    {
+        await using NpgsqlConnection holder = new(_fixture.ConnectionString);
+        await holder.OpenAsync();
+        await using (NpgsqlCommand hold = LockCommand(holder, "SELECT pg_advisory_lock(@classId, @objectId)"))
+        {
+            await hold.ExecuteNonQueryAsync();
+        }
+
+        ListLogger logs = new();
+        try
+        {
+            await using WebApplication app = Build(
+                _fixture.ConnectionString,
+                required: true,
+                gate: null,
+                lockWaitSeconds: 1,
+                logs: logs);
+
+            Func<Task> act = () => Program.MigrateAsync(app);
+
+            StoreRequiredException thrown =
+                (await act.Should().ThrowAsync<StoreRequiredException>()).Which;
+            thrown.Explanation.Should().Contain("migration lock wait timed out");
+            StoreRequiredException.ExitCode.Should().BeGreaterThan(0);
+            logs.Lines.Should().Contain(line => line.Contains("Store__Required", StringComparison.Ordinal));
+        }
+        finally
+        {
+            await UnlockAsync(holder);
+        }
+    }
+
+    private static async Task UnlockAsync(NpgsqlConnection holder)
+    {
+        await using NpgsqlCommand unlock = LockCommand(
+            holder,
+            "SELECT pg_advisory_unlock(@classId, @objectId)");
+        await unlock.ExecuteNonQueryAsync();
+    }
+
     private static NpgsqlCommand LockCommand(NpgsqlConnection connection, string sql)
     {
         NpgsqlCommand command = new(sql, connection);
@@ -235,19 +321,32 @@ public sealed class MigrationApplyLockTests
         bool required,
         ApplyGate? gate,
         bool migrate = true,
-        Exception? failure = null)
+        Exception? failure = null,
+        int? lockWaitSeconds = null,
+        ListLogger? logs = null)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
         StripAmbientEnvironment(builder);
         builder.Logging.ClearProviders();
+        if (logs is not null)
+        {
+            builder.Logging.AddProvider(new ListLoggerProvider(logs));
+        }
+
         builder.Logging.SetMinimumLevel(LogLevel.Warning);
-        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        Dictionary<string, string?> settings = new()
         {
             ["ConnectionStrings:Default"] = connectionString,
             ["Store:StartupWaitSeconds"] = "0",
             ["Store:Required"] = required ? "true" : "false",
             ["Mcp:Transport"] = "Stdio",
-        });
+        };
+        if (lockWaitSeconds is int wait)
+        {
+            settings["Migrations:LockWaitSeconds"] = wait.ToString();
+        }
+
+        builder.Configuration.AddInMemoryCollection(settings);
         Program.ConfigureServices(builder, new McpOptions { Transport = McpTransport.Stdio });
         if (gate is null)
         {
@@ -319,6 +418,15 @@ public sealed class MigrationApplyLockTests
             .ToList())
         {
             sources.Sources.Remove(ambient);
+        }
+    }
+
+    private sealed class ListLoggerProvider(ListLogger logger) : ILoggerProvider
+    {
+        public ILogger CreateLogger(string categoryName) => logger;
+
+        public void Dispose()
+        {
         }
     }
 

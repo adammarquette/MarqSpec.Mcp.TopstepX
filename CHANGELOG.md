@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A required store exits, and one lock covers the migration apply** (gh#843). `Store__Required`
+  defaults to false. When it is true, an unreachable store or a dropped migration connection (a
+  socket reset, or Postgres `57P01` or `57P03`) logs an error and the process exits.
+  `reselect-bars`, `export-tape` and `import-tape` return their store exit codes. The apply holds
+  one session advisory lock. The recorder makes no lease or tape attempt while the store is
+  unavailable at startup.
+
 ## [0.7.0] - 2026-10-30
 
 `v0.6.0` was published as a pre-release tagged on `develop` and never got a section in `CHANGELOG.md`, so this

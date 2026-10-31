@@ -409,6 +409,67 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AValidProbeWithTheHubDown_BacksOffToTheThirtySecondCap_AndStaysThere()
+    {
+        // REST validate can be healthy while the market hub stays down. The wait has to
+        // double to the 30 second cap and stay there, or this loop hits the vendor every
+        // second for as long as the hub is down (gh#869).
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            sockets.AutoReconnect.Should().BeFalse();
+            hub.MarketConnects.Should().Be(0);
+            int armed = clock.DelayCalls;
+            int[] seconds = [1, 2, 4, 8, 16, 30, 30];
+            foreach (int second in seconds)
+            {
+                int calls = probe.Calls;
+                clock.Advance(TimeSpan.FromSeconds(second) - TimeSpan.FromMilliseconds(1));
+                probe.Calls.Should().Be(
+                    calls,
+                    "the next validate must wait {0} seconds, not fire inside that wait",
+                    second);
+                hub.MarketConnects.Should().Be(0);
+                clock.Advance(TimeSpan.FromMilliseconds(1));
+                await WaitUntil(() => probe.Calls == calls + 1);
+                await WaitUntil(() => clock.DelayCalls > armed);
+                armed = clock.DelayCalls;
+            }
+
+            hub.TradeSubscriptions.Should().BeEmpty();
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task AForcedDisconnectAndReconnect_ResumesPrints_OnlyWhenSubscribeRunsAgain()
     {
         CollectingLogger logger = new();

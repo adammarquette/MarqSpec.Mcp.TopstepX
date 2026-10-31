@@ -1281,18 +1281,22 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   account, including a healthy trading platform. A failed recovery waits, from 30 seconds doubling
   to 5 minutes, before the next REST call tries again. With the switch off, replicas (gh#772) kick
   each other about once per 54-minute cycle; with it on, the other replica latches until restart.
-  Freshness follows a monotonic clock, which does not advance across a Linux suspend. An inconclusive probe does not
-  reconnect and does not latch login; a still-fresh token is probed again on its own interval
-  (one second, doubling to 30 seconds), and no fresh token stops the recorder rather than logging in
-  without closing login for REST tools. The one-way latch is only a documented hub name, HTTP 401,
-  `InvalidSession`, or `SessionNotFound`. `AutoReconnect` stays off for both hubs while the recorder
-  is alive, because they share one options instance. A validate result of valid is connected by
-  this process with automatic reconnect left off. A connect that fails without a latched conflict,
-  including the first handshake, does not end the loop (gh#869). The hooks stay, the tape reports
-  reconnecting, and that same probe backoff runs, with no attempt cap. A throw from the connect after
-  a valid probe re-enters it. A conflict or a missing fresh token still ends the loop and does not
-  connect again. The tape claim keeps renewing during the wait. The refusal the tape tools return names the
-  platform, the switch, and that limit.
+  Freshness follows a monotonic clock, which does not advance across a Linux suspend.
+  An inconclusive probe does not reconnect and does not latch login. A still-fresh token
+  is probed again on its own interval (one second, doubling to 30 seconds), and no fresh
+  token stops the recorder rather than logging in without closing login for REST tools.
+  The one-way latch is only a documented hub name, HTTP 401, `InvalidSession`, or
+  `SessionNotFound`. `AutoReconnect` stays off for both hubs while the recorder is alive,
+  because they share one options instance. A validate result of valid is connected by
+  this process with automatic reconnect left off. A connect that fails without a latched
+  conflict, including the first handshake, does not end the loop (gh#869). The hooks stay
+  and the tape reports reconnecting. That same backoff runs, with no attempt cap. It
+  grows until a connect lands, then starts again at one second. A throw from the connect
+  after a valid probe re-enters it. With the switch off, or with no session probe, the
+  same wait connects and does not call validate, and it does not turn automatic reconnect
+  on. A conflict or a missing fresh token still ends the loop and does not connect again.
+  The drain loop renews the tape claim during the wait.
+  The refusal the tape tools return names the platform, the switch, and that limit.
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed.   `get_footprint` and
@@ -1316,8 +1320,11 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
   in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).
-  `hubReconnects` counts market-hub transitions in this process since it started, and zero is a real count.
-  `lastTickAgeSeconds` is `asOfUtc` minus `lastTickUtc`, omitted when that contract has no print (gh#793).
+  `hubReconnects` counts a successful market-hub connect after a connection was lost or a
+  connect attempt failed. A clean first connect is zero, and zero is a real count.
+  `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus `lastTickUtc`, clamped at zero, and
+  omitted when that contract has no print. A report reused from the five-second memo keeps
+  that age relative to the cached `asOfUtc` (gh#793).
   A declared early close shortens only that session. This process reuses a built report for five seconds.
   `/health` stays liveness and the one unauthenticated path.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push

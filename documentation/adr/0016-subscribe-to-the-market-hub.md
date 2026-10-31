@@ -608,7 +608,7 @@ actually returned with `live` false is counted, tagged with why. A refusal is no
 `MarketData__RecordTape` is on.
 
 
-## Update (2026-10-31) — a failed connect is not terminal (gh#869)
+## Update (2026-10-30) — a failed connect is not terminal (gh#869)
 
 `AutoReconnect` stays off. A hub phrase, HTTP 401, `InvalidSession`, `SessionNotFound`, and a
 missing fresh token still end the loop and do not connect again.
@@ -616,13 +616,18 @@ missing fresh token still end the loop and do not connect again.
 A failed `ConnectMarketHubAsync`, including the first handshake, is a drop that has not been
 classified. The hooks stay, the tape is reconnecting, and the lifecycle and the lease renewal keep
 running. The wait is the inconclusive-probe backoff: one second, doubling to 30 seconds, with no
-attempt cap. A later valid probe connects, still with automatic reconnect left off. A throw from
-that connect re-enters the same backoff. The claim is renewed while the wait runs, so the retry
-does not invite a second writer.
+attempt cap. The count resets only after a connect lands, so a hub that stays down reaches the
+cap instead of validating every second. A later valid probe connects, still with automatic
+reconnect left off. A throw from that connect re-enters the same backoff. With the switch off,
+or with no session probe, the same wait connects and does not call validate, and it does not
+turn automatic reconnect on. The claim is renewed while the wait runs, so the retry does not
+invite a second writer.
 
-`get_recorder_health` carries `hubReconnects`, the market-hub transitions counted in this process
-since it started, and `lastTickAgeSeconds`, `asOfUtc` minus `lastTickUtc`, omitted when there is
-no print (gh#793). Zero reconnects is a real count.
+`get_recorder_health` carries `hubReconnects`, a successful market-hub connect after a connection
+was lost or a connect attempt failed. A clean first connect is zero, and zero is a real count.
+`lastTickAgeSeconds` is the wall-clock `asOfUtc` minus `lastTickUtc`, clamped at zero, and omitted
+when there is no print. A reply reused from the five-second memo keeps that age against the cached
+`asOfUtc` (gh#793).
 
 ## Follow-ups
 
@@ -644,5 +649,5 @@ no print (gh#793). Zero reconnects is a real count.
 - gh#728 — stdio serves closed coverage another process recorded, flagged not-live. Landed in the
   update above.
 - gh#869 — a failed connect re-enters the inconclusive-probe backoff. Landed in the update above.
-- gh#793 — `hubReconnects` and `lastTickAgeSeconds` on the recorder-health report. Landed in the
-  update above.
+- gh#793 — `hubReconnects` (a reconnect after a loss or a failed attempt; a clean start is
+  zero) and `lastTickAgeSeconds` on the recorder-health report. Landed in the update above.

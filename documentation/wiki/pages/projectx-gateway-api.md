@@ -353,9 +353,10 @@ validate whenever the venue client is configured, not only while the recorder is
 with `loginKey`. A latched stop posts no further validate. An expired token may post a budgeted
 `loginKey`, which disconnects any live session on the account. A failed login waits before it
 tries again. A drop that is not one of those signals is probed again. No fresh token stops the
-recorder and leaves REST login open. A failed connect, including the first handshake, waits on that
-same probe and does not end the loop (gh#869). `AutoReconnect` stays off for both hubs while the
-recorder is alive.
+recorder and leaves REST login open. A failed connect, including the first handshake, waits on
+that same backoff and does not end the loop. The wait grows to 30 seconds until a connect lands
+(gh#869). With the stand-down switch off, or with no session probe, that wait connects without
+a validate call. `AutoReconnect` stays off for both hubs while the recorder is alive.
 
 > One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
 > root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream

@@ -618,10 +618,12 @@ classified. The hooks stay, the tape is reconnecting, and the lifecycle and the 
 running. The wait is the inconclusive-probe backoff: one second, doubling to 30 seconds, with no
 attempt cap. The count resets only after a connect lands, so a hub that stays down reaches the
 cap instead of validating every second. A later valid probe connects, still with automatic
-reconnect left off. A throw from that connect re-enters the same backoff. With the switch off,
-or with no session probe, the same wait connects and does not call validate, and it does not
-turn automatic reconnect on. The claim is renewed while the wait runs, so the retry does not
-invite a second writer.
+reconnect left off. A throw from that connect re-enters the same backoff. With the switch
+on and no session probe, that wait connects while the held token is fresh, and a token that
+expires during the wait stops the loop and does not call loginKey. With the switch off, the
+same wait connects without a validate call while the held token is fresh, it does not call
+loginKey, and it does not turn automatic reconnect on. The claim is renewed while the wait
+runs, so the retry does not invite a second writer.
 
 `get_recorder_health` carries `hubReconnects`, a successful market-hub connect after a connection
 was lost or a connect attempt failed. A clean first connect is zero, and zero is a real count.

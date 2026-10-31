@@ -719,6 +719,111 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AFailedFirstConnect_DoesNotCallLoginKeyWhenTheSwitchIsOffAndTheTokenExpires()
+    {
+        // The hub connect asks for a token. A token that is not fresh posts loginKey.
+        // The switch-off retry must skip that connect and leave AutoReconnect as set.
+        HeldSession held = new();
+        LoginDouble inner = new();
+        SessionLoginGate gate = new();
+        CollectingLogger logger = new();
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                stopOnSessionConflict: false,
+                webSocketOptions: sockets,
+                heldSession: held,
+                loginGate: gate,
+                logger: logger);
+        held.Remember("held-token", clock);
+        hub.Authentication = new GatedAuthenticationService(
+            inner, held, gate, clock, _telemetry);
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && held.TryReadFresh(clock, out _)
+                && sockets.AutoReconnect
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
+            await WaitUntil(() =>
+                inner.GetCalls > 0
+                || logger.Warnings.Any(warning =>
+                    warning.Contains("will not call loginKey", StringComparison.Ordinal)));
+
+            inner.GetCalls.Should().Be(0);
+            hub.MarketConnects.Should().Be(0);
+            sockets.AutoReconnect.Should().BeTrue();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AFailedConnectRetry_LogsTheFirstFailureAsError_AndTheNextAsWarning()
+    {
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                logger: logger);
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2);
+
+            // The first-connect error says "stays up and will try the handshake again".
+            // The retry sentence has no comma between "again" and "and".
+            static int RetryHandshake(IEnumerable<string> messages) =>
+                messages.Count(message =>
+                    message.Contains("handshake again and will not", StringComparison.Ordinal));
+
+            RetryHandshake(logger.Errors.Select(error => error.Message)).Should().Be(0);
+
+            clock.Advance(SessionReprobe.MinimumInterval);
+            await WaitUntil(() =>
+                RetryHandshake(logger.Errors.Select(error => error.Message)) == 1);
+
+            clock.Advance(SessionReprobe.DelayForAttempt(1));
+            await WaitUntil(() => RetryHandshake(logger.Warnings) >= 1);
+
+            RetryHandshake(logger.Errors.Select(error => error.Message)).Should().Be(1);
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task AForcedDisconnectAndReconnect_ResumesPrints_OnlyWhenSubscribeRunsAgain()
     {
         CollectingLogger logger = new();

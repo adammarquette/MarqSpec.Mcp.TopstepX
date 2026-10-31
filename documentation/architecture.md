@@ -1292,9 +1292,12 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   conflict, including the first handshake, does not end the loop (gh#869). The hooks stay
   and the tape reports reconnecting. That same backoff runs, with no attempt cap. It
   grows until a connect lands, then starts again at one second. A throw from the connect
-  after a valid probe re-enters it. With the switch off, or with no session probe, the
-  same wait connects and does not call validate, and it does not turn automatic reconnect
-  on. A conflict or a missing fresh token still ends the loop and does not connect again.
+  after a valid probe re-enters it. With the switch on and no session probe, that wait
+  connects while the held token is fresh, and a token that expires during the wait stops
+  the loop and does not call loginKey. With the switch off, that wait connects without a
+  validate call while the held token is fresh, it does not call loginKey, and it does not
+  turn automatic reconnect on. A conflict or a missing fresh token still ends the loop
+  and does not connect again.
   The drain loop renews the tape claim during the wait.
   The refusal the tape tools return names the platform, the switch, and that limit.
   Live tape health is a

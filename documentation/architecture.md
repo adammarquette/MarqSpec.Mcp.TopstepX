@@ -1287,7 +1287,11 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   without closing login for REST tools. The one-way latch is only a documented hub name, HTTP 401,
   `InvalidSession`, or `SessionNotFound`. `AutoReconnect` stays off for both hubs while the recorder
   is alive, because they share one options instance. A validate result of valid is connected by
-  this process with automatic reconnect left off. The refusal the tape tools return names the
+  this process with automatic reconnect left off. A connect that fails without a latched conflict,
+  including the first handshake, does not end the loop (gh#869). The hooks stay, the tape reports
+  reconnecting, and that same probe backoff runs, with no attempt cap. A throw from the connect after
+  a valid probe re-enters it. A conflict or a missing fresh token still ends the loop and does not
+  connect again. The tape claim keeps renewing during the wait. The refusal the tape tools return names the
   platform, the switch, and that limit.
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
@@ -1312,6 +1316,8 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
   in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).
+  `hubReconnects` counts market-hub transitions in this process since it started, and zero is a real count.
+  `lastTickAgeSeconds` is `asOfUtc` minus `lastTickUtc`, omitted when that contract has no print (gh#793).
   A declared early close shortens only that session. This process reuses a built report for five seconds.
   `/health` stays liveness and the one unauthenticated path.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push

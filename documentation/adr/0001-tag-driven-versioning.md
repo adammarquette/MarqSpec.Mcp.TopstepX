@@ -165,7 +165,9 @@ unset. `digest` is unchanged.
 
 **The image receives the tag as a build argument,** `MINVER_VERSION`, passed to
 `dotnet publish -p:MinVerVersionOverride`. `release.yml` passes `${TAG#v}`. `ci.yml`'s `image` job passes
-`git describe` so the same argument is exercised on every pull request; that job still installs no SDK.
+`git describe` so the same argument is exercised on every pull request. On `develop` that reads
+`v0.6.0-<n>-g<sha>` while `v0.7.0` is tagged only on `main`, and that string sorts below `0.6.0`. The
+CI image is smoked and never pushed. The job still installs no SDK.
 `.dockerignore` still excludes `.git`. An image built without the argument is still `0.0.0-alpha.0`, and
 `check-image-entrypoint.sh` refuses `0.0.0.0` and `0.0.0-alpha.0` on the wire.
 

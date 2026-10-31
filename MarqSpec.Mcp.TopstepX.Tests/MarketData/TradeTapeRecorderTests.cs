@@ -605,6 +605,55 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AFailedFirstConnect_RetriesWhenNoSessionProbeIsRegistered()
+    {
+        // No probe used to return from the backoff before the delay, so the process
+        // sat at Reconnecting. The connect itself is retried on that same backoff.
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                webSocketOptions: sockets);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            sockets.AutoReconnect.Should().BeFalse();
+            hub.MarketConnects.Should().Be(0);
+            hub.TradeSubscriptions.Should().BeEmpty();
+
+            hub.ConnectThrows = null;
+            clock.Advance(SessionReprobe.MinimumInterval);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening
+                && hub.MarketConnects == 1);
+
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task AForcedDisconnectAndReconnect_ResumesPrints_OnlyWhenSubscribeRunsAgain()
     {
         CollectingLogger logger = new();

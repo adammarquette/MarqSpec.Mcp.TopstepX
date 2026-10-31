@@ -51,7 +51,8 @@ What the epic measured before deciding, and what this record leans on:
   `scripts/check-release-gate.sh` fails any workflow naming an environment that lacks a `required_reviewers`
   rule. A staging deploy job cannot carry an `environment:` without becoming a second manual approval.
 - **The DLL inside the image is stamped `0.0.0-alpha.0` by decision** (ADR-0001), so "which release is
-  running" has to be observable some other way.
+  running" has to be observable some other way. gh#867 (2026-10-31) stamps the tag at image build and
+  `/health` reads that; this bullet is the state this ADR was written against.
 - **`ASPNETCORE_HTTP_PORTS` cleared under `Http` binds `localhost:5000`** — ADR-0007's 2026-09-03 table —
   a server that starts, logs, and accepts nothing from outside its container.
 
@@ -119,7 +120,8 @@ An ECS cluster per environment, Container Insights on, with **two Fargate servic
   (gh#515), `Store__StartupWaitSeconds=90` (gh#514), `ASPNETCORE_ENVIRONMENT=Production`, every
   `MarketData__*`, `Indicators__*` and `KeyLevels__*` key at its `.env.example` default, and
   `Deployment__Version` / `Deployment__ImageDigest` so `/health` can name the running release where the
-  assembly cannot. gh#516's template test parses `.env.example` and requires every key not in the
+  assembly cannot. The digest still works that way; gh#867 reads the assembly for `version`. gh#516's
+  template test parses `.env.example` and requires every key not in the
   compose-only set to appear in the task's `environment` or `secrets`, so the third copy of the configuration
   is enforced rather than remembered.
 - **`postgres`** — `timescale/timescaledb-ha:pg17` **by digest**, sized in gh#516 (1 vCPU, 2 GB), data on an

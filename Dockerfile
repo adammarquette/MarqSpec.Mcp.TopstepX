@@ -20,8 +20,19 @@ COPY MarqSpec.Mcp.TopstepX.Data/     MarqSpec.Mcp.TopstepX.Data/
 
 # No --no-restore: the source copy above can introduce a project reference the manifest-only restore did not
 # see, and failing at publish with a restore error is clearer than succeeding with a stale graph.
-RUN dotnet publish MarqSpec.Mcp.TopstepX/MarqSpec.Mcp.TopstepX.csproj \
-    -c Release -o /app
+#
+# The context has no .git (.dockerignore), so MinVer would stamp 0.0.0-alpha.0 and serverInfo.version
+# would go out as 0.0.0.0 (gh#867). CI and the release pass the tag as MINVER_VERSION. Empty leaves the
+# fallback, which the image smoke refuses.
+ARG MINVER_VERSION=
+RUN if [ -n "$MINVER_VERSION" ]; then \
+      dotnet publish MarqSpec.Mcp.TopstepX/MarqSpec.Mcp.TopstepX.csproj \
+        -c Release -o /app \
+        -p:MinVerVersionOverride="$MINVER_VERSION"; \
+    else \
+      dotnet publish MarqSpec.Mcp.TopstepX/MarqSpec.Mcp.TopstepX.csproj \
+        -c Release -o /app; \
+    fi
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app

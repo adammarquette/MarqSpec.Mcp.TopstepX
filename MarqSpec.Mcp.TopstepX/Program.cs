@@ -1,4 +1,3 @@
-using System.Reflection;
 using MarqSpec.Client.ProjectX.Authentication;
 using MarqSpec.Client.ProjectX.Configuration;
 using MarqSpec.Client.ProjectX.DependencyInjection;
@@ -17,6 +16,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Protocol;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
@@ -392,7 +392,7 @@ public static class Program
         OtlpExportProtocol protocol = otel.ResolveProtocol();
         string headers = otel.Headers;
         string serviceName = otel.ResolveServiceName();
-        string serviceVersion = ServiceVersion();
+        string serviceVersion = ProductVersion.Read();
 
         // One local, applied to all three exporters, so a protocol or a header set can never be right for
         // traces and wrong for logs.
@@ -480,39 +480,6 @@ public static class Program
     /// </remarks>
     internal static bool IsTraced(HttpContext context) =>
         !HealthEndpoint.IsProbePath(context.Request.Path);
-
-    /// <summary>The <c>service.version</c> resource attribute.</summary>
-    /// <returns>The assembly's informational version, without build metadata.</returns>
-    /// <remarks>
-    /// <para>
-    /// <b>The assembly's own stamp, and it is present rather than meaningful.</b> ADR-0001 makes the tag the
-    /// version and nothing declares one in a file; the container build never sees the repository's history, so
-    /// inside the published image this reads <c>0.0.0-alpha.0</c> by decision, with the release number carried
-    /// by the image tag and <c>org.opencontainers.image.version</c> instead.
-    /// </para>
-    /// <para>
-    /// <b>gh#513's <c>Deployment__Version</c> is what will make it mean something on a deployed instance</b>,
-    /// and it is deliberately not read here: that section does not exist yet, and a configuration key this
-    /// server reads while no document describes it and <c>docker-compose.yml</c> does not forward it is a
-    /// setting that silently does nothing in a container — the exact defect <c>.env.example</c>'s own header
-    /// warns about. It is one line to add when that card lands.
-    /// </para>
-    /// </remarks>
-    private static string ServiceVersion()
-    {
-        string? informational = typeof(Program).Assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-
-        if (string.IsNullOrWhiteSpace(informational))
-        {
-            return typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
-        }
-
-        // MinVer appends "+<sha>" build metadata. A resource attribute is a grouping key, and a version that
-        // changes with every commit groups nothing.
-        int metadata = informational.IndexOf('+', StringComparison.Ordinal);
-        return metadata < 0 ? informational : informational[..metadata];
-    }
 
     /// <summary>
     /// Under stdio, binds no HTTP port unless the operator named a listener for health or metrics.
@@ -735,10 +702,9 @@ public static class Program
             services.AddOAuthBearerAuthentication(mcp.OAuth);
         }
 
-        // What the liveness probe reports as `version` and `digest`. Optional, unvalidated, and defaulting to
-        // "unknown": nothing here declares a version in a file (ADR-0001), so a running task can only be told
-        // what it is by the deployment that started it — and a probe that refused to answer over a missing
-        // stamp would fail a healthy task for a cosmetic reason (gh#513).
+        // The digest /health reports. Optional and unvalidated, defaulting to "unknown": a probe that
+        // refused to answer over a missing digest would fail a healthy task for a cosmetic reason
+        // (gh#513). version is ProductVersion, not this section (gh#867).
         services.AddOptions<DeploymentOptions>()
             .Bind(builder.Configuration.GetSection(DeploymentOptions.SectionName));
 
@@ -1034,7 +1000,18 @@ public static class Program
         // One registration, one tool set, two ways in (ADR-0007). The transport is the only thing that
         // differs, and it is chosen here rather than by a second AddMcpServer call — registering the server
         // twice would build two of everything and leave which one answers to configuration order.
-        IMcpServerBuilder server = services.AddMcpServer()
+        //
+        // serverInfo is set here. The SDK otherwise uses the entry assembly's AssemblyVersion, which is
+        // 0.0.0.0 in an unstamped image and the test host's version under dotnet test (gh#867).
+        // ProductVersion is what /health reports, so the two answers are one string.
+        IMcpServerBuilder server = services.AddMcpServer(options =>
+        {
+            options.ServerInfo = new Implementation
+            {
+                Name = typeof(Program).Assembly.GetName().Name ?? "MarqSpec.Mcp.TopstepX",
+                Version = ProductVersion.Read(),
+            };
+        })
             .WithToolsFromAssembly(typeof(Program).Assembly);
 
         // The five order tools have no [McpServerToolType], so the assembly scan above does not publish

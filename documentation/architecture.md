@@ -791,10 +791,11 @@ carries the same `outcome`. Tracing excludes only the exact
 `/health` probe, matched ordinally, the same comparison the probe uses, so `/Health` stays behind the gate
 and is still traced.
 
-`version` and `digest` come from the optional `Deployment__Version` / `Deployment__ImageDigest`, `unknown`
-when unset. Nothing here declares a version in a file — the tag is the version
-([ADR-0001](adr/0001-tag-driven-versioning.md)) and the image build never sees `.git` — so the only honest
-source for "which release is this" is the deployment that started the task.
+`version` is the assembly informational version, with `+` build metadata removed — the same string
+`initialize` reports as `serverInfo.version` (gh#867). The image build does not see `.git`, so CI and
+`release.yml` pass the tag in as `MinVerVersionOverride`. `digest` still comes from the optional
+`Deployment__ImageDigest`, `unknown` when unset. Nothing in a file declares a version
+([ADR-0001](adr/0001-tag-driven-versioning.md)).
 
 ### What the host measures
 

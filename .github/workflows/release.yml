@@ -74,8 +74,9 @@ jobs:
           # container, which never sees .git because .dockerignore excludes it. The proof is the artifact this
           # job itself published -- MarqSpec.Mcp.TopstepX.dll inside
           # ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0 carries AssemblyInformationalVersion
-          # 0.0.0-alpha.0, from a run that had this depth set. What carries the release number is the image
-          # TAG and the org.opencontainers.image.version label below, by decision (ADR-0001's decision log).
+          # 0.0.0-alpha.0, from a run that had this depth set. Depth still does not feed MinVer.
+          # gh#867 passes VERSION into the Dockerfile as MINVER_VERSION, below. The image TAG and the
+          # org.opencontainers.image.version label still carry the same string.
           #
           # Nothing else in this job reads history either: image-reference.sh reads remote.origin.url from
           # git CONFIG, and the tag check below reads GITHUB_REF_NAME. KEPT ANYWAY, deliberately -- this is
@@ -168,6 +169,10 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ env.VERSION }}
             ${{ env.IMAGE }}:latest
+          # The assembly inside the image. Without this, MinVer stamps 0.0.0-alpha.0 and
+          # serverInfo.version is 0.0.0.0 (gh#867). ci.yml's image job passes the same ARG.
+          build-args: |
+            MINVER_VERSION=${{ env.VERSION }}
           # THE LABEL KEEPS DISPLAY CASE ON PURPOSE, and the tag does not (gh#115 scope, third box).
           # `image.source` is a URL and GitHub's are case-insensitive in the path, so the mixed-case form
           # resolves and is the one a reader recognises. Only the OCI *repository name* is required to be

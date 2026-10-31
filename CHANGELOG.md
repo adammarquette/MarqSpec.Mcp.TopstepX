@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `message`, and the `json` console formatter writes `Message`, so every entry was blank. The Railway
   template now uses the `simple` formatter on one line with UTC timestamps. Railway no longer gets a level
   or attributes; filter by text. Compose and the AWS path keep their formatters.
+- **The Railway log formatter is pinned** (gh#878). `check-railway-template.sh` now requires the
+  `simple` formatter, `SingleLine` true and `ColorBehavior` `Disabled` (new in the template), so a return to
+  `json` fails CI instead of blanking Railway's log messages again.
 
 ## [0.7.1] - 2026-10-30
 

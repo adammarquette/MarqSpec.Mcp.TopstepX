@@ -167,6 +167,8 @@ export default defineRailway((ctx) => {
     Logging__Console__FormatterName: "simple",
     Logging__Console__FormatterOptions__SingleLine: "true",
     Logging__Console__FormatterOptions__UseUtcTimestamp: "true",
+    // gh#878: no ANSI colour codes; stated rather than left to TTY detection.
+    Logging__Console__FormatterOptions__ColorBehavior: "Disabled",
 
     // From SERVER_IMAGE, never typed separately. An empty digest reads as `unknown` on /health.
     Deployment__Version: IMAGE_TAG,

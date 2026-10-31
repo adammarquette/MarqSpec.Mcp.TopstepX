@@ -55,6 +55,14 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </remarks>
     public const int DefaultMaxRows = 5_000;
 
+    /// <summary>
+    /// Invariant spelling of <see cref="DefaultMaxRows"/>, for description attributes.
+    /// </summary>
+    /// <remarks>
+    /// A description is a constant expression, so it cannot call <c>ToString</c>. This is that spelling.
+    /// </remarks>
+    public const string DefaultMaxRowsText = "5000";
+
     /// <summary>How long the recorder stays disconnected after a session conflict before it finishes stopping.</summary>
     public static readonly TimeSpan DefaultSessionConflictBackoff = TimeSpan.FromSeconds(5);
 

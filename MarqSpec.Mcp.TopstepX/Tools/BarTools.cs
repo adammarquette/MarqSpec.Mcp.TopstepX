@@ -82,8 +82,9 @@ public sealed class BarTools(
         + "of about nine weeks, not a quiet market; hourly history reaches about a year. The numbers are "
         + "on the gateway wiki and they age — the timestamps in `available` are the measurement. "
         + "A window may span at most " + MarketDataOptions.DefaultMaxRowsText
-        + " bars, the shipped MaxRows default. One-minute windows longer than that are refused. "
-        + "Page with narrower start and end windows, or a coarser unit such as resolutionMinutes 5.")]
+        + " bars at any resolution, the shipped MaxRows default. The cap counts bars, "
+        + "so it binds at every unit, and a finer unit reaches it over a shorter clock span. "
+        + "Page with narrower start and end windows, or a coarser unit.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
         [Description(

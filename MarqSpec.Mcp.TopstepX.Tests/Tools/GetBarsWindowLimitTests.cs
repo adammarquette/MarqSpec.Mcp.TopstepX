@@ -44,9 +44,9 @@ public sealed class GetBarsWindowLimitTests
 
         foreach (string parameter in new[] { "resolutionMinutes", "fromUtc", "toUtc" })
         {
-            DescriptionOf(method, parameter).Should().MatchRegex(
+            DescriptionOf(method, parameter).Should().NotMatchRegex(
                 limitPattern,
-                "{0} is one of the three arguments that decide the bar count",
+                "{0} does not repeat the cap; the tool description already states it",
                 parameter);
         }
 
@@ -63,9 +63,9 @@ public sealed class GetBarsWindowLimitTests
         JsonElement properties = published.ProtocolTool.InputSchema.GetProperty("properties");
         foreach (string parameter in new[] { "resolutionMinutes", "fromUtc", "toUtc" })
         {
-            properties.GetProperty(parameter).GetProperty("description").GetString().Should().MatchRegex(
+            properties.GetProperty(parameter).GetProperty("description").GetString().Should().NotMatchRegex(
                 limitPattern,
-                "{0}'s schema description is the copy a client reads",
+                "{0}'s schema description does not repeat the cap",
                 parameter);
         }
     }

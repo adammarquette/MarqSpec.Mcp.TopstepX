@@ -44,8 +44,8 @@ page against either**, so check it against the code, never against another docum
   request to find out. The row-cap refusal names the bars the window would have needed, the cap, and how to
   page from the request itself: a shorter window from its start through that many bars at the requested
   unit, or the smallest bar unit that fits the whole window. `get_bars` states that shipped cap
-  (`MarketDataOptions.DefaultMaxRows`) in its tool description and on `resolutionMinutes`, `fromUtc` and
-  `toUtc` (gh#868).
+  (`MarketDataOptions.DefaultMaxRows`) in its tool description (gh#868). The parameter descriptions
+  do not repeat it.
 - **Times are ISO-8601 UTC**, in and out. An offset-bearing stamp is **converted** via `ToUniversalTime()`,
   not rejected — a `-05:00` instant becomes the matching UTC instant. Whether a missing `Z` dies at JSON
   parse is the SDK, not this repo. There is no application check that the offset is zero.
@@ -286,8 +286,8 @@ the boundary (gh#110).
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
 
-A window may span at most `MaxRows` bars at any resolution. The shipped default is 5000, and that is the number the
-`get_bars` description and `resolutionMinutes`, `fromUtc` and `toUtc` state. An operator can set a
+A window may span at most `MaxRows` bars at any resolution. The shipped default is 5000, and that is the
+number the `get_bars` description states. The parameter descriptions do not repeat it. An operator can set a
 different cap; the refusal names the cap in force. Over it the read refuses, naming the bars the window
 would have needed and how to page from the request: a shorter window from its start through that many
 bars at the requested unit, or the smallest bar unit that fits the whole window (gh#868). It does not

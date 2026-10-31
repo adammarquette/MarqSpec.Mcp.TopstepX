@@ -87,18 +87,11 @@ public sealed class BarTools(
         + "Page with narrower start and end windows, or a coarser unit.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
-        [Description(
-            "The bar size in minutes, e.g. 1, 5, 15, 60. A finer unit reaches the "
-            + MarketDataOptions.DefaultMaxRowsText
-            + "-bar cap sooner, and a 1-minute window longer than that is refused.")]
+        [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")]
         int resolutionMinutes,
-        [Description(
-            "Window start, ISO-8601 UTC, inclusive. With toUtc and resolutionMinutes the window "
-            + "may span at most " + MarketDataOptions.DefaultMaxRowsText + " bars.")]
+        [Description("Window start, ISO-8601 UTC, inclusive.")]
         DateTimeOffset fromUtc,
-        [Description(
-            "Window end, ISO-8601 UTC, exclusive. Narrow this or the start when the window would "
-            + "need more than " + MarketDataOptions.DefaultMaxRowsText + " bars, or use a coarser unit.")]
+        [Description("Window end, ISO-8601 UTC, exclusive.")]
         DateTimeOffset toUtc,
         CancellationToken cancellationToken)
     {

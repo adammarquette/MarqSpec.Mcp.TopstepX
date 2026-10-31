@@ -472,7 +472,7 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   the two. It never silently truncates, and it costs no vendor request to be told (gh#96). The row-cap
   refusal names the bars the window would have needed and how to page from the request — a shorter window
   from its start, or the smallest bar unit that fits the whole window. `get_bars` states the shipped
-  cap in its description and on those parameters (gh#868). **Size is not the
+  cap in its description (gh#868). **Size is not the
   only bound**: a window must also **end** far enough before the end of the representable calendar for the
   machinery serving it to reason about its last bucket — two bar spans plus three days, because the bucket
   grid is aligned *up* from the window's start, the gap detector tests one bucket beyond the last, and the

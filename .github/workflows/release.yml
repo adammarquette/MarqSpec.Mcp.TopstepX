@@ -136,15 +136,19 @@ jobs:
       # running here (gh#54). Bump the two together -- Dependabot's `github-actions` ecosystem covers both
       # files, so one PR should touch both.
       #
-      # THE RESIDUAL DELTA, named because it cannot be closed: CI and this job now match on action, major
-      # version and builder driver, but NOT on exporter. CI exports through the DOCKER exporter (`load`),
-      # this one through the REGISTRY exporter (`push`). No pull-request run can cover a push to GHCR without
-      # handing every PR a write credential, so `docker-container` + `push: true` still first executes here.
-      - name: Build and push
+      # THE BUILD LOADS, THEN THE SMOKE, THEN THE PUSH (gh#867). This step used to `push: true`,
+      # so the entrypoint first ran after the tag was already on GHCR. CI's image job is
+      # `push: false, load: true` and smokes that local image. This job now builds the same way,
+      # runs the entrypoint smoke with EXPECTED_VERSION set to the tag, and only then `docker push`es.
+      # A pull request still cannot cover the push: that would hand every PR a write credential.
+      - name: Build the image
         uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          push: false
+          # Same reason as ci.yml: under Buildx, push: false without load leaves the image out of
+          # the local daemon, and the smoke below would try to pull the tag.
+          load: true
           # PINNED, not inherited (gh#54 review). Under the `docker-container` driver the step above now
           # introduces, buildx attaches a provenance attestation BY DEFAULT when pushing to a registry: the
           # published tag becomes an image index carrying an `unknown/unknown` attestation manifest rather
@@ -197,3 +201,15 @@ jobs:
           # the other.
           DOCKER_BUILD_RECORD_UPLOAD: false
           DOCKER_BUILD_SUMMARY: false
+
+      # Before either tag is pushed (gh#867). EXPECTED_VERSION is ${TAG#v}, the same string the
+      # build received as MINVER_VERSION. The script still refuses 0.0.0.0 and 0.0.0-alpha.0.
+      - name: Smoke — the release image, before it is pushed
+        env:
+          EXPECTED_VERSION: ${{ env.VERSION }}
+        run: ./scripts/check-image-entrypoint.sh "${{ env.IMAGE }}:${{ env.VERSION }}"
+
+      - name: Push the image
+        run: |
+          docker push "${{ env.IMAGE }}:${{ env.VERSION }}"
+          docker push "${{ env.IMAGE }}:latest"

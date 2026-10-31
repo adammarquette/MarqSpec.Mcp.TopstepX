@@ -159,8 +159,9 @@ consumes the assembly's version. Production `initialize` answered `serverInfo.ve
 **Both answers read one value,** the entry project's informational version, with `+` build metadata removed.
 The SDK's default is the entry assembly's `AssemblyVersion`, which is `0.0.0.0` when MinVer falls back and
 is a four-part number even when MinVer succeeds, so the composition root sets `ServerInfo` rather than
-leaving the default. `/health`'s `version` is that same string. `Deployment__Version` is not read for it.
-`digest` is unchanged.
+leaving the default. `/health`'s `version` is that same string. `Deployment__Version` is compared with
+it at startup: one warning when the key is set and differs, and nothing when they match or the key is
+unset. `digest` is unchanged.
 
 **The image receives the tag as a build argument,** `MINVER_VERSION`, passed to
 `dotnet publish -p:MinVerVersionOverride`. `release.yml` passes `${TAG#v}`. `ci.yml`'s `image` job passes

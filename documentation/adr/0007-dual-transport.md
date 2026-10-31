@@ -931,7 +931,7 @@ confidently and wrongly.
 **gh#867 (2026-10-31).** The sentence above describes the image as shipped through v0.7.0. The image build
 now receives the release tag as `MinVerVersionOverride`, and both `/health`'s `version` and
 `serverInfo.version` read the assembly informational version with `+` build metadata removed.
-`Deployment__Version` is not that number.
+`Deployment__Version` is not that number. A set value that differs from it is one startup warning.
 
 **So one path is allowed past the gate, and the gate is otherwise untouched.** `GET /health` answers
 `200 application/json`:
@@ -1026,6 +1026,7 @@ explanation, which names the connection string and the fix, is deliberately not 
 comes from an optional `Deployment` section (`Deployment__ImageDigest`), reported as `unknown` when unset
 and never validated: a probe that refused to answer over a missing stamp would fail a healthy task for a
 cosmetic reason. `version` is the assembly informational version (gh#867), not `Deployment__Version`.
+A set `Deployment__Version` that differs from that stamp is one startup warning.
 
 **The static token is unchanged, and so is the composed stack.** ADR-0021 replaces that token with
 Cognito-issued OAuth for the non-loopback instance; `/health` stays unauthenticated in that mode too, for the

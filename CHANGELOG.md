@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`initialize` reports the release version** (gh#867). `serverInfo.version` and `/health`'s `version`
   are the assembly informational version, with `+` build metadata removed. The image build takes
   `MINVER_VERSION` (`MinVerVersionOverride`) from CI and from the release tag, so an image no longer
-  answers `0.0.0.0`.
+  answers `0.0.0.0`. A `Deployment__Version` that is set and differs from that stamp is one startup
+  warning; a match or an unset key is silent.
 
 ## [0.7.1] - 2026-10-30
 

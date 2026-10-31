@@ -400,9 +400,11 @@ time in the sibling repo:
 
 Two hosting knobs behind this transport, both configuration only (gh#515): `Logging__Console__FormatterName=json`
 switches the console to one JSON object per line, which helps log aggregation behind Docker or a reverse
-proxy. `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` makes `HttpContext.Connection.RemoteIpAddress` the caller's
-own address when a trusted reverse proxy forwards `X-Forwarded-For` — use it only when that proxy is the
-sole path to the server ([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)).
+proxy. Railway is the exception: it shows that JSON's `Message` as blank, so its template uses single-line
+`simple` (gh#873, [deployment.md](documentation/deployment.md#railway-gh758)).
+`ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` makes `HttpContext.Connection.RemoteIpAddress` the caller's own
+address when a trusted reverse proxy forwards `X-Forwarded-For` — use it only when that proxy is the sole
+path to the server ([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)).
 
 ### See what it is doing
 

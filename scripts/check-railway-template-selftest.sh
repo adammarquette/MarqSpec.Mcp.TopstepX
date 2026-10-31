@@ -166,7 +166,7 @@ expect reject template forwarded-headers-colon 'Otel__ServiceName: "marqspec-mcp
 expect reject template deployment-version-lower 'Trading__Enabled: "false",' 'Trading__Enabled: "false", deployment__version: "9.9.9",'
 expect reject template connection-string-colon 'Trading__Enabled: "false",' 'Trading__Enabled: "false", "ConnectionStrings:Postgres": "Host=evil",'
 expect reject template unknown-key-colon 'Trading__Enabled: "false",' 'Trading__Enabled: "false", "Logging:LogLevel:Default": "Trace",'
-expect reject template retention-key-set 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Retention__Enabled: "false",'
+expect reject template retention-key-set 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "simple", Retention__Enabled: "false",'
 expect reject template pgdata-outside-volume 'PGDATA: `${PG_MOUNT}/data`' 'PGDATA: "/var/lib/postgresql/data"'
 expect reject template pgdata-is-mount-root 'PGDATA: `${PG_MOUNT}/data`' 'PGDATA: PG_MOUNT'
 expect reject template run-uid-removed 'RAILWAY_RUN_UID: "0",' ''
@@ -203,9 +203,9 @@ expect reject template registry-credentials 'deploy: { ...RESTART },
       // PGDATA' 'deploy: { ...RESTART, registryCredentials: { username: "u", password: "ghp_x" } },
     env: {
       // PGDATA'
-expect reject template fake-template-string 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "${{ hunter2",'
-expect reject template literal-otel-headers 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Otel__Headers: "x-api-key=abc",'
-expect reject template credential-shaped-literal 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Some__Thing: "ghp_aaaaaaaaaaaaaaaaaaaa",'
+expect reject template fake-template-string 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "${{ hunter2",'
+expect reject template literal-otel-headers 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "simple", Otel__Headers: "x-api-key=abc",'
+expect reject template credential-shaped-literal 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "simple", Some__Thing: "ghp_aaaaaaaaaaaaaaaaaaaa",'
 expect reject template shared-ref-on-wrong-key 'ProjectX__DataTier: ctx.shared.PROJECTX_DATA_TIER' 'ProjectX__DataTier: ctx.shared.POSTGRES_PASSWORD'
 expect reject template unknown-shared-ref 'ProjectX__ApiKey: ctx.shared.PROJECTX_API_KEY' 'ProjectX__ApiKey: ctx.shared.ANYTHING'
 expect reject template preserve-instead-of-shared 'ProjectX__ApiKey: ctx.shared.PROJECTX_API_KEY' 'ProjectX__ApiKey: { type: "preserve" } as const'
@@ -348,7 +348,7 @@ NAMED='migration timeout' expect reject template healthcheck-below-migration 'co
 NAMED='migration timeout' expect reject template healthcheck-timeout-omitted '    healthcheckTimeout: HEALTHCHECK_TIMEOUT,
     replicas: 1,' '    replicas: 1,'
 expect accept template healthcheck-generous 'const HEALTHCHECK_TIMEOUT = 3990;' 'const HEALTHCHECK_TIMEOUT = 7200;'
-expect reject template retention-raw-tape-days 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Retention__RawTapeDays: "30",'
+expect reject template retention-raw-tape-days 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "simple", Retention__RawTapeDays: "30",'
 expect reject template untyped-postgres-host 'POSTGRES_PRIVATE_HOST: postgres.env.RAILWAY_PRIVATE_DOMAIN,' 'POSTGRES_PRIVATE_HOST: "postgres.railway.internal",'
 expect reject template type-error 'const RESTART = {} as const;' 'const RESTART = { restartPolicyType: "SOMETIMES" } as const;'
 

@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Railway shows log messages again** (gh#873). Railway reads a JSON line's text only from a lowercase
+  `message`, and the `json` console formatter writes `Message`, so every entry was blank. The Railway
+  template now uses the `simple` formatter on one line with UTC timestamps. Railway no longer gets a level
+  or attributes; filter by text. Compose and the AWS path keep their formatters.
+
 ## [0.7.1] - 2026-10-30
 
 ### Added

@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failed tape connect retries on the probe backoff** (gh#869). A handshake that throws,
+  including the first one and a throw after a valid probe, no longer ends the recorder.
+  `AutoReconnect` stays off. The wait is one second, doubling to 30 seconds, and it resets
+  only after a connect lands, so a hub that stays down does not validate every second. A
+  session conflict, `InvalidSession`, HTTP 401, or no fresh token still stops the loop.
+  With `MarketData__StopOnSessionConflict` off, or with no session probe, the same wait
+  connects without a validate call. The tape claim keeps being renewed during the wait.
 - **Railway shows log messages again** (gh#873). Railway reads a JSON line's text only from a lowercase
   `message`, and the `json` console formatter writes `Message`, so every entry was blank. The Railway
   template now uses the `simple` formatter on one line with UTC timestamps. Railway no longer gets a level
@@ -22,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Railway log formatter is pinned** (gh#878). `check-railway-template.sh` now requires the
   `simple` formatter, `SingleLine` true and `ColorBehavior` `Disabled` (new in the template), so a return to
   `json` fails CI instead of blanking Railway's log messages again.
+
+### Added
+
+- **`get_recorder_health` reports hub reconnects and last-tick age** (gh#793).
+  `hubReconnects` counts a successful market-hub connect after a previous connection was
+  lost or a connect attempt failed. A clean first connect is zero, and zero is reported.
+  `lastTickAgeSeconds` is the report's `asOfUtc` minus `lastTickUtc`, in seconds, on the
+  wall clock, clamped at zero, and omitted when there is no print. A reply reused from
+  the five-second memo keeps the age relative to that reply's `asOfUtc`.
 
 ## [0.7.1] - 2026-10-30
 

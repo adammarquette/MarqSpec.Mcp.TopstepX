@@ -615,9 +615,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   symbol, and a `contractId` only when that contract printed or was covered inside the elapsed session. A
   rolled-off contract, and an unconfigured symbol, are absent — neither is a row, so neither is a
   session-long gap and neither keeps the report degraded. `lastTickUtc` is omitted when that contract has
-  no print inside the session. `lastTickAgeSeconds` is `asOfUtc` minus that time, in seconds, and is
-  omitted with it. `hubReconnects` counts market-hub connection transitions in this process since it
-  started, and zero is reported (gh#793). `gaps` are the `TapeCoverage` holes in the elapsed portion of the
+  no print inside the session. `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus that time,
+  in seconds, clamped at zero, and is omitted with it. A reply reused from the five-second memo
+  keeps that age against the cached `asOfUtc`. `hubReconnects` counts a successful market-hub
+  connect after a connection was lost or a connect attempt failed. A clean first connect is zero,
+  and zero is reported (gh#793). `gaps` are the `TapeCoverage` holes in the elapsed portion of the
   current product session, or of the session that most recently closed when the market is shut.
   A declared early close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this
   report's session and ends that session at the declared time; the hours after it are not a hole in this

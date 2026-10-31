@@ -41,7 +41,11 @@ page against either**, so check it against the code, never against another docum
   to 1,000,000 and one fixed, so above 250,000 the configured number stops being the binding one (gh#96). The
   window is measured *before* anything is read and the refusal carries the real bucket count and the cap it is
   over, so "you asked for too much" never arrives disguised as "here is all there was", and it costs no vendor
-  request to find out.
+  request to find out. The row-cap refusal names the bars the window would have needed, the cap, and how to
+  page: narrower start and end windows, or a coarser unit, with a concrete example of a one-minute window
+  that fits and of `resolutionMinutes` 5. `get_bars` states that shipped cap
+  (`MarketDataOptions.DefaultMaxRows`) in its tool description and on `resolutionMinutes`, `fromUtc` and
+  `toUtc` (gh#868).
 - **Times are ISO-8601 UTC**, in and out. An offset-bearing stamp is **converted** via `ToUniversalTime()`,
   not rejected — a `-05:00` instant becomes the matching UTC instant. Whether a missing `Z` dies at JSON
   parse is the SDK, not this repo. There is no application check that the offset is zero.
@@ -281,6 +285,11 @@ the boundary (gh#110).
 
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
+
+A window may span at most `MaxRows` bars — **5000** unless an operator set it, the number the tool
+description and `resolutionMinutes`, `fromUtc` and `toUtc` state. Over that the read refuses, naming the
+bars the window would have needed, the cap, and how to page: narrower start and end windows, or a coarser
+unit, with a concrete example (gh#868). It does not truncate.
 
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },

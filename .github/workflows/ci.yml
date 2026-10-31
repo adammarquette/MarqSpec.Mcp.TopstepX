@@ -754,6 +754,11 @@ jobs:
         #
         # A SCRIPT rather than an inline block so the same check runs against a locally built image. A local
         # check that disagrees with CI is worse than no local check.
+        #
+        # EXPECTED_VERSION is the string this job passed as MINVER_VERSION (gh#867). The smoke requires
+        # serverInfo.version to equal it, and still refuses 0.0.0.0 and 0.0.0-alpha.0 when it is unset.
+        env:
+          EXPECTED_VERSION: ${{ env.VERSION }}
         run: ./scripts/check-image-entrypoint.sh "$IMAGE:ci"
 
       # THE GATE ABOVE HAS TO BE ABLE TO FAIL (gh#98). It is the only thing standing between a broken

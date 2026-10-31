@@ -928,7 +928,7 @@ gap made *which release is running* unanswerable in-band: the shipped assembly i
 decision (ADR-0001) and `serverInfo.version` goes out as `0.0.0.0`, and reading either would answer
 confidently and wrongly.
 
-**gh#867 (2026-10-31).** The sentence above describes the image as shipped through v0.7.0. The image build
+**gh#867 (2026-10-30).** The sentence above describes the image as shipped through v0.7.0. The image build
 now receives the release tag as `MinVerVersionOverride`, and both `/health`'s `version` and
 `serverInfo.version` read the assembly informational version with `+` build metadata removed.
 `Deployment__Version` is not that number. A set value that differs from it is one startup warning.

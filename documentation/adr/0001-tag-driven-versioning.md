@@ -52,7 +52,7 @@ which is the thing being removed.
   is *every job that builds*, not *every job that packs*: the version is stamped into an assembly rather than
   into a package. **Which artifacts that stamp actually reaches is gh#176** — `.dockerignore` excludes
   `.git/`, so the container build is not one of them, and without a version argument it stamps
-  `0.0.0-alpha.0` however deep the runner's clone is. The 2026-10-31 update passes the tag in; depth still
+  `0.0.0-alpha.0` however deep the runner's clone is. The 2026-10-30 update passes the tag in; depth still
   does not. Read this bullet as a rule about the checkout, never as a claim that depth stamps the image.
 - A local build with no tags nearby yields a pre-release version. Correct, and occasionally surprising.
 - Cutting a release is: promote, tag, publish. No file edit is part of it.
@@ -62,7 +62,7 @@ which is the thing being removed.
 | Update | What changed |
 |---|---|
 | [2026-08-25](#update-2026-08-25--the-stamp-does-not-reach-the-shipped-image) | The stamp inside the published image is `0.0.0-alpha.0`, read off the DLL; the image tag carries the release number, by decision rather than by accident |
-| [2026-10-31](#update-2026-10-31--the-image-build-stamps-the-release-tag) | The image build stamps the tag; `/health` and `serverInfo` read it (gh#867) |
+| [2026-10-30](#update-2026-10-30--the-image-build-stamps-the-release-tag) | The image build stamps the tag; `/health` and `serverInfo` read it (gh#867) |
 
 ## Update (2026-08-25) — the stamp does not reach the shipped image
 
@@ -149,7 +149,7 @@ deliberately: `image` exists to build by the mechanism the release uses (gh#54),
 that build, and `publish` is the run that can least cheaply be repeated. Trimming it would change the release
 path and buy nothing.
 
-## Update (2026-10-31) — the image build stamps the release tag
+## Update (2026-10-30) — the image build stamps the release tag
 
 The 2026-08-25 update stands as a measurement of `ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0` and of
 every image built the same way through v0.7.0. What changed is reason 1 of that update: something now

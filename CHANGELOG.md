@@ -29,8 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `hubReconnects` counts a successful market-hub connect after a previous connection was
   lost or a connect attempt failed. A clean first connect is zero, and zero is reported.
   `lastTickAgeSeconds` is the report's `asOfUtc` minus `lastTickUtc`, in seconds, on the
-  wall clock, clamped at zero, and omitted when there is no print. A reply reused from
-  the five-second memo keeps the age relative to that reply's `asOfUtc`.
+  wall clock, clamped at zero, and omitted when there is no print. A print later than
+  `asOfUtc` is outside the report window and is omitted. A reply reused from the
+  five-second memo keeps the age relative to that reply's `asOfUtc`.
 
 ## [0.7.1] - 2026-10-30
 

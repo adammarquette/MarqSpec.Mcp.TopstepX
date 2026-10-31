@@ -42,8 +42,8 @@ page against either**, so check it against the code, never against another docum
   window is measured *before* anything is read and the refusal carries the real bucket count and the cap it is
   over, so "you asked for too much" never arrives disguised as "here is all there was", and it costs no vendor
   request to find out. The row-cap refusal names the bars the window would have needed, the cap, and how to
-  page: narrower start and end windows, or a coarser unit, with a concrete example of a one-minute window
-  that fits and of `resolutionMinutes` 5. `get_bars` states that shipped cap
+  page from the request itself: a shorter window from its start through that many bars at the requested
+  unit, or the smallest bar unit that fits the whole window. `get_bars` states that shipped cap
   (`MarketDataOptions.DefaultMaxRows`) in its tool description and on `resolutionMinutes`, `fromUtc` and
   `toUtc` (gh#868).
 - **Times are ISO-8601 UTC**, in and out. An offset-bearing stamp is **converted** via `ToUniversalTime()`,
@@ -289,8 +289,9 @@ The workhorse. Cache-aside: served from the store, with only genuinely missing b
 A window may span at most `MaxRows` bars. The shipped default is 5000, and that is the number the
 `get_bars` description and `resolutionMinutes`, `fromUtc` and `toUtc` state. An operator can set a
 different cap; the refusal names the cap in force. Over it the read refuses, naming the bars the window
-would have needed and how to page: narrower start and end windows, or a coarser unit, with a concrete
-example (gh#868). It does not truncate.
+would have needed and how to page from the request: a shorter window from its start through that many
+bars at the requested unit, or the smallest bar unit that fits the whole window (gh#868). It does not
+truncate.
 
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },

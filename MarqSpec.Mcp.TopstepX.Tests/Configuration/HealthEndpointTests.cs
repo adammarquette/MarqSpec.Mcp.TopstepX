@@ -157,24 +157,23 @@ public sealed class HealthEndpointTests
     }
 
     [Fact]
-    public async Task TheProbeReportsTheReleaseVersion_AndAnUnknownDigest_WhenTheDeploymentStampedNothing()
+    public async Task TheProbeReportsAnUnknownDigest_WhenTheDeploymentStampedNothing()
     {
-        // version is the assembly informational version (gh#867). The digest still has nowhere to
-        // come from but the deployment, so an unset one stays unknown.
+        // The digest has nowhere to come from but the deployment, so an unset one stays unknown.
+        // What `version` equals is InitializeReportsTheSameVersionHealthDoes, not this probe.
         await using Probe probe = await StartAsync();
 
         JsonElement body = await ReadJsonAsync(await probe.Client.GetAsync("/health"));
 
-        body.GetProperty("version").GetString().Should().Be(ProductVersion.Read());
-        body.GetProperty("version").GetString().Should().NotBe("0.0.0.0");
         body.GetProperty("digest").GetString().Should().Be("unknown");
     }
 
     [Fact]
     public async Task TheProbeReportsTheDigestTheDeploymentStamped_AndNotThatStampAsTheVersion()
     {
-        // A Deployment__Version beside the process does not replace the assembly stamp (gh#867).
         // The digest still comes from the deployment, because the assembly does not carry one.
+        // Deployment__Version is not copied into the body. The release string itself is the
+        // initialize test.
         await using Probe probe = await StartAsync(extra: new Dictionary<string, string?>
         {
             ["Deployment:Version"] = "0.4.0",
@@ -183,8 +182,7 @@ public sealed class HealthEndpointTests
 
         JsonElement body = await ReadJsonAsync(await probe.Client.GetAsync("/health"));
 
-        body.GetProperty("version").GetString().Should().Be(ProductVersion.Read());
-        body.GetProperty("version").GetString().Should().NotBe("0.4.0");
+        body.GetProperty("version").GetString().Should().NotBeNullOrWhiteSpace().And.NotBe("0.4.0");
         body.GetProperty("digest").GetString().Should().Be("sha256:9f2c1d");
     }
 

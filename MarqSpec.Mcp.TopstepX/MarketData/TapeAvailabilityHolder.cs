@@ -35,6 +35,7 @@ public sealed class TapeAvailabilityHolder
     private readonly ConcurrentDictionary<string, TapeAvailability> _byInstrument = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, TapeAvailability> _unclaimed = new(StringComparer.Ordinal);
     private readonly Func<string, TapeAvailability>? _forProbe;
+    private int _hubReconnects;
 
     /// <summary>The production holder. Nothing can replace <see cref="For"/> after this.</summary>
     public TapeAvailabilityHolder()
@@ -54,6 +55,18 @@ public sealed class TapeAvailabilityHolder
 
     /// <summary>The process-wide state, when no per-instrument override applies.</summary>
     public TapeAvailability Value => _value;
+
+    /// <summary>
+    /// Market-hub connection transitions counted in this process since it started.
+    /// </summary>
+    /// <remarks>
+    /// Zero is a real count: this process has not taken a transition. The export counter is a
+    /// different series and is not read back into the health report (gh#793).
+    /// </remarks>
+    public int HubReconnects => Volatile.Read(ref _hubReconnects);
+
+    /// <summary>Counts one market-hub transition. Called where the export counter is incremented.</summary>
+    public void NoteHubReconnect() => Interlocked.Increment(ref _hubReconnects);
 
     /// <summary>The current subscription state for one instrument.</summary>
     /// <param name="instrument">The instrument symbol.</param>

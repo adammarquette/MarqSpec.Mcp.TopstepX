@@ -608,6 +608,22 @@ actually returned with `live` false is counted, tagged with why. A refusal is no
 `MarketData__RecordTape` is on.
 
 
+## Update (2026-10-31) — a failed connect is not terminal (gh#869)
+
+`AutoReconnect` stays off. A hub phrase, HTTP 401, `InvalidSession`, `SessionNotFound`, and a
+missing fresh token still end the loop and do not connect again.
+
+A failed `ConnectMarketHubAsync`, including the first handshake, is a drop that has not been
+classified. The hooks stay, the tape is reconnecting, and the lifecycle and the lease renewal keep
+running. The wait is the inconclusive-probe backoff: one second, doubling to 30 seconds, with no
+attempt cap. A later valid probe connects, still with automatic reconnect left off. A throw from
+that connect re-enters the same backoff. The claim is renewed while the wait runs, so the retry
+does not invite a second writer.
+
+`get_recorder_health` carries `hubReconnects`, the market-hub transitions counted in this process
+since it started, and `lastTickAgeSeconds`, `asOfUtc` minus `lastTickUtc`, omitted when there is
+no print (gh#793). Zero reconnects is a real count.
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.
@@ -626,4 +642,7 @@ actually returned with `live` false is counted, tagged with why. A refusal is no
   until restart. With the switch off, the replicas kick each other about once per 54-minute cycle.
   Still open.
 - gh#728 — stdio serves closed coverage another process recorded, flagged not-live. Landed in the
+  update above.
+- gh#869 — a failed connect re-enters the inconclusive-probe backoff. Landed in the update above.
+- gh#793 — `hubReconnects` and `lastTickAgeSeconds` on the recorder-health report. Landed in the
   update above.

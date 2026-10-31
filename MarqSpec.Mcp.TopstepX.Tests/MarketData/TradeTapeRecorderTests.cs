@@ -3158,6 +3158,77 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task TheTapeClaimIsStillHeld_PastOneLeaseLifetime_AndASecondRecorderIsRefused()
+    {
+        // One renewal tick is not the guarantee. The claim has to survive a wait longer
+        // than the 90 second term, and a second recorder on that clock must still be refused.
+        string sharedStore = Guid.NewGuid().ToString();
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Inconclusive };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                sessionProbe: probe,
+                sharedDatabaseName: sharedStore);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                LeaseRows(database).Count == 1
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            DateTimeOffset startedAt = clock.GetUtcNow();
+            for (int tick = 0; tick < 4; tick++)
+            {
+                DateTimeOffset expiry = LeaseRows(database).Single().ExpiresAt;
+                clock.Advance(TapeLease.DefaultTimeToLive / 3);
+                await WaitUntil(() => LeaseRows(database).Single().ExpiresAt > expiry);
+            }
+
+            (clock.GetUtcNow() - startedAt).Should().BeGreaterThan(TapeLease.DefaultTimeToLive);
+            LeaseRows(database).Single().ExpiresAt.Should().BeAfter(clock.GetUtcNow());
+            hub.MarketConnects.Should().Be(0);
+            recorder.HoldsRecorderLease.Should().BeTrue();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+
+            (TradeTapeRecorder second,
+                FakeMarketHub secondHub,
+                _,
+                ServiceProvider secondServices,
+                RecordingClock secondClock) =
+                Build(
+                    McpTransport.Http,
+                    recordTape: true,
+                    sharedDatabaseName: sharedStore);
+            secondClock.SetUtcNow(clock.GetUtcNow());
+
+            await using (secondServices)
+            {
+                TapeAvailabilityHolder secondTape =
+                    secondServices.GetRequiredService<TapeAvailabilityHolder>();
+                await second.StartAsync(CancellationToken.None);
+                await WaitUntil(() =>
+                    secondTape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder);
+
+                secondHub.TradeSubscriptions.Should().BeEmpty();
+                recorder.HoldsRecorderLease.Should().BeTrue();
+                await second.StopAsync(CancellationToken.None);
+            }
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task GetRecorderHealth_ReportsHubReconnects_AndOmitsLastTickAgeWhenThereIsNoPrint()
     {
         (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =

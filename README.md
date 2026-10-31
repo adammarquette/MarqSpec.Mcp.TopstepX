@@ -237,8 +237,19 @@ is the *supported* state, it is simply telling you which one it looked for.
 deployment with no cross-service ordering, where the server can reach the migration before Postgres answers
 and a single probe would degrade it for the life of the task. Compose does not need it either, since its
 `depends_on` is a `pg_isready` health gate. Each retry logs at Information against the same target, the value
-is refused outside `0..600`, and none of it makes the store required — an absent one still degrades to a
-refusal at the point of use ([ADR-0007](documentation/adr/0007-dual-transport.md)).
+is refused outside `0..600`, and on its own none of it makes the store required — an absent one still
+degrades to a refusal at the point of use ([ADR-0007](documentation/adr/0007-dual-transport.md)).
+
+`Store__Required` is that switch, and it defaults to false. Leave it unset locally and under stdio:
+the process stays up. Set it true only where a failed process is restarted for you. Railway sets it
+on the server and the recorder in production and staging, so a store that never answers, or a
+connection that drops while migrations are applied (a socket reset, or Postgres `57P01` or
+`57P03`, including when EF wraps that SQLSTATE in `InvalidOperationException`), logs an error and
+exits non-zero instead of
+serving refusals for the life of the container. `reselect-bars`, `export-tape` and `import-tape`
+log that error and return their store exit codes. `/health` does not consult the store either way.
+The startup holder is still set once. Two processes migrating one database share one session
+advisory lock for the whole apply, so the second waits until the first apply has finished.
 
 `Migrations__CommandTimeoutSeconds` is how long one migration command may run, in seconds. The default is
 `3600`. Npgsql's own default is 30, which is shorter than a per-chunk index-build migration on a large
@@ -251,10 +262,13 @@ process listens. A missed healthcheck stops the failed container and marks the d
 previous deployment keeps serving. Set `RAILWAY_HEALTHCHECK_TIMEOUT_SEC` so that healthcheck timeout ≥
 `Store__StartupWaitSeconds` + `Migrations__CommandTimeoutSeconds` + ~300s (3900 with the defaults). A
 `healthcheckTimeout` in the Railway service config overrides that variable. The server and the recorder
-share the advisory lock, and their waits overlap. The second service's wait is one `CALL`, cancelled at
-the command timeout with Postgres error `57014`, whatever the healthcheck allows. If the first service's
-index-build migration runs close to 3600 seconds, the second fails anyway: redeploy it once the first is
-healthy ([`documentation/deployment.md`](documentation/deployment.md)).
+share the advisory lock, and their waits overlap. The second service tries the lock and logs
+once when it has to wait. `Migrations__LockWaitSeconds` (default 300) is how long that wait may last.
+It is separate from the per-command timeout. A normal multi-command apply finishes inside the default.
+A wait that reaches it is the store unavailable: the process degrades when `Store__Required` is false,
+and logs an error and exits non-zero when it is true. If the first service's index build outlasts the
+wait, the second does not sit for the whole command. It degrades or exits, and a restart tries again
+once the first is healthy ([`documentation/deployment.md`](documentation/deployment.md)).
 
 Two things this recipe deliberately does **not** carry over from `docker compose up`:
 
@@ -386,9 +400,11 @@ time in the sibling repo:
 
 Two hosting knobs behind this transport, both configuration only (gh#515): `Logging__Console__FormatterName=json`
 switches the console to one JSON object per line, which helps log aggregation behind Docker or a reverse
-proxy. `ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` makes `HttpContext.Connection.RemoteIpAddress` the caller's
-own address when a trusted reverse proxy forwards `X-Forwarded-For` — use it only when that proxy is the
-sole path to the server ([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)).
+proxy. Railway is the exception: it shows that JSON's `Message` as blank, so its template uses single-line
+`simple` (gh#873, [deployment.md](documentation/deployment.md#railway-gh758)).
+`ASPNETCORE_FORWARDEDHEADERS_ENABLED=true` makes `HttpContext.Connection.RemoteIpAddress` the caller's own
+address when a trusted reverse proxy forwards `X-Forwarded-For` — use it only when that proxy is the sole
+path to the server ([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)).
 
 ### See what it is doing
 
@@ -545,6 +561,8 @@ reproduce.
 | `2` | The command line was refused **before anything touched the store** — a missing or extra argument, a symbol this server does not serve, an instant that is not ISO-8601, an empty or inverted window, or one ending past the calendar's horizon. The message names the argument and the rule. Nothing was written. |
 | `3` | **The run stopped.** The store was unreachable or its migration dropped the connection, or the plan degraded for a whole window — the venue lists no contracts, its front does not read against the product's cycle, or the instrument is not served (*not reachable through the verb — the parse refuses it first, at `2`*). |
 
+`Store__Required=true` is still exit `3`. The verb logs the cannot-run line and returns that code.
+
 **Exit 3 does not mean nothing was rewritten.** The run commits one unit of work per resolution series, so a
 degradation on the second series exits 3 with the first already committed, and the migration itself can stop
 partway. The per-series log lines are what say how far it got. Anything the verb has no story for — a
@@ -578,6 +596,9 @@ with DuckDB or pandas is [documentation/tape-export-reload.md](documentation/tap
 | `1` | At least one day failed verification or was refused on import. |
 | `2` | The day argument is not exact `yyyy-MM-dd`. |
 | `3` | The store could not be migrated. |
+
+`Store__Required=true` is still exit `3` for both verbs. Each logs the cannot-run line and returns
+that code.
 
 The full environment contract, including the names gh#758 must use, is in
 [`documentation/deployment.md`](documentation/deployment.md#config-contract-for-758).

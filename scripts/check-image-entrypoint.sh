@@ -82,6 +82,50 @@ export MSYS2_ARG_CONV_EXCL='*'
 die() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
 
+# The version inside the first serverInfo object, or empty when the frame has none.
+serverinfo_version() {
+  local line
+  line="$(grep -oE '"serverInfo"[[:space:]]*:[[:space:]]*\{[^}]*"version"[[:space:]]*:[[:space:]]*"[^"]*"' "$1" | head -n 1 || true)"
+  if [ -z "$line" ]; then
+    printf '%s' ""
+    return 0
+  fi
+  printf '%s\n' "$line" | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/'
+}
+
+# gh#867. 0.0.0.0 and 0.0.0-alpha.0 are refused whether or not EXPECTED_VERSION is set.
+# When it is set, serverInfo.version must equal it. The selftest sources this file and
+# calls this function on fixture frames; an executed run continues below.
+assert_serverinfo_version() {
+  local out="$1"
+  local bad found
+  bad='"version"[[:space:]]*:[[:space:]]*"(0\.0\.0\.0|0\.0\.0-alpha\.0)"'
+  if grep -Eq "\"serverInfo\"[[:space:]]*:[[:space:]]*\\{[^}]*${bad}" "$out"; then
+    die "  UNSTAMPED VERSION  initialize reported serverInfo.version 0.0.0.0 or 0.0.0-alpha.0"
+    die "The image was built without MINVER_VERSION, so MinVer fell back inside the container."
+    die "CI and release.yml pass that build-arg. A local docker build has to as well."
+    return 1
+  fi
+
+  if [ -z "${EXPECTED_VERSION:-}" ]; then
+    ok "  OK  initialize did not report the unstamped version"
+    return 0
+  fi
+
+  found="$(serverinfo_version "$out")"
+  if [ "$found" != "$EXPECTED_VERSION" ]; then
+    die "  WRONG VERSION  initialize reported serverInfo.version \"${found:-<absent>}\", expected \"$EXPECTED_VERSION\""
+    return 1
+  fi
+
+  ok "  OK  initialize reported serverInfo.version $EXPECTED_VERSION"
+}
+
+# Sourced by check-image-entrypoint-selftest.sh. An executed run falls through.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
+fi
+
 # DERIVED, not spelled again. CI builds `$(image-reference.sh):ci` (gh#115), so a hardcoded
 # `marqspec-mcp-topstepx:ci` here would name a tag this repository no longer produces -- and the no-argument
 # form this script documents would fail with `Unable to find image ... locally`, then try to PULL it from
@@ -329,6 +373,12 @@ if ! grep -Eq "$TOOLS_REPLY" "$OUT"; then
 fi
 
 ok "  OK  the image's own entrypoint started and answered tools/list"
+
+# gh#867. The SDK's default serverInfo.version is the entry assembly's AssemblyVersion. An image
+# published with no MINVER_VERSION stamps 0.0.0.0, or 0.0.0-alpha.0 once serverInfo is read from
+# the informational version and the argument is still missing. EXPECTED_VERSION, when set, must
+# match exactly; CI passes the same string it gave the image as MINVER_VERSION.
+assert_serverinfo_version "$OUT" || exit 1
 
 # ---------------------------------------------------------------------------
 # 3. And that container ended cleanly. SECOND SIGNAL — see THE DECISION in the header.

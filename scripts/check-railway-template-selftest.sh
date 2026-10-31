@@ -166,7 +166,7 @@ expect reject template forwarded-headers-colon 'Otel__ServiceName: "marqspec-mcp
 expect reject template deployment-version-lower 'Trading__Enabled: "false",' 'Trading__Enabled: "false", deployment__version: "9.9.9",'
 expect reject template connection-string-colon 'Trading__Enabled: "false",' 'Trading__Enabled: "false", "ConnectionStrings:Postgres": "Host=evil",'
 expect reject template unknown-key-colon 'Trading__Enabled: "false",' 'Trading__Enabled: "false", "Logging:LogLevel:Default": "Trace",'
-expect reject template retention-key-set 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Retention__Enabled: "false",'
+expect reject template retention-key-set 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "simple", Retention__Enabled: "false",'
 expect reject template pgdata-outside-volume 'PGDATA: `${PG_MOUNT}/data`' 'PGDATA: "/var/lib/postgresql/data"'
 expect reject template pgdata-is-mount-root 'PGDATA: `${PG_MOUNT}/data`' 'PGDATA: PG_MOUNT'
 expect reject template run-uid-removed 'RAILWAY_RUN_UID: "0",' ''
@@ -203,9 +203,9 @@ expect reject template registry-credentials 'deploy: { ...RESTART },
       // PGDATA' 'deploy: { ...RESTART, registryCredentials: { username: "u", password: "ghp_x" } },
     env: {
       // PGDATA'
-expect reject template fake-template-string 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "${{ hunter2",'
-expect reject template literal-otel-headers 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Otel__Headers: "x-api-key=abc",'
-expect reject template credential-shaped-literal 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Some__Thing: "ghp_aaaaaaaaaaaaaaaaaaaa",'
+expect reject template fake-template-string 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "${{ hunter2",'
+expect reject template literal-otel-headers 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "simple", Otel__Headers: "x-api-key=abc",'
+expect reject template credential-shaped-literal 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "simple", Some__Thing: "ghp_aaaaaaaaaaaaaaaaaaaa",'
 expect reject template shared-ref-on-wrong-key 'ProjectX__DataTier: ctx.shared.PROJECTX_DATA_TIER' 'ProjectX__DataTier: ctx.shared.POSTGRES_PASSWORD'
 expect reject template unknown-shared-ref 'ProjectX__ApiKey: ctx.shared.PROJECTX_API_KEY' 'ProjectX__ApiKey: ctx.shared.ANYTHING'
 expect reject template preserve-instead-of-shared 'ProjectX__ApiKey: ctx.shared.PROJECTX_API_KEY' 'ProjectX__ApiKey: { type: "preserve" } as const'
@@ -348,7 +348,7 @@ NAMED='migration timeout' expect reject template healthcheck-below-migration 'co
 NAMED='migration timeout' expect reject template healthcheck-timeout-omitted '    healthcheckTimeout: HEALTHCHECK_TIMEOUT,
     replicas: 1,' '    replicas: 1,'
 expect accept template healthcheck-generous 'const HEALTHCHECK_TIMEOUT = 3990;' 'const HEALTHCHECK_TIMEOUT = 7200;'
-expect reject template retention-raw-tape-days 'Logging__Console__FormatterName: "json",' 'Logging__Console__FormatterName: "json", Retention__RawTapeDays: "30",'
+expect reject template retention-raw-tape-days 'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "simple", Retention__RawTapeDays: "30",'
 expect reject template untyped-postgres-host 'POSTGRES_PRIVATE_HOST: postgres.env.RAILWAY_PRIVATE_DOMAIN,' 'POSTGRES_PRIVATE_HOST: "postgres.railway.internal",'
 expect reject template type-error 'const RESTART = {} as const;' 'const RESTART = { restartPolicyType: "SOMETIMES" } as const;'
 
@@ -402,6 +402,20 @@ NAMED='[no-default-drift]' expect reject template seed-default-type-stated 'depl
   'deploy: { restartPolicyType: "ON_FAILURE", restartPolicyMaxRetries: 3 },'
 NAMED='[no-default-drift]' expect reject template restart-always 'const RESTART = {} as const;' \
   'const RESTART = { restartPolicyType: "ALWAYS" } as const;'
+# --- gh#843: production and staging exit when the store is down; other environments leave the default ---
+NAMED='[store-required]' expect reject template store-required-false \
+  '...(persistent ? { Store__Required: "true" } : {}),' \
+  '...(persistent ? { Store__Required: "false" } : {}),'
+NAMED='[store-required]' expect reject template store-required-missing \
+  '    ...(persistent ? { Store__Required: "true" } : {}),
+' ''
+NAMED='[store-required]' expect reject template store-required-on-every-environment \
+  '...(persistent ? { Store__Required: "true" } : {}),' \
+  '...({ Store__Required: "true" }),'
+NAMED='[store-required]' expect reject template store-required-recorder-override \
+  'TapeExport__Enabled: "false",' \
+  'TapeExport__Enabled: "false", Store__Required: "false",'
+
 # --- gh#848: server and recorder ride out long Postgres outages (100 retries, default type unstated) ---
 NAMED='[app-restart]' expect reject template app-restart-wrong-count 'const APP_RESTART_RETRIES = 100;' 'const APP_RESTART_RETRIES = 30;'
 NAMED='[app-restart]' expect reject template app-restart-always 'const RESTART = {} as const;' \
@@ -447,6 +461,29 @@ NAMED='[pg-wait]' expect reject template pg-wait-on-postgres 'source: image(POST
     ...(pgdata'
 NAMED='[pg-wait]' expect reject template pg-wait-on-seed '          startCommand:' '          preDeploy: PG_WAIT,
           startCommand:'
+
+# --- gh#878: Railway pins the single-line simple console formatter with colour off (gh#873) ---
+NAMED='[log-formatter]' expect reject template log-formatter-json \
+  'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "json",'
+NAMED='[log-formatter]' expect reject template log-formatter-systemd \
+  'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "systemd",'
+NAMED='[log-formatter]' expect reject template log-formatter-name-missing \
+  '    Logging__Console__FormatterName: "simple",
+' ''
+NAMED='[log-formatter]' expect reject template log-single-line-missing \
+  '    Logging__Console__FormatterOptions__SingleLine: "true",
+' ''
+NAMED='[log-formatter]' expect reject template log-single-line-false \
+  'Logging__Console__FormatterOptions__SingleLine: "true",' 'Logging__Console__FormatterOptions__SingleLine: "false",'
+NAMED='[log-formatter]' expect reject template log-color-missing \
+  '    Logging__Console__FormatterOptions__ColorBehavior: "Disabled",
+' ''
+NAMED='[log-formatter]' expect reject template log-color-enabled \
+  'Logging__Console__FormatterOptions__ColorBehavior: "Disabled",' 'Logging__Console__FormatterOptions__ColorBehavior: "Enabled",'
+NAMED='[log-formatter]' expect reject template log-color-default \
+  'Logging__Console__FormatterOptions__ColorBehavior: "Disabled",' 'Logging__Console__FormatterOptions__ColorBehavior: "Default",'
+expect accept template log-formatter-utc-timestamp-off \
+  'Logging__Console__FormatterOptions__UseUtcTimestamp: "true",' 'Logging__Console__FormatterOptions__UseUtcTimestamp: "false",'
 
 # --- SDK pin (gh#832): the root package.json `railway config plan` loads must pin what CI compiles against ---
 expect_pin() {  # expect_pin <reject|accept> <name> <python edit of the root copy>

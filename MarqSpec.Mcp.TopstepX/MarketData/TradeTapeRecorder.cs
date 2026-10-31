@@ -59,10 +59,16 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <para>
 /// <b>A session conflict stops this service instead of reconnecting</b> (gh#757). The recorder and
 /// the trading platform share one TopstepX login, and another login disconnects the platform. A hub
-/// close that names another session, or a validate result of invalid session or session not found,
-/// disconnects, waits <see cref="MarketDataOptions.SessionConflictBackoff"/>, and does not subscribe
-/// again. A missing token or an inconclusive probe stops this service without latching that login
-/// closed for REST tools. A transport drop is still restored.
+/// close that names another session, or a validate result of invalid session, session not found, or
+/// HTTP 401, disconnects, waits <see cref="MarketDataOptions.SessionConflictBackoff"/>, and does not
+/// subscribe again. No fresh token stops this service without latching that login closed for REST
+/// tools. A connect that fails without one of those signals, including the first handshake, stays
+/// up. The wait doubles from one second to 30 and resets when a connect lands. A valid probe
+/// connects with automatic reconnect left off. With the switch on and no probe, that wait
+/// connects while the held token is fresh, and a token that is not fresh stops the loop
+/// and does not call loginKey. With the switch off, that wait connects without a validate
+/// call while the held token is fresh, it does not call loginKey, and it does not turn
+/// automatic reconnect on. The drain loop renews the claim while the wait runs (gh#869).
 /// <see cref="MarketDataOptions.StopOnSessionConflict"/> defaults on.
 /// </para>
 /// <para>
@@ -76,6 +82,13 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// hub drops and restores. That holder is the opposite of <see cref="StoreAvailabilityHolder"/>:
 /// it is mutable and read at the point of use, because a tape's subscriptions change mid-session.
 /// This card does not pick the front month by volume — that is gh#219.
+/// </para>
+/// <para>
+/// <b>An unavailable store is not a lease attempt</b> (gh#843). When
+/// <see cref="StoreAvailabilityHolder"/> says Unavailable at startup, this service logs that once
+/// and returns. It does not claim, renew, subscribe or write. The holder is still set once, so
+/// this is not a retry loop, and a failure in the middle of a run that did start keeps the
+/// handling it already had.
 /// </para>
 /// </remarks>
 public sealed class TradeTapeRecorder : BackgroundService
@@ -91,6 +104,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     private readonly ILogger<TradeTapeRecorder> _logger;
     private readonly TapeAvailabilityHolder _tape;
     private readonly HostTelemetry _telemetry;
+    private readonly StoreAvailabilityHolder _store;
     private readonly Channel<PendingPrint> _channel;
     private readonly Channel<LifecycleWork> _lifecycle;
     /// <summary>
@@ -145,6 +159,9 @@ public sealed class TradeTapeRecorder : BackgroundService
     private int _restoreEntries;
     private int _restoresPastTheGuard;
     private int _reprobeAttempt;
+
+    /// <summary>1 after the first failed connect-only retry of an outage has been logged.</summary>
+    private int _connectRetryFailureNoted;
     private long _recorded;
     private long _dropped;
 
@@ -158,7 +175,8 @@ public sealed class TradeTapeRecorder : BackgroundService
         TimeProvider clock,
         ILogger<TradeTapeRecorder> logger,
         TapeAvailabilityHolder tape,
-        HostTelemetry telemetry)
+        HostTelemetry telemetry,
+        StoreAvailabilityHolder store)
         : this(
             scopes,
             market,
@@ -169,7 +187,8 @@ public sealed class TradeTapeRecorder : BackgroundService
             tape,
             telemetry,
             DefaultChannelCapacity,
-            TapeLease.DefaultTimeToLive)
+            TapeLease.DefaultTimeToLive,
+            store)
     {
     }
 
@@ -195,6 +214,10 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// How long this process's tape claim stands unrenewed. Tests pass a short one so a takeover
     /// is reachable without waiting out the real value.
     /// </param>
+    /// <param name="store">
+    /// The startup store probe. When it says unavailable this service makes no lease or tape
+    /// attempt.
+    /// </param>
     public TradeTapeRecorder(
         IServiceScopeFactory scopes,
         IOptions<MarketDataOptions> market,
@@ -205,7 +228,8 @@ public sealed class TradeTapeRecorder : BackgroundService
         TapeAvailabilityHolder tape,
         HostTelemetry telemetry,
         int channelCapacity,
-        TimeSpan leaseTimeToLive)
+        TimeSpan leaseTimeToLive,
+        StoreAvailabilityHolder store)
     {
         ArgumentNullException.ThrowIfNull(scopes);
         ArgumentNullException.ThrowIfNull(market);
@@ -215,6 +239,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(tape);
         ArgumentNullException.ThrowIfNull(telemetry);
+        ArgumentNullException.ThrowIfNull(store);
         ArgumentOutOfRangeException.ThrowIfLessThan(channelCapacity, 1);
 
         _scopes = scopes;
@@ -225,6 +250,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         _logger = logger;
         _tape = tape;
         _telemetry = telemetry;
+        _store = store;
         _ledger = new TapeCoverageLedger(scopes, clock);
         _lease = new TapeLease(scopes, clock, leaseTimeToLive);
         _channel = Channel.CreateBounded<PendingPrint>(new BoundedChannelOptions(channelCapacity)
@@ -307,6 +333,17 @@ public sealed class TradeTapeRecorder : BackgroundService
                     "Tape recording is off (transport {Transport}, RecordTape {RecordTape}).",
                     _mcp.Transport,
                     _market.RecordTape);
+                return;
+            }
+
+            // Once, at startup. The holder does not change after that, so this is not a backoff and
+            // not an exit. A store that fails after a run has already started still uses the catches
+            // below (gh#843).
+            if (!_store.Value.IsAvailable)
+            {
+                _logger.LogWarning(
+                    "The store is unavailable, so the trade-tape recorder will not claim a lease or "
+                    + "record tape. Restart the process once the store is reachable.");
                 return;
             }
 
@@ -424,12 +461,41 @@ public sealed class TradeTapeRecorder : BackgroundService
                     await _hub.ConnectMarketHubAsync(stoppingToken).ConfigureAwait(false);
                     drain = true;
                 }
-                catch
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     Unhook();
                     _channel.Writer.TryComplete();
                     _lifecycle.Writer.TryComplete();
                     throw;
+                }
+                catch
+                {
+                    // A handshake that did not land is not a conflict and not a reason to exit.
+                    // The hooks stay. The backoff below decides the next connect. Lease renewal
+                    // starts in the drain loop under this catch, once that loop is running
+                    // (gh#869). The exception is not logged: a hub failure can carry vendor text.
+                    _logger.LogError(
+                        "The trade-tape recorder could not connect the market hub. It stays up and "
+                        + "will try the handshake again, and it will not call loginKey.");
+                    _tape.Set(TapeAvailability.Reconnecting());
+                    _tape.NoteHubConnectionLost();
+                    if (_market.StopOnSessionConflict && _probe is not null)
+                    {
+                        _loginGate.BeginSuspecting();
+                        await WaitAndReprobeAsync(stoppingToken).ConfigureAwait(false);
+                    }
+                    else if (_market.StopOnSessionConflict
+                        && _held is not null
+                        && !_held.TryReadFresh(_clock, out _))
+                    {
+                        await StopRatherThanLoginAsync(stoppingToken).ConfigureAwait(false);
+                    }
+                    else
+                    {
+                        Enqueue(LifecycleWork.ReprobeAfterBackoff);
+                    }
+
+                    drain = true;
                 }
             }
 
@@ -959,7 +1025,12 @@ public sealed class TradeTapeRecorder : BackgroundService
             }
 
             // Connected is not listening. Tools must refuse until restore completes.
+            // The backoff starts again at one second only after this connect has landed.
+            // The next outage's first failed retry is an error again.
+            ResetReprobeAttempt();
+            Interlocked.Exchange(ref _connectRetryFailureNoted, 0);
             _telemetry.TapeReconnect(TapeTransition.Connected);
+            _tape.NoteHubReconnect();
             _tape.Set(TapeAvailability.ConnectedButNotSubscribed());
             Enqueue(LifecycleWork.RestoreSubscriptions);
             return;
@@ -969,6 +1040,7 @@ public sealed class TradeTapeRecorder : BackgroundService
             && change.CurrentState != ConnectionState.Connected)
         {
             _telemetry.TapeReconnect(TapeTransition.Disconnected);
+            _tape.NoteHubConnectionLost();
             _ledger.CloseOpenRangesAt(_clock.GetUtcNow());
             Enqueue(LifecycleWork.PersistCloses);
 
@@ -1393,7 +1465,7 @@ public sealed class TradeTapeRecorder : BackgroundService
 
             if (verdict == SessionProbeVerdict.Conflict)
             {
-                _reprobeAttempt = 0;
+                ResetReprobeAttempt();
                 _loginGate.LatchStop();
                 await StopForSessionConflictAsync(SessionConflictSource.Api, cancellationToken)
                     .ConfigureAwait(false);
@@ -1407,7 +1479,6 @@ public sealed class TradeTapeRecorder : BackgroundService
                     return;
                 }
 
-                _reprobeAttempt = 0;
                 _loginGate.ClearSuspecting();
                 if (ConflictArmed || _loginGate.StopLatched)
                 {
@@ -1457,8 +1528,25 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
         catch (Exception)
         {
+            if (ConflictArmed || _loginGate.StopLatched)
+            {
+                return;
+            }
+
+            if (hub.MarketHubState is ConnectionState.Connected
+                or ConnectionState.Reconnecting
+                or ConnectionState.Connecting)
+            {
+                return;
+            }
+
+            // The exception is not logged. A hub failure can carry vendor text.
             _logger.LogError(
-                "The trade-tape recorder could not reconnect after a hub drop that was not a session conflict. It will not call loginKey.");
+                "The trade-tape recorder could not reconnect after a hub drop that was not a session "
+                + "conflict. It will probe the held token again and will not call loginKey.");
+            _tape.NoteHubConnectionLost();
+            _loginGate.BeginSuspecting();
+            await WaitAndReprobeAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -1477,25 +1565,175 @@ public sealed class TradeTapeRecorder : BackgroundService
 
         _logger.LogWarning(
             "The session probe was inconclusive. The market hub stays disconnected and this process will not call loginKey. It will probe the held token again after {Backoff}.",
-            SessionReprobe.DelayForAttempt(_reprobeAttempt));
+            SessionReprobe.DelayForAttempt(Volatile.Read(ref _reprobeAttempt)));
 
         // EndProbe in the caller's finally releases this flight before the delay runs. The delay is its
         // own lifecycle step, so a Connected event between probes is not covered by ProbeInFlight.
         Enqueue(LifecycleWork.ReprobeAfterBackoff);
     }
 
-    private async Task ReprobeAfterBackoffAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Waits the same backoff as an inconclusive probe, then connects. No validate call, and
+    /// <c>AutoReconnect</c> is not turned on. A throw schedules the next wait. A held token that
+    /// is not fresh is checked again after the wait: the stand-down switch stops the loop, and
+    /// with the switch off the connect is skipped so it cannot post loginKey.
+    /// </summary>
+    private async Task ConnectOnlyAfterBackoffAsync(CancellationToken cancellationToken)
     {
-        if (ConflictArmed || _loginGate.StopLatched || _probe is null)
+        if (await StandDownWhenTheHeldTokenIsNotFreshAsync(cancellationToken).ConfigureAwait(false))
         {
             return;
         }
 
-        TimeSpan delay = SessionReprobe.DelayForAttempt(_reprobeAttempt);
-        if (_reprobeAttempt < int.MaxValue)
+        int attempt = TakeReprobeAttempt();
+        TimeSpan delay = SessionReprobe.DelayForAttempt(attempt);
+
+        try
         {
-            _reprobeAttempt++;
+            await Task.Delay(delay, _clock, cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+
+        if (ConflictArmed || _loginGate.StopLatched)
+        {
+            return;
+        }
+
+        if (await StandDownWhenTheHeldTokenIsNotFreshAsync(cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
+        // The switch is off. Connecting would ask for a token, and a token that is not fresh
+        // posts loginKey. Wait again and leave the operator's AutoReconnect flag alone.
+        if (_held is not null && !_held.TryReadFresh(_clock, out _))
+        {
+            _logger.LogWarning(
+                "The trade-tape recorder will not connect the market hub without a fresh token, "
+                + "and it will not call loginKey. It will try the handshake again after the backoff.");
+            Enqueue(LifecycleWork.ReprobeAfterBackoff);
+            return;
+        }
+
+        await ConnectWithoutAProbeAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Stops when the stand-down switch is on and the held token is not fresh.
+    /// Returns <see langword="false"/> when the retry may continue.
+    /// </summary>
+    private async Task<bool> StandDownWhenTheHeldTokenIsNotFreshAsync(CancellationToken cancellationToken)
+    {
+        if (!_market.StopOnSessionConflict || _held is null || _held.TryReadFresh(_clock, out _))
+        {
+            return false;
+        }
+
+        await StopRatherThanLoginAsync(cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the backoff attempt and moves the counter on. A reset from the connection
+    /// callback between the read and the store is tried again.
+    /// </summary>
+    private int TakeReprobeAttempt()
+    {
+        while (true)
+        {
+            int attempt = Volatile.Read(ref _reprobeAttempt);
+            int next = attempt == int.MaxValue ? attempt : attempt + 1;
+            if (Interlocked.CompareExchange(ref _reprobeAttempt, next, attempt) == attempt)
+            {
+                return attempt;
+            }
+        }
+    }
+
+    private void ResetReprobeAttempt() => Interlocked.Exchange(ref _reprobeAttempt, 0);
+
+    /// <summary>
+    /// Connects the market hub when there is nothing to validate. Does not turn
+    /// <c>AutoReconnect</c> on. A throw re-enters <see cref="ConnectOnlyAfterBackoffAsync"/>.
+    /// </summary>
+    private async Task ConnectWithoutAProbeAsync(CancellationToken cancellationToken)
+    {
+        IProjectXWebSocketClient? hub = _hub;
+        if (hub is null
+            || hub.MarketHubState == ConnectionState.Connected
+            || hub.MarketHubState == ConnectionState.Reconnecting
+            || hub.MarketHubState == ConnectionState.Connecting)
+        {
+            return;
+        }
+
+        if (ConflictArmed || _loginGate.StopLatched)
+        {
+            return;
+        }
+
+        try
+        {
+            await hub.ConnectMarketHubAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            if (ConflictArmed || _loginGate.StopLatched)
+            {
+                return;
+            }
+
+            if (hub.MarketHubState is ConnectionState.Connected
+                or ConnectionState.Reconnecting
+                or ConnectionState.Connecting)
+            {
+                return;
+            }
+
+            // The exception is not logged. A hub failure can carry vendor text.
+            // The first failed retry of an outage is an error. Later ones are warnings.
+            if (Interlocked.Exchange(ref _connectRetryFailureNoted, 1) == 0)
+            {
+                _logger.LogError(
+                    "The trade-tape recorder could not connect the market hub. It will try the "
+                    + "handshake again and will not call loginKey.");
+            }
+            else
+            {
+                _logger.LogWarning(
+                    "The trade-tape recorder could not connect the market hub. It will try the "
+                    + "handshake again and will not call loginKey.");
+            }
+            _tape.NoteHubConnectionLost();
+            _tape.Set(TapeAvailability.Reconnecting());
+            Enqueue(LifecycleWork.ReprobeAfterBackoff);
+        }
+    }
+
+    private async Task ReprobeAfterBackoffAsync(CancellationToken cancellationToken)
+    {
+        if (ConflictArmed || _loginGate.StopLatched)
+        {
+            return;
+        }
+
+        // No probe, or the operator turned the stand-down off. Connect on the same schedule.
+        // Do not validate, and do not turn automatic reconnect on.
+        if (_probe is null || !_market.StopOnSessionConflict)
+        {
+            await ConnectOnlyAfterBackoffAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        int attempt = TakeReprobeAttempt();
+        TimeSpan delay = SessionReprobe.DelayForAttempt(attempt);
 
         try
         {

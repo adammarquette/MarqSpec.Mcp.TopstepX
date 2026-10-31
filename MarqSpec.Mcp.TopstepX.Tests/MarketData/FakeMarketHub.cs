@@ -1,4 +1,5 @@
 using MarqSpec.Client.ProjectX.Api.Models;
+using MarqSpec.Client.ProjectX.Authentication;
 using MarqSpec.Client.ProjectX.WebSocket;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
@@ -30,6 +31,12 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     public List<string> TradeSubscriptions { get; } = [];
 
     public Exception? ConnectThrows { get; set; }
+
+    /// <summary>
+    /// When set, <see cref="ConnectMarketHubAsync"/> asks it for a token first, as the
+    /// published hub client does. A token that is not fresh posts <c>loginKey</c>.
+    /// </summary>
+    public IAuthenticationService? Authentication { get; set; }
 
     /// <summary>Thrown on the second and later <see cref="SubscribeToTradeUpdatesAsync"/> call.</summary>
     public Exception? SubscribeThrowsAfterFirst { get; set; }
@@ -93,8 +100,13 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     public event EventHandler<WebSocketMessageFailedEventArgs>? MessageSendFailed;
 #pragma warning restore CS0067
 
-    public Task ConnectMarketHubAsync(CancellationToken cancellationToken = default)
+    public async Task ConnectMarketHubAsync(CancellationToken cancellationToken = default)
     {
+        if (Authentication is not null)
+        {
+            await Authentication.GetAccessTokenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         if (ConnectThrows is not null)
         {
             throw ConnectThrows;
@@ -102,7 +114,6 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
         MarketConnects++;
         EnterMarketState(ConnectionState.Connected);
-        return Task.CompletedTask;
     }
 
     public Task ConnectUserHubAsync(CancellationToken cancellationToken = default)

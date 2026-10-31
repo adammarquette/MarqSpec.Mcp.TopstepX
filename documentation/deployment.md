@@ -78,9 +78,11 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 | `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **StaticToken** on `MCP_HTTP_BEARER_TOKEN` in every environment (ADR-0021 exception, temporary), `RecordTape=false` |
 | `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
 
-`Deployment__Version` and `Deployment__ImageDigest` are derived from `SERVER_IMAGE`, never typed separately.
-`/health` therefore reports the pinned tag and digest, and
-[`check-deployment.sh`](../scripts/check-deployment.sh) `<url> X.Y.Z` passes on a correct deploy.
+`Deployment__ImageDigest` is derived from `SERVER_IMAGE`, never typed separately, and `/health` reports
+it as `digest`. `version` is the informational version stamped into that image at build
+(`MinVerVersionOverride`, the release tag). `Deployment__Version` is set to the same tag. Startup logs
+one warning when that value is set and differs from the stamp, and logs nothing when they match (gh#867).
+[`check-deployment.sh`](../scripts/check-deployment.sh) `<url> X.Y.Z` passes when that stamp is the tag.
 
 **Production and staging keep the Postgres data; other environments are disposable.**
 - `production` and `staging` each require exactly one volume (`postgres-data`, 10 GiB, at
@@ -186,12 +188,18 @@ before any production deploy. Production deploys stay manual and need Adam's app
   each capped at 3 s, 5 s apart (800 s at worst), within `preDeployTimeoutSeconds=900`. It runs on the
   private network with the service's variables, and a failure stops that deployment, so the old one keeps
   serving. `[pg-wait]` pins it; postgres and the seed have none.
-  **Remaining gap ([#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843)):**
-  the wait runs only when server and recorder themselves redeploy. A postgres-only redeploy (a
-  `POSTGRES_IMAGE` bump, a password change) onto an empty database leaves them running unmigrated, and the
-  seed then fails after its 4000 s wait. Staging's volume (gh#846) makes that rarer (an empty database now
-  means the first attach or a wipe) but does not remove it; #843's app-side retry is the real fix. Until it
-  lands: after a staging postgres redeploy onto an empty volume, redeploy server and recorder.
+  **Store required ([#843](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/843)):**
+  `Store__Required=true` on server and recorder in production and staging (`[store-required]`). An
+  unreachable store, or a connection dropped while applying migrations (a socket reset, or Postgres
+  `57P01` or `57P03`, including the `InvalidOperationException` EF wraps around that SQLSTATE), logs
+  an error and the process
+  exits non-zero. `reselect-bars`, `export-tape` and `import-tape` log that error and return their
+  store exit codes. `/health` does not consult the store. With the key false (the code default; local and
+  any environment that is not production or staging), ADR-0007's degrade is unchanged. The pre-deploy
+  wait still runs only when server and recorder themselves redeploy. A schema that disappears after
+  those processes are already up — a volume wiped underneath them — is not handled in-process: they
+  keep their existing errors until they are restarted. `MigrateAsync` holds one session advisory lock
+  for the whole apply, as a guard against concurrent applies.
   **Restart budget ([#848](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/848)):** under
   `Store__Required=true` server and recorder exit while Postgres is unreachable, and Railway's default 10
   restarts give up after roughly 15 minutes (~90 s `StartupWait` each). They state
@@ -217,7 +225,12 @@ before any production deploy. Production deploys stay manual and need Adam's app
 - **Restarts:** Railway's default (`ON_FAILURE`, 10) for all three services, left **unstated**: Railway
   stores a default as null, so stating it is a diff in every plan and a redeploy on every apply
   (`[no-default-drift]`, gh#844). The seed states only its 3 retries.
-- **Logs and telemetry:** JSON console logs; a per-role `Otel__ServiceName`.
+- **Logs and telemetry:** single-line `simple` console logs in UTC, colour off (gh#873, gh#878; pinned by
+  `[log-formatter]`); a per-role `Otel__ServiceName`.
+  Railway takes a JSON line's text only from a lowercase `message` key
+  ([docs](https://docs.railway.com/guides/logs#structured-logs)), and .NET's `json` formatter writes
+  `Message`, so every entry showed blank. A plain line becomes the whole message. Every line is level
+  `info` in Railway; filter by text such as `fail:` or `warn:`. The AWS path keeps `json` (ADR-0023).
 - **Absent:** compose's `MarketData__*`, `Indicators__*`, `KeyLevels__*`, `Trading__Max*`,
   `Trading__DeniedSymbols`, `Trading__KillSwitchFile` and `Embeddings__*`, so code defaults apply.
 
@@ -258,8 +271,10 @@ produce a second **writer**. ADR-0016 wants one recorder.
 **Open for Maker (product):**
 - Does a recorder waiting on the lease report healthy? If not, a redeploy fails its healthcheck while the old
   one holds the lease.
-- `server` and `recorder` both run `MigrateAsync` against one database. EF Core 9+ takes a migration lock, so
-  this should be safe. No option exists to limit migrations to one service.
+- `server` and `recorder` both run `MigrateAsync` against one database. The apply holds a session
+  advisory lock for the whole migration (`pg_advisory_lock(138608641, 843)`), because EF's history-table
+  lock does not cover the gap between migrations (gh#843). No option exists to limit migrations to one
+  service; the lock is what makes the overlap safe.
 
 **Data retention — proposed, pending an ADR.** Not in the template: the schema keeps the trade tape forever on
 purpose (`AddTradeTape` migration, `SchemaTests`). Proposed names are commented in
@@ -570,11 +585,14 @@ The healthcheck timeout must satisfy healthcheck timeout ≥ `Store__StartupWait
 `3600`) that is 3900 seconds.
 
 One replica of each service is not enough on its own. The server and the recorder both migrate, and they
-take the same session advisory lock. The two waits overlap. They do not add. Each service's lock wait is
-a single `CALL`, cancelled at `Migrations__CommandTimeoutSeconds` (default 3600) with Postgres error
-`57014`, whatever the healthcheck allows. The second service does not leave a partial index: the create
-is `IF NOT EXISTS` after the lock. If the first service's index-build migration runs close to 3600
-seconds, the second service fails anyway. Redeploy it once the first is healthy.
+take the same session advisory lock. The two waits overlap. They do not add. Each service tries
+the lock and logs once when it has to wait. `Migrations__LockWaitSeconds` (default 300, accepted
+`1` through `604800`) bounds that wait. It is separate from the per-command timeout. A normal
+multi-command apply finishes inside the default. A wait that reaches it is the store unavailable:
+`Store__Required` false degrades, and true logs an error and exits non-zero. The second service does
+not leave a partial index: the create is `IF NOT EXISTS` after the lock. If the first service's index
+build outlasts the wait, the second degrades or exits instead of sitting for the whole command.
+Restart it once the first is healthy.
 
 The composed server has no healthcheck of its own. Postgres uses `pg_isready` with `start_period: 20s`,
 and the server waits on that, not on the server listening. If you add a healthcheck on the server that

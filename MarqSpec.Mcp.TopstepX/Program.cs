@@ -1,4 +1,3 @@
-using System.Reflection;
 using MarqSpec.Client.ProjectX.Authentication;
 using MarqSpec.Client.ProjectX.Configuration;
 using MarqSpec.Client.ProjectX.DependencyInjection;
@@ -17,6 +16,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using ModelContextProtocol.Protocol;
 using OpenTelemetry;
 using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
@@ -72,6 +72,10 @@ public static class Program
 
         WebApplication app = builder.Build();
 
+        // The tag a deploy named, against the stamp in this process. One warning when they differ
+        // (gh#867). A match, or a key that was never set, logs nothing.
+        WarnWhenDeploymentVersionDiffers(app.Configuration, app.Logger);
+
         // A CLI verb rather than a separate script, so the rebuild path cannot drift from the code it re-runs
         // (ADR-0006).
         if (args.Length > 0 && string.Equals(args[0], "rebuild-indicators", StringComparison.Ordinal))
@@ -99,29 +103,40 @@ public static class Program
         }
 
         // The result is published into DI rather than thrown: the tools that need a store ask it, and the
-        // ones that do not are unaffected.
-        StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
-        app.Services.GetRequiredService<StoreAvailabilityHolder>().Set(store);
-
-        // Probed once, after the store is known, because availability means a key AND somewhere to put the
-        // vector. Doing it lazily would put a database round trip inside a tool call.
-        app.Services.GetRequiredService<EmbeddingAvailabilityHolder>()
-            .Set(await ProbeEmbeddingsAsync(app, store).ConfigureAwait(false));
-
-        if (mcp.Transport == McpTransport.Http)
+        // ones that do not are unaffected. Store__Required is the exception, and it throws inside
+        // MigrateAsync before this publish, so a required store that did not come up never stays served
+        // (gh#843). /health is unchanged either way.
+        try
         {
-            MapHttpTransport(app, mcp);
-        }
+            StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+            app.Services.GetRequiredService<StoreAvailabilityHolder>().Set(store);
 
-        // Both transports run through the same call. The shutdown-during-startup race it absorbs is reachable
-        // from either -- it is a property of the host, not of stdio -- and a second `RunAsync` here is how the
-        // HTTP branch would quietly keep the old behaviour (gh#76).
-        //
-        // Stdio needs no branch of its own. WebApplication still starts GenericWebHostService (gh#76
-        // forbids a second host type). Under stdio that service starts a server that binds nothing
-        // unless the operator named a listener for health or metrics (gh#696). MapMcp stays inside
-        // the HTTP branch; the session runs over stdin and stdout (ADR-0007).
-        return await RunHostAsync(app).ConfigureAwait(false);
+            // Probed once, after the store is known, because availability means a key AND somewhere to
+            // put the vector. Doing it lazily would put a database round trip inside a tool call.
+            app.Services.GetRequiredService<EmbeddingAvailabilityHolder>()
+                .Set(await ProbeEmbeddingsAsync(app, store).ConfigureAwait(false));
+
+            if (mcp.Transport == McpTransport.Http)
+            {
+                MapHttpTransport(app, mcp);
+            }
+
+            // Both transports run through the same call. The shutdown-during-startup race it absorbs
+            // is reachable from either -- it is a property of the host, not of stdio -- and a second
+            // `RunAsync` here is how the HTTP branch would quietly keep the old behaviour (gh#76).
+            //
+            // Stdio needs no branch of its own. WebApplication still starts GenericWebHostService (gh#76
+            // forbids a second host type). Under stdio that service starts a server that binds nothing
+            // unless the operator named a listener for health or metrics (gh#696). MapMcp stays inside
+            // the HTTP branch; the session runs over stdin and stdout (ADR-0007).
+            return await RunHostAsync(app).ConfigureAwait(false);
+        }
+        catch (StoreRequiredException)
+        {
+            // Flush the error line. A verb path disposes in its own finally; this path never reaches one.
+            await app.DisposeAsync().ConfigureAwait(false);
+            return StoreRequiredException.ExitCode;
+        }
     }
 
     /// <summary>Builds the HTTP transport's request pipeline, in the one order that is correct.</summary>
@@ -301,6 +316,39 @@ public static class Program
     }
 
     /// <summary>
+    /// Warns once when <c>Deployment__Version</c> is set and is not <see cref="ProductVersion"/>.
+    /// </summary>
+    /// <param name="configuration">The host configuration. An absent key is not the options default.</param>
+    /// <param name="logger">Where the one warning goes.</param>
+    /// <remarks>
+    /// The bound default is <c>unknown</c>, which would warn on every process that never set the key.
+    /// Reading the configuration value keeps an unset key silent. A match is also silent. gh#867.
+    /// </remarks>
+    internal static void WarnWhenDeploymentVersionDiffers(IConfiguration configuration, ILogger logger)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        string? stamped = configuration["Deployment:Version"];
+        if (string.IsNullOrWhiteSpace(stamped))
+        {
+            return;
+        }
+
+        string release = ProductVersion.Read();
+        if (string.Equals(stamped, release, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            "Deployment__Version is {DeploymentVersion} and this process is {ProductVersion}. "
+                + "/health and serverInfo report the process.",
+            stamped,
+            release);
+    }
+
+    /// <summary>
     /// Wires logging, which differs by transport and is the single most common way a .NET MCP server fails.
     /// </summary>
     /// <param name="builder">The host builder.</param>
@@ -381,7 +429,7 @@ public static class Program
         OtlpExportProtocol protocol = otel.ResolveProtocol();
         string headers = otel.Headers;
         string serviceName = otel.ResolveServiceName();
-        string serviceVersion = ServiceVersion();
+        string serviceVersion = ProductVersion.Read();
 
         // One local, applied to all three exporters, so a protocol or a header set can never be right for
         // traces and wrong for logs.
@@ -469,39 +517,6 @@ public static class Program
     /// </remarks>
     internal static bool IsTraced(HttpContext context) =>
         !HealthEndpoint.IsProbePath(context.Request.Path);
-
-    /// <summary>The <c>service.version</c> resource attribute.</summary>
-    /// <returns>The assembly's informational version, without build metadata.</returns>
-    /// <remarks>
-    /// <para>
-    /// <b>The assembly's own stamp, and it is present rather than meaningful.</b> ADR-0001 makes the tag the
-    /// version and nothing declares one in a file; the container build never sees the repository's history, so
-    /// inside the published image this reads <c>0.0.0-alpha.0</c> by decision, with the release number carried
-    /// by the image tag and <c>org.opencontainers.image.version</c> instead.
-    /// </para>
-    /// <para>
-    /// <b>gh#513's <c>Deployment__Version</c> is what will make it mean something on a deployed instance</b>,
-    /// and it is deliberately not read here: that section does not exist yet, and a configuration key this
-    /// server reads while no document describes it and <c>docker-compose.yml</c> does not forward it is a
-    /// setting that silently does nothing in a container — the exact defect <c>.env.example</c>'s own header
-    /// warns about. It is one line to add when that card lands.
-    /// </para>
-    /// </remarks>
-    private static string ServiceVersion()
-    {
-        string? informational = typeof(Program).Assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-
-        if (string.IsNullOrWhiteSpace(informational))
-        {
-            return typeof(Program).Assembly.GetName().Version?.ToString() ?? "0.0.0";
-        }
-
-        // MinVer appends "+<sha>" build metadata. A resource attribute is a grouping key, and a version that
-        // changes with every commit groups nothing.
-        int metadata = informational.IndexOf('+', StringComparison.Ordinal);
-        return metadata < 0 ? informational : informational[..metadata];
-    }
 
     /// <summary>
     /// Under stdio, binds no HTTP port unless the operator named a listener for health or metrics.
@@ -724,10 +739,9 @@ public static class Program
             services.AddOAuthBearerAuthentication(mcp.OAuth);
         }
 
-        // What the liveness probe reports as `version` and `digest`. Optional, unvalidated, and defaulting to
-        // "unknown": nothing here declares a version in a file (ADR-0001), so a running task can only be told
-        // what it is by the deployment that started it — and a probe that refused to answer over a missing
-        // stamp would fail a healthy task for a cosmetic reason (gh#513).
+        // The digest /health reports. Optional and unvalidated, defaulting to "unknown": a probe that
+        // refused to answer over a missing digest would fail a healthy task for a cosmetic reason
+        // (gh#513). version is ProductVersion, not this section (gh#867).
         services.AddOptions<DeploymentOptions>()
             .Bind(builder.Configuration.GetSection(DeploymentOptions.SectionName));
 
@@ -904,8 +918,7 @@ public static class Program
             services.AddScoped<IExecutionGateway, UnconfiguredExecutionGateway>();
         }
 
-        string connection = builder.Configuration.GetConnectionString("Default")
-            ?? "Host=localhost;Port=5432;Database=topstepx_mcp;Username=topstepx;Password=changeme-local";
+        string connection = StoreConnection.Resolve(builder.Configuration);
 
         services.AddDbContext<TopstepXDbContext>(options =>
             options.UseNpgsql(connection, npgsql => npgsql.UseVector()));
@@ -1024,7 +1037,18 @@ public static class Program
         // One registration, one tool set, two ways in (ADR-0007). The transport is the only thing that
         // differs, and it is chosen here rather than by a second AddMcpServer call — registering the server
         // twice would build two of everything and leave which one answers to configuration order.
-        IMcpServerBuilder server = services.AddMcpServer()
+        //
+        // serverInfo is set here. The SDK otherwise uses the entry assembly's AssemblyVersion, which is
+        // 0.0.0.0 in an unstamped image and the test host's version under dotnet test (gh#867).
+        // ProductVersion is what /health reports, so the two answers are one string.
+        IMcpServerBuilder server = services.AddMcpServer(options =>
+        {
+            options.ServerInfo = new Implementation
+            {
+                Name = typeof(Program).Assembly.GetName().Name ?? "MarqSpec.Mcp.TopstepX",
+                Version = ProductVersion.Read(),
+            };
+        })
             .WithToolsFromAssembly(typeof(Program).Assembly);
 
         // The five order tools have no [McpServerToolType], so the assembly scan above does not publish
@@ -1065,14 +1089,23 @@ public static class Program
     /// </para>
     /// <para>
     /// <b>Unreachable</b> — nothing answered on the connection string. That is an environment fact, usually
-    /// "Postgres is not running yet", and it is survivable: the server starts, the tool list is real, and the
-    /// tools that need no store still work. Crashing instead would reach an MCP client as a bare transport
-    /// failure, which says nothing about databases.
+    /// "Postgres is not running yet", and it is survivable when <c>Store__Required</c> is false: the server
+    /// starts, the tool list is real, and the tools that need no store still work. Crashing instead would
+    /// reach an MCP client as a bare transport failure, which says nothing about databases. When
+    /// <c>Store__Required</c> is true the same fact logs an error and exits, so an orchestrator can restart
+    /// the process (gh#843). <c>/health</c> is not part of that decision.
     /// </para>
     /// <para>
     /// <b>Broken</b> — the database answered and the migration itself failed. That is a defect in this
     /// repository, and it still fails the process. Degrading there would leave the server answering reads
-    /// against a schema nobody has verified, which is worse than not starting.
+    /// against a schema nobody has verified, which is worse than not starting. A connection that drops
+    /// mid-migration is the unreachable case again. A drop is a socket reset, or Postgres
+    /// <c>57P01</c> (admin shutdown) or <c>57P03</c> (cannot connect now). It degrades when the store
+    /// is not required, and exits when it is.
+    /// </para>
+    /// <para>
+    /// The apply runs under <see cref="MigrationApplyLock"/>, one session advisory lock for the whole
+    /// schema. The lock is a guard against concurrent applies.
     /// </para>
     /// </remarks>
     public static async Task<StoreAvailability> MigrateAsync(WebApplication app)
@@ -1084,6 +1117,7 @@ public static class Program
         ILogger logger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("startup");
         MigrationOptions migrations =
             scope.ServiceProvider.GetRequiredService<IOptions<MigrationOptions>>().Value;
+        StoreOptions storeOptions = scope.ServiceProvider.GetRequiredService<IOptions<StoreOptions>>().Value;
 
         // The probe, the warning that names what it tried, and the bounded retry all live in StoreStartup so
         // the credential-bearing connection string is handled somewhere a unit test can assert the password
@@ -1105,38 +1139,116 @@ public static class Program
         StoreAvailability reached = await StoreStartup.ReachAsync(
             token => database.Database.CanConnectAsync(token),
             database.Database.GetConnectionString(),
-            TimeSpan.FromSeconds(
-                scope.ServiceProvider.GetRequiredService<IOptions<StoreOptions>>().Value.StartupWaitSeconds),
+            TimeSpan.FromSeconds(storeOptions.StartupWaitSeconds),
             scope.ServiceProvider.GetRequiredService<TimeProvider>(),
             logger,
             app.Lifetime.ApplicationStopping).ConfigureAwait(false);
 
         if (!reached.IsAvailable)
         {
+            ThrowIfRequired(storeOptions, reached, logger);
             return reached;
         }
+
+        // Not Database.GetConnectionString(). Npgsql redacts the password from that getter, and the
+        // lock's own connection would then fail authentication after CanConnect had already succeeded.
+        // StoreConnection.Resolve is the same string UseNpgsql was given, including the local fallback.
+        string connectionString = StoreConnection.Resolve(
+            scope.ServiceProvider.GetRequiredService<IConfiguration>());
 
         try
         {
             // The same token ReachAsync uses. It cannot fire before the host starts. The comment above
             // is why a later move of this call, to after StartAsync, would still need the stop catch.
-            await scope.ServiceProvider.GetRequiredService<IMigrationApplier>()
-                .ApplyAsync(
-                    database.Database,
-                    migrations.CommandTimeoutSeconds,
-                    app.Lifetime.ApplicationStopping)
-                .ConfigureAwait(false);
+            // The lock is held on its own connection for the whole apply, not only for one migration.
+            await MigrationApplyLock.ApplyUnderLockAsync(
+                connectionString,
+                token => scope.ServiceProvider.GetRequiredService<IMigrationApplier>()
+                    .ApplyAsync(database.Database, migrations.CommandTimeoutSeconds, token),
+                logger,
+                migrations.LockWaitSeconds,
+                app.Lifetime.ApplicationStopping).ConfigureAwait(false);
             return StoreAvailability.Available();
         }
-        catch (Npgsql.NpgsqlException ex) when (ex.InnerException is System.Net.Sockets.SocketException)
+        catch (MigrationLockWaitTimedOutException)
         {
-            // The database was there a moment ago and went away mid-migration -- still an environment fact,
-            // not a schema defect, so it degrades rather than crashing.
+            // The lock was still held when Migrations__LockWaitSeconds elapsed. That is the store
+            // being unavailable, same as a drop: degrade when optional, exit when required. A
+            // per-command timeout is a different exception and still fails the process (gh#843).
             StoreAvailability unavailable =
-                StoreAvailability.Unavailable("The connection dropped while applying migrations.");
+                StoreAvailability.Unavailable("The migration lock wait timed out.");
+            ThrowIfRequired(storeOptions, unavailable, logger);
             logger.LogWarning("{Explanation}", unavailable.Explanation);
             return unavailable;
         }
+        catch (Exception ex) when (IsDroppedStoreConnection(ex))
+        {
+            // The database was there a moment ago and went away mid-migration -- still an environment fact,
+            // not a schema defect. A socket reset, 57P01 and 57P03 are that fact. EF's execution strategy
+            // wraps the SQLSTATE in InvalidOperationException; the wrapper is the same fact. It degrades
+            // when the store is optional, and exits when it is required, so a cold start never stays
+            // degraded for the life of the process (gh#843).
+            StoreAvailability unavailable =
+                StoreAvailability.Unavailable("The connection dropped while applying migrations.");
+            ThrowIfRequired(storeOptions, unavailable, logger);
+            logger.LogWarning("{Explanation}", unavailable.Explanation);
+            return unavailable;
+        }
+    }
+
+    /// <summary>
+    /// Exits when <paramref name="options"/> says the store is required and <paramref name="availability"/>
+    /// says it is not.
+    /// </summary>
+    /// <param name="options">The store settings.</param>
+    /// <param name="availability">
+    /// What startup found. Its explanation is logged, not copied into the exception.
+    /// </param>
+    /// <param name="logger">The startup logger.</param>
+    private static void ThrowIfRequired(StoreOptions options, StoreAvailability availability, ILogger logger)
+    {
+        if (!options.Required || availability.IsAvailable)
+        {
+            return;
+        }
+
+        logger.LogError(
+            "Store__Required is true and the store is not available ({Reason}). "
+            + "The process is exiting so it can be restarted.",
+            availability.Explanation);
+        throw new StoreRequiredException(
+            availability.Explanation ?? "The store is not available.");
+    }
+
+    /// <summary>
+    /// A socket reset, or Postgres shutting the session down (<c>57P01</c>) or refusing it
+    /// (<c>57P03</c>). Those are the store going away, not a schema defect (gh#843).
+    /// </summary>
+    /// <param name="exception">The failure from the apply, including an outer wrapper.</param>
+    /// <returns>Whether startup should degrade or exit instead of crashing.</returns>
+    /// <remarks>
+    /// <c>pg_terminate_backend</c> raises <c>PostgresException</c> <c>57P01</c>. EF's execution
+    /// strategy does not let that out: it throws <see cref="InvalidOperationException"/> ("a
+    /// transient failure") with the <c>PostgresException</c> inside. The SQLSTATE is what decides.
+    /// </remarks>
+    private static bool IsDroppedStoreConnection(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is System.Net.Sockets.SocketException)
+            {
+                return true;
+            }
+
+            if (current is Npgsql.PostgresException postgres
+                && postgres.SqlState is Npgsql.PostgresErrorCodes.AdminShutdown
+                    or Npgsql.PostgresErrorCodes.CannotConnectNow)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static async Task<EmbeddingAvailability> ProbeEmbeddingsAsync(
@@ -1212,7 +1324,34 @@ public static class Program
     /// </remarks>
     private static ValueTask ShutDownLoggingAsync(WebApplication app) => app.DisposeAsync();
 
-    private static async Task<int> RunReselectAsync(WebApplication app, string[] args)
+    /// <summary>The <c>reselect-bars</c> line for a store that did not migrate.</summary>
+    /// <param name="logger">The verb logger.</param>
+    /// <param name="reason">The store sentence, or null when the marker carried none.</param>
+    private static void LogReselectStoreStopped(ILogger logger, string? reason)
+    {
+        logger.LogError(
+            "reselect-bars cannot run: the store is unreachable or its migration did not complete "
+            + "({Reason}). This verb only writes, so it stops here rather than degrading; nothing in the "
+            + "window was re-decided. Bring the database up and run it again.",
+            reason);
+    }
+
+    /// <summary>The tape-verb line for a store that did not migrate.</summary>
+    /// <param name="logger">The verb logger.</param>
+    /// <param name="reason">The store sentence, or null when the marker carried none.</param>
+    private static void LogTapeStoreStopped(ILogger logger, string? reason)
+    {
+        logger.LogError(
+            "tape export cannot run: the store is unreachable or its migration did not complete "
+            + "({Reason}). Nothing was written and nothing was deleted.",
+            reason);
+    }
+
+    /// <summary>Runs <c>reselect-bars</c>. Tests call this rather than reflecting on it.</summary>
+    /// <param name="app">The built host.</param>
+    /// <param name="args">The verb and its arguments.</param>
+    /// <returns>The verb's exit code.</returns>
+    internal static async Task<int> RunReselectAsync(WebApplication app, string[] args)
     {
         // Both singletons, so they are taken from the root provider rather than from a scope: this runs
         // before the migration, and a scoped DbContext resolved here would be one nothing has verified a
@@ -1245,7 +1384,20 @@ public static class Program
         // the bars' provenance, deletes the rows a new winner does not restate and drops coverage claims.
         // Doing that through a schema this build has not applied is a write nobody can reproduce, or a
         // failure halfway across a window.
-        StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+        //
+        // Store__Required throws instead of returning unavailable. The host path catches that in Main.
+        // This verb has to catch it here, or a railway run of the verb in production crashes with a stack
+        // instead of the exit code this table documents (gh#843).
+        StoreAvailability store;
+        try
+        {
+            store = await MigrateAsync(app).ConfigureAwait(false);
+        }
+        catch (StoreRequiredException required)
+        {
+            LogReselectStoreStopped(logger, required.Explanation);
+            return ReselectExit.Degraded;
+        }
 
         if (!store.IsAvailable)
         {
@@ -1253,12 +1405,7 @@ public static class Program
             // decision about READS -- the server starts, and the tools that need no store still answer. A
             // verb whose only purpose is to write has nothing to offer past this point, and the reason it
             // stopped is the operator's next step.
-            logger.LogError(
-                "reselect-bars cannot run: the store is unreachable or its migration did not complete "
-                + "({Reason}). This verb only writes, so it stops here rather than degrading; nothing in the "
-                + "window was re-decided. Bring the database up and run it again.",
-                store.Explanation);
-
+            LogReselectStoreStopped(logger, store.Explanation);
             return ReselectExit.Degraded;
         }
 
@@ -1311,7 +1458,11 @@ public static class Program
             http);
     }
 
-    private static async Task<int> RunTapeExportAsync(WebApplication app, string[] args)
+    /// <summary>Runs <c>export-tape</c> or <c>import-tape</c>. Tests call this directly.</summary>
+    /// <param name="app">The built host.</param>
+    /// <param name="args">The verb and its arguments.</param>
+    /// <returns>The verb's exit code.</returns>
+    internal static async Task<int> RunTapeExportAsync(WebApplication app, string[] args)
     {
         try
         {
@@ -1331,13 +1482,22 @@ public static class Program
                 return TapeExportCommands.ExitUsage;
             }
 
-            StoreAvailability store = await MigrateAsync(app).ConfigureAwait(false);
+            // The same catch as reselect-bars. Store__Required is set on the Railway environment, so a
+            // verb run there inherits it. The exception has to become ExitStore, not a stack trace.
+            StoreAvailability store;
+            try
+            {
+                store = await MigrateAsync(app).ConfigureAwait(false);
+            }
+            catch (StoreRequiredException required)
+            {
+                LogTapeStoreStopped(logger, required.Explanation);
+                return TapeExportCommands.ExitStore;
+            }
+
             if (!store.IsAvailable)
             {
-                logger.LogError(
-                    "tape export cannot run: the store is unreachable or its migration did not complete "
-                    + "({Reason}). Nothing was written and nothing was deleted.",
-                    store.Explanation);
+                LogTapeStoreStopped(logger, store.Explanation);
                 return TapeExportCommands.ExitStore;
             }
 

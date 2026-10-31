@@ -328,6 +328,24 @@ for (const name of ["server", "recorder"]) {
   // Plain decimal digits only: JS Number() accepts 0x1E and 3e1, .NET's int binder does not.
   const wait = /^\d+$/.test(rawWait ?? "") ? Number(rawWait) : NaN;
   if (!(Number.isInteger(wait) && wait >= 30)) fail(`${name}: Store__StartupWaitSeconds must be an integer >= 30 (Railway has no depends_on), got ${JSON.stringify(env.Store__StartupWaitSeconds)}`);
+  // [store-required] (gh#843). Production and staging must exit rather than stay degraded. Every other
+  // environment leaves the key unset so the code default (false) keeps ADR-0007. A stated "false" in
+  // production would look configured and still degrade; only the literal "true" passes.
+  if (PG_VOLUME_ENVIRONMENTS.includes(environment)) {
+    if (literal(env.Store__Required) !== "true") fail(`[store-required] ${name}: Store__Required must be the literal "true" in ${environment} (gh#843); got ${JSON.stringify(env.Store__Required)}`);
+  } else if (env.Store__Required !== undefined) {
+    fail(`[store-required] ${name}: Store__Required must be unset outside production and staging so the default false keeps ADR-0007; ${environment} got ${JSON.stringify(env.Store__Required)}`);
+  }
+  // [log-formatter] (gh#878). Railway reads a JSON line's text only from a lowercase `message`; .NET's json
+  // formatter writes `Message`, so every entry showed blank (gh#873). Pin the single-line simple formatter
+  // with colour off (stdout is not a TTY, but don't rely on detection). Any other value fails, json included.
+  const LOG_FORMAT = {
+    Logging__Console__FormatterName: "simple",
+    Logging__Console__FormatterOptions__SingleLine: "true",
+    Logging__Console__FormatterOptions__ColorBehavior: "Disabled",
+  };
+  for (const [k, v] of Object.entries(LOG_FORMAT)) if (literal(env[k]) !== v)
+    fail(`[log-formatter] ${name}: ${k} must be the literal "${v}" (gh#873: Railway blanks the json formatter's \`Message\`; https://docs.railway.com/guides/logs#structured-logs), got ${JSON.stringify(env[k])}`);
   if (s.source?.autoUpdates?.type !== "disabled") fail(`${name}: image autoUpdates must be explicitly disabled (ADR-0001 pinning)`);
   if (s.deploy?.healthcheckPath !== "/health") fail(`${name}: deploy.healthcheckPath must be /health, got ${s.deploy?.healthcheckPath}`);
   // The migration runs before the app listens (#761), so a healthcheck must outlast store wait + migration + 300 s.

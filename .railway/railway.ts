@@ -20,10 +20,12 @@
 import { defineRailway, image, project, service, volume } from "railway/iac";
 
 // THE ONE IMAGE CONSTANT. Both server and recorder run it (both migrate the same schema at startup, so a
-// mismatch is a schema race), and Deployment__Version / Deployment__ImageDigest are derived from it below, so
-// /health reports exactly what was pinned and scripts/check-deployment.sh <url> <X.Y.Z> can pass.
+// mismatch is a schema race). Deployment__ImageDigest is what /health reports as digest. version is the
+// stamp the image build baked from this tag (gh#867). Deployment__Version is set to the same tag; a
+// process whose stamp differs logs one warning. scripts/check-deployment.sh <url> <X.Y.Z> passes when
+// that stamp is the tag.
 // TEMPLATE SENTINEL: allowed only in `--mode template` (what CI runs); `--mode deployable` rejects it and
-// requires "...topstepx:X.Y.Z@sha256:<64 hex>" (a tag for /health's version, a digest for what actually runs).
+// requires "...topstepx:X.Y.Z@sha256:<64 hex>" (a tag the image was stamped with, a digest for what ran).
 const SERVER_IMAGE = "ghcr.io/adammarquette/marqspec.mcp.topstepx:REPLACE_WITH_RELEASE_TAG";
 // The tag is the ":..." after the last "/" and before any "@digest"; empty for a digest-only pin.
 // In the committed template this evaluates to the sentinel REPLACE_WITH_RELEASE_TAG, so Deployment__Version
@@ -139,6 +141,11 @@ export default defineRailway((ctx) => {
       "Host=${{POSTGRES_PRIVATE_HOST}};Port=5432;Database=topstepx_mcp;Username=topstepx;Password=${{shared.POSTGRES_PASSWORD}}",
     // No cross-service ordering on Railway, so wait for Postgres (compose sets 0 because depends_on does it).
     Store__StartupWaitSeconds: "90",
+    // gh#843. Production and staging exit when the store is unreachable or the migration connection
+    // drops, so Railway restarts them (see APP_RESTART_RETRIES). Disposable environments leave the
+    // key unset: the code default is false and ADR-0007's degrade stays. Stating false here would
+    // be the same behaviour, and the check requires the literal true only on these two.
+    ...(persistent ? { Store__Required: "true" } : {}),
 
     ProjectX__ApiKey: ctx.shared.PROJECTX_API_KEY,
     ProjectX__ApiSecret: ctx.shared.PROJECTX_API_SECRET,
@@ -157,9 +164,17 @@ export default defineRailway((ctx) => {
     Trading__KillSwitch: "false",
     Trading__AllowedAccountIds: "",
 
-    Logging__Console__FormatterName: "json",
+    // gh#873: Railway reads only a lowercase `message`; the json formatter's `Message` shows blank. Plain
+    // single-line text becomes the whole message. AWS keeps json (ADR-0023).
+    Logging__Console__FormatterName: "simple",
+    Logging__Console__FormatterOptions__SingleLine: "true",
+    Logging__Console__FormatterOptions__UseUtcTimestamp: "true",
+    // gh#878: no ANSI colour codes; stated rather than left to TTY detection.
+    Logging__Console__FormatterOptions__ColorBehavior: "Disabled",
 
-    // From SERVER_IMAGE, never typed separately. An empty digest reads as `unknown` on /health.
+    // Digest is what /health reports, derived from SERVER_IMAGE, never typed separately. An empty
+    // digest reads as `unknown`. version is the assembly stamp (MINVER_VERSION at image build, gh#867).
+    // Deployment__Version is this tag; startup warns once when the stamp differs, and is silent on a match.
     Deployment__Version: IMAGE_TAG,
     Deployment__ImageDigest: IMAGE_DIGEST,
   };

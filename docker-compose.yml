@@ -50,6 +50,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # The release and CI always pass this. Empty leaves MinVer's 0.0.0-alpha.0 fallback, which
+        # /health and serverInfo then both report (gh#867). Export MINVER_VERSION to stamp a local image.
+        MINVER_VERSION: ${MINVER_VERSION:-}
     depends_on:
       postgres:
         # service_healthy, not service_started. Migrations run at startup, and "the container exists" is not
@@ -68,6 +72,10 @@ services:
       # without rebuilding the image. Npgsql's 30s default is what this replaces for MigrateAsync only.
       # On Railway the healthcheck window may be shorter than this value. See documentation/deployment.md.
       Migrations__CommandTimeoutSeconds: "${Migrations__CommandTimeoutSeconds:-3600}"
+
+      # The code default is 300. Passed through so an operator can change the wait without
+      # rebuilding the image. A wait that reaches it is the store unavailable. See deployment.md.
+      Migrations__LockWaitSeconds: "${Migrations__LockWaitSeconds:-300}"
 
       ProjectX__ApiKey: "${ProjectX__ApiKey:-}"
       ProjectX__ApiSecret: "${ProjectX__ApiSecret:-}"
@@ -291,11 +299,10 @@ services:
       Logging__Console__FormatterName: "${Logging__Console__FormatterName:-simple}"
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "${ASPNETCORE_FORWARDEDHEADERS_ENABLED:-false}"
 
-      # What GET /health reports as `version` and `digest` (gh#513). Both blank here and reported as
-      # "unknown", which is the honest answer for this stack: it BUILDS FROM THE WORKING TREE rather than
-      # running a published image, so there is no tag and no digest to name. The AWS deployment's (gh#509)
-      # task definition sets them; nothing in this repository declares a version in a file (ADR-0001), which
-      # is why the value has to arrive from outside the process at all.
+      # digest is what GET /health reports for the image (gh#513). Blank here, reported as "unknown":
+      # this stack builds from the working tree, so there is no digest to name. version is the assembly
+      # informational version, stamped by MINVER_VERSION at image build (gh#867). Deployment__Version,
+      # when set and different from that stamp, is one startup warning; a match or a blank is silent.
       Deployment__Version: "${Deployment__Version:-}"
       Deployment__ImageDigest: "${Deployment__ImageDigest:-}"
     volumes:

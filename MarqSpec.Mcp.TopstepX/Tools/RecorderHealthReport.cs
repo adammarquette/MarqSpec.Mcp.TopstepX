@@ -8,8 +8,12 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// </summary>
 /// <remarks>
 /// Numbers, timestamps, booleans and enum names only (ADR-0008). A missing print time and an unreadable
-/// ledger are omitted, never filled in. A reply this process reused carries <c>cachedAtUtc</c> and
-/// <c>ageMs</c>; a reply that was just built omits both. Nothing here carries a connection target or a sentence.
+/// ledger are omitted, never filled in. <c>hubReconnects</c> counts a successful connect after a
+/// loss or a failed attempt. A clean first connect is zero, and zero is a real count.
+/// <c>lastTickAgeSeconds</c> is the wall-clock age, clamped at zero, and omitted with the print time.
+/// A reply this process reused keeps that age against the cached <c>asOfUtc</c>, and carries
+/// <c>cachedAtUtc</c> and <c>ageMs</c>. A reply that was just built omits both. Nothing here
+/// carries a connection target or a sentence.
 /// </remarks>
 public static class RecorderHealthReport
 {
@@ -36,6 +40,10 @@ public static class RecorderHealthReport
     /// Holes in the elapsed session. Omitted when the ledger could not be read. Empty when the window is
     /// covered.
     /// </param>
+    /// <param name="HubReconnects">
+    /// Successful market-hub connects after a connection was lost or a connect attempt failed.
+    /// A clean first connect is zero, and zero is a real count.
+    /// </param>
     /// <param name="CachedAtUtc">
     /// When this process stored the report. Omitted when the reply was just built.
     /// </param>
@@ -50,6 +58,7 @@ public static class RecorderHealthReport
         Session? Session,
         IReadOnlyList<ContractStatus> Contracts,
         IReadOnlyList<Gap>? Gaps,
+        int HubReconnects,
         DateTimeOffset? CachedAtUtc = null,
         long? AgeMs = null);
 
@@ -70,12 +79,18 @@ public static class RecorderHealthReport
     /// <param name="Listening">Whether this process is subscribed to the symbol now.</param>
     /// <param name="Tape">This symbol's tape reason. Not a sentence.</param>
     /// <param name="LastTickUtc">The latest stored print time, or omitted when no print is stored.</param>
+    /// <param name="LastTickAgeSeconds">
+    /// Wall-clock <see cref="Report.AsOfUtc"/> minus <see cref="LastTickUtc"/>, in seconds, clamped
+    /// at zero. Omitted when <see cref="LastTickUtc"/> is omitted. Zero is a real age. A reply reused
+    /// from the five-second memo keeps this age against that reply's <c>asOfUtc</c>.
+    /// </param>
     public sealed record ContractStatus(
         string Symbol,
         string? ContractId,
         bool Listening,
         TapeUnavailableReason Tape,
-        DateTimeOffset? LastTickUtc);
+        DateTimeOffset? LastTickUtc,
+        double? LastTickAgeSeconds);
 
     /// <summary>One hole in the elapsed session, half-open <c>[FromUtc, ToUtc)</c>.</summary>
     /// <param name="Symbol">The normalised symbol.</param>

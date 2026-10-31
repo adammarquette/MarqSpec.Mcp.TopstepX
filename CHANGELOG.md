@@ -13,6 +13,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-31
+
+### Added
+
+- **A required store exits, and one lock covers the migration apply** (gh#843). `Store__Required`
+  defaults to false. When it is true, an unreachable store or a dropped migration connection (a
+  socket reset, or Postgres `57P01` or `57P03`, including the `InvalidOperationException` EF wraps
+  around that SQLSTATE) logs an error and the process exits.
+  `reselect-bars`, `export-tape` and `import-tape` return their store exit codes. The apply holds
+  one session advisory lock. A second process waits up to `Migrations__LockWaitSeconds`
+  (default 300), separate from the per-command timeout. A wait that times out is the store
+  unavailable. The recorder makes no lease or tape attempt while the store is
+  unavailable at startup.
+- **`get_recorder_health` reports hub reconnects and last-tick age** (gh#793).
+  `hubReconnects` counts a successful market-hub connect after a previous connection was
+  lost or a connect attempt failed. A clean first connect is zero, and zero is reported.
+  `lastTickAgeSeconds` is the report's `asOfUtc` minus `lastTickUtc`, in seconds, on the
+  wall clock, clamped at zero, and omitted when there is no print. A print later than
+  `asOfUtc` is outside the report window and is omitted. A reply reused from the
+  five-second memo keeps the age relative to that reply's `asOfUtc`.
+
+### Changed
+
+- **`get_bars` names its bar-window cap** (gh#868). The tool description states the shipped
+  `MaxRows` default, 5000, as a bar count at any resolution. A window over the cap in force
+  is refused with the bars it would have needed, that cap, and how to page from the request:
+  a shorter window from the requested start through exactly that cap at the requested unit, or
+  the smallest bar unit that fits the whole requested window. It does not truncate.
+
+### Fixed
+
+- **A failed tape connect retries on the probe backoff** (gh#869). A handshake that throws,
+  including the first one and a throw after a valid probe, no longer ends the recorder.
+  `AutoReconnect` stays off. The wait is one second, doubling to 30 seconds, and it resets
+  only after a connect lands, so a hub that stays down does not validate every second. A
+  session conflict, `InvalidSession`, HTTP 401, or no fresh token still stops the loop.
+  With the switch on and no session probe, a token that expires during the wait stops the
+  loop and does not call loginKey. With the switch off, that wait connects without a
+  validate call while the held token is fresh, and it does not call loginKey. The tape
+  claim keeps being renewed during the wait.
+- **Railway shows log messages again** (gh#873). Railway reads a JSON line's text only from a lowercase
+  `message`, and the `json` console formatter writes `Message`, so every entry was blank. The Railway
+  template now uses the `simple` formatter on one line with UTC timestamps. Railway no longer gets a level
+  or attributes; filter by text. Compose and the AWS path keep their formatters.
+- **The Railway log formatter is pinned** (gh#878). `check-railway-template.sh` now requires the
+  `simple` formatter, `SingleLine` true and `ColorBehavior` `Disabled` (new in the template), so a return to
+  `json` fails CI instead of blanking Railway's log messages again.
+- **`initialize` reports the release version** (gh#867). `serverInfo.version` and `/health`'s `version`
+  are the assembly informational version, with `+` build metadata removed. The image build takes
+  `MINVER_VERSION` (`MinVerVersionOverride`) from CI and from the release tag, so an image no longer
+  answers `0.0.0.0`. A `Deployment__Version` that is set and differs from that stamp is one startup
+  warning; a match or an unset key is silent.
+
 ## [0.7.0] - 2026-10-30
 
 `v0.6.0` was published as a pre-release tagged on `develop` and never got a section in `CHANGELOG.md`, so this
@@ -1305,7 +1358,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.3.1...v0.4.0

@@ -23,11 +23,12 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// its whole life, healthy and serving refusals, until someone restarts it.
 /// </para>
 /// <para>
-/// <b>Waiting is not validation.</b> Nothing here fails startup — an absent store is still a supported state
-/// that degrades to a refusal at the point of use (ADR-0007), and the plain <c>dotnet run</c> HTTP recipe
-/// starts with no database by design. A failed migration against a database that <i>did</i> answer is a
-/// different thing entirely and still fails the process; that decision is <c>Program.MigrateAsync</c>'s and is
-/// untouched here.
+/// <b>Waiting is not validation.</b> Nothing here fails startup. An absent store is still returned as
+/// unavailable, which degrades to a refusal at the point of use (ADR-0007), and the plain <c>dotnet run</c>
+/// HTTP recipe starts with no database by design. Whether that unavailable result exits the process is
+/// <c>Store__Required</c>, decided by <c>Program.MigrateAsync</c> and not here (gh#843). A failed migration
+/// against a database that <i>did</i> answer is a different thing entirely and still fails the process; that
+/// decision is <c>Program.MigrateAsync</c>'s as well.
 /// </para>
 /// </remarks>
 public static class StoreStartup

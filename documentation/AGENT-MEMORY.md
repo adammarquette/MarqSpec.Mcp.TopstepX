@@ -554,7 +554,10 @@ at one this rule's own pull request retires.
     **[2026-08-25] Same warning, same cause, in the container build that SHIPS, and NOT harmless there:**
     the released assembly carries `0.0.0-alpha.0` at any `fetch-depth`. gh#176, read off the published DLL
     and decided in [ADR-0001](adr/0001-tag-driven-versioning.md)'s decision log. This entry is the first hit
-    anyone greps for `MINVER1001`, so do not carry its "harmless" past this scope.)
+    anyone greps for `MINVER1001`, so do not carry its "harmless" past this scope.
+    **[2026-10-30]** gh#867 passes `MINVER_VERSION` into the image build. `/health` and `serverInfo.version`
+    read that informational version. An image built without the argument is still `0.0.0-alpha.0`.
+    `MINVER1001` on a test-container run is still harmless.)
   - **[2026-08-24] …but that compose form fails on a busy machine, and the correction is a plain `docker
     run`.** `compose … run` creates a network, so with enough stacks up it dies on *"all predefined address
     pools have been fully subnetted"* — the documented remedy for the Application Control block leading

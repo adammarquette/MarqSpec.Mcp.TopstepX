@@ -462,6 +462,29 @@ NAMED='[pg-wait]' expect reject template pg-wait-on-postgres 'source: image(POST
 NAMED='[pg-wait]' expect reject template pg-wait-on-seed '          startCommand:' '          preDeploy: PG_WAIT,
           startCommand:'
 
+# --- gh#878: Railway pins the single-line simple console formatter with colour off (gh#873) ---
+NAMED='[log-formatter]' expect reject template log-formatter-json \
+  'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "json",'
+NAMED='[log-formatter]' expect reject template log-formatter-systemd \
+  'Logging__Console__FormatterName: "simple",' 'Logging__Console__FormatterName: "systemd",'
+NAMED='[log-formatter]' expect reject template log-formatter-name-missing \
+  '    Logging__Console__FormatterName: "simple",
+' ''
+NAMED='[log-formatter]' expect reject template log-single-line-missing \
+  '    Logging__Console__FormatterOptions__SingleLine: "true",
+' ''
+NAMED='[log-formatter]' expect reject template log-single-line-false \
+  'Logging__Console__FormatterOptions__SingleLine: "true",' 'Logging__Console__FormatterOptions__SingleLine: "false",'
+NAMED='[log-formatter]' expect reject template log-color-missing \
+  '    Logging__Console__FormatterOptions__ColorBehavior: "Disabled",
+' ''
+NAMED='[log-formatter]' expect reject template log-color-enabled \
+  'Logging__Console__FormatterOptions__ColorBehavior: "Disabled",' 'Logging__Console__FormatterOptions__ColorBehavior: "Enabled",'
+NAMED='[log-formatter]' expect reject template log-color-default \
+  'Logging__Console__FormatterOptions__ColorBehavior: "Disabled",' 'Logging__Console__FormatterOptions__ColorBehavior: "Default",'
+expect accept template log-formatter-utc-timestamp-off \
+  'Logging__Console__FormatterOptions__UseUtcTimestamp: "true",' 'Logging__Console__FormatterOptions__UseUtcTimestamp: "false",'
+
 # --- SDK pin (gh#832): the root package.json `railway config plan` loads must pin what CI compiles against ---
 expect_pin() {  # expect_pin <reject|accept> <name> <python edit of the root copy>
   local want="$1" name="$2" edit="$3" dir="$work/pin-$2" got

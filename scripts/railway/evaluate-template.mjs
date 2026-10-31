@@ -336,6 +336,16 @@ for (const name of ["server", "recorder"]) {
   } else if (env.Store__Required !== undefined) {
     fail(`[store-required] ${name}: Store__Required must be unset outside production and staging so the default false keeps ADR-0007; ${environment} got ${JSON.stringify(env.Store__Required)}`);
   }
+  // [log-formatter] (gh#878). Railway reads a JSON line's text only from a lowercase `message`; .NET's json
+  // formatter writes `Message`, so every entry showed blank (gh#873). Pin the single-line simple formatter
+  // with colour off (stdout is not a TTY, but don't rely on detection). Any other value fails, json included.
+  const LOG_FORMAT = {
+    Logging__Console__FormatterName: "simple",
+    Logging__Console__FormatterOptions__SingleLine: "true",
+    Logging__Console__FormatterOptions__ColorBehavior: "Disabled",
+  };
+  for (const [k, v] of Object.entries(LOG_FORMAT)) if (literal(env[k]) !== v)
+    fail(`[log-formatter] ${name}: ${k} must be the literal "${v}" (gh#873: Railway blanks the json formatter's \`Message\`; https://docs.railway.com/guides/logs#structured-logs), got ${JSON.stringify(env[k])}`);
   if (s.source?.autoUpdates?.type !== "disabled") fail(`${name}: image autoUpdates must be explicitly disabled (ADR-0001 pinning)`);
   if (s.deploy?.healthcheckPath !== "/health") fail(`${name}: deploy.healthcheckPath must be /health, got ${s.deploy?.healthcheckPath}`);
   // The migration runs before the app listens (#761), so a healthcheck must outlast store wait + migration + 300 s.

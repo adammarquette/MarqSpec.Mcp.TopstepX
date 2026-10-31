@@ -162,7 +162,11 @@ export default defineRailway((ctx) => {
     Trading__KillSwitch: "false",
     Trading__AllowedAccountIds: "",
 
-    Logging__Console__FormatterName: "json",
+    // gh#873: Railway reads only a lowercase `message`; the json formatter's `Message` shows blank. Plain
+    // single-line text becomes the whole message. AWS keeps json (ADR-0023).
+    Logging__Console__FormatterName: "simple",
+    Logging__Console__FormatterOptions__SingleLine: "true",
+    Logging__Console__FormatterOptions__UseUtcTimestamp: "true",
 
     // From SERVER_IMAGE, never typed separately. An empty digest reads as `unknown` on /health.
     Deployment__Version: IMAGE_TAG,

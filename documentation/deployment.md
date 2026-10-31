@@ -223,7 +223,11 @@ before any production deploy. Production deploys stay manual and need Adam's app
 - **Restarts:** Railway's default (`ON_FAILURE`, 10) for all three services, left **unstated**: Railway
   stores a default as null, so stating it is a diff in every plan and a redeploy on every apply
   (`[no-default-drift]`, gh#844). The seed states only its 3 retries.
-- **Logs and telemetry:** JSON console logs; a per-role `Otel__ServiceName`.
+- **Logs and telemetry:** single-line `simple` console logs in UTC (gh#873); a per-role `Otel__ServiceName`.
+  Railway takes a JSON line's text only from a lowercase `message` key
+  ([docs](https://docs.railway.com/guides/logs#structured-logs)), and .NET's `json` formatter writes
+  `Message`, so every entry showed blank. A plain line becomes the whole message. Every line is level
+  `info` in Railway; filter by text such as `fail:` or `warn:`. The AWS path keeps `json` (ADR-0023).
 - **Absent:** compose's `MarketData__*`, `Indicators__*`, `KeyLevels__*`, `Trading__Max*`,
   `Trading__DeniedSymbols`, `Trading__KillSwitchFile` and `Embeddings__*`, so code defaults apply.
 

@@ -286,7 +286,7 @@ the boundary (gh#110).
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
 
-A window may span at most `MaxRows` bars. The shipped default is 5000, and that is the number the
+A window may span at most `MaxRows` bars at any resolution. The shipped default is 5000, and that is the number the
 `get_bars` description and `resolutionMinutes`, `fromUtc` and `toUtc` state. An operator can set a
 different cap; the refusal names the cap in force. Over it the read refuses, naming the bars the window
 would have needed and how to page from the request: a shorter window from its start through that many

@@ -51,7 +51,7 @@ What the epic measured before deciding, and what this record leans on:
   `scripts/check-release-gate.sh` fails any workflow naming an environment that lacks a `required_reviewers`
   rule. A staging deploy job cannot carry an `environment:` without becoming a second manual approval.
 - **The DLL inside the image is stamped `0.0.0-alpha.0` by decision** (ADR-0001), so "which release is
-  running" has to be observable some other way. gh#867 (2026-10-31) stamps the tag at image build and
+  running" has to be observable some other way. gh#867 (2026-10-30) stamps the tag at image build and
   `/health` reads that; this bullet is the state this ADR was written against.
 - **`ASPNETCORE_HTTP_PORTS` cleared under `Http` binds `localhost:5000`** — ADR-0007's 2026-09-03 table —
   a server that starts, logs, and accepts nothing from outside its container.

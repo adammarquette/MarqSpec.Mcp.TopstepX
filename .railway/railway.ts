@@ -21,8 +21,9 @@ import { defineRailway, image, project, service, volume } from "railway/iac";
 
 // THE ONE IMAGE CONSTANT. Both server and recorder run it (both migrate the same schema at startup, so a
 // mismatch is a schema race). Deployment__ImageDigest is what /health reports as digest. version is the
-// stamp the image build baked from this tag (gh#867); Deployment__Version is set to the same tag and is
-// not read. scripts/check-deployment.sh <url> <X.Y.Z> passes when that stamp is the tag.
+// stamp the image build baked from this tag (gh#867). Deployment__Version is set to the same tag; a
+// process whose stamp differs logs one warning. scripts/check-deployment.sh <url> <X.Y.Z> passes when
+// that stamp is the tag.
 // TEMPLATE SENTINEL: allowed only in `--mode template` (what CI runs); `--mode deployable` rejects it and
 // requires "...topstepx:X.Y.Z@sha256:<64 hex>" (a tag the image was stamped with, a digest for what ran).
 const SERVER_IMAGE = "ghcr.io/adammarquette/marqspec.mcp.topstepx:REPLACE_WITH_RELEASE_TAG";
@@ -172,8 +173,8 @@ export default defineRailway((ctx) => {
     Logging__Console__FormatterOptions__ColorBehavior: "Disabled",
 
     // Digest is what /health reports, derived from SERVER_IMAGE, never typed separately. An empty
-    // digest reads as `unknown`. version is the assembly stamp (MINVER_VERSION at image build, gh#867),
-    // not this key. Deployment__Version stays equal to the tag so the template check can see it.
+    // digest reads as `unknown`. version is the assembly stamp (MINVER_VERSION at image build, gh#867).
+    // Deployment__Version is this tag; startup warns once when the stamp differs, and is silent on a match.
     Deployment__Version: IMAGE_TAG,
     Deployment__ImageDigest: IMAGE_DIGEST,
   };

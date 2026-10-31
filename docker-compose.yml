@@ -300,9 +300,9 @@ services:
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "${ASPNETCORE_FORWARDEDHEADERS_ENABLED:-false}"
 
       # digest is what GET /health reports for the image (gh#513). Blank here, reported as "unknown":
-      # this stack builds from the working tree, so there is no digest to name. version is not this
-      # variable. It is the assembly informational version, stamped by MINVER_VERSION at image build
-      # (gh#867). Deployment__Version stays so a copied environment still has the key the template sets.
+      # this stack builds from the working tree, so there is no digest to name. version is the assembly
+      # informational version, stamped by MINVER_VERSION at image build (gh#867). Deployment__Version,
+      # when set and different from that stamp, is one startup warning; a match or a blank is silent.
       Deployment__Version: "${Deployment__Version:-}"
       Deployment__ImageDigest: "${Deployment__ImageDigest:-}"
     volumes:

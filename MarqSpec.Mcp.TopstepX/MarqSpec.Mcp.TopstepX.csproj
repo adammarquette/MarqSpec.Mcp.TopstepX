@@ -55,4 +55,38 @@
     <ProjectReference Include="..\MarqSpec.Mcp.TopstepX.Data\MarqSpec.Mcp.TopstepX.Data.csproj" />
   </ItemGroup>
 
+  <!--
+    Description attributes are constant expressions, so they cannot call ToString on DefaultMaxRows.
+    This writes that constant's invariant spelling and nothing else. A handwritten "5000" would be a
+    second cap.
+  -->
+  <Target Name="GenerateDefaultMaxRowsText" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <_MaxRowsSource>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)Configuration/MarketDataOptions.cs'))</_MaxRowsSource>
+      <_MaxRowsRaw>$([System.Text.RegularExpressions.Regex]::Match($(_MaxRowsSource), 'const int DefaultMaxRows = ([0-9_]+);').Groups[1].Value)</_MaxRowsRaw>
+      <_MaxRowsDigits>$([System.Text.RegularExpressions.Regex]::Replace($(_MaxRowsRaw), '_', ''))</_MaxRowsDigits>
+      <_MaxRowsGenerated>$(IntermediateOutputPath)DefaultMaxRowsText.g.cs</_MaxRowsGenerated>
+    </PropertyGroup>
+    <Error
+      Condition="'$(_MaxRowsDigits)' == ''"
+      Text="DefaultMaxRows was not found in MarketDataOptions.cs, so get_bars cannot name its cap." />
+    <ItemGroup>
+      <_MaxRowsLine Include="// &lt;auto-generated/&gt;" />
+      <_MaxRowsLine Include="// Spelling of MarketDataOptions.DefaultMaxRows for Description attributes." />
+      <_MaxRowsLine Include="namespace MarqSpec.Mcp.TopstepX.Configuration%3B" />
+      <_MaxRowsLine Include="public sealed partial class MarketDataOptions" />
+      <_MaxRowsLine Include="{" />
+      <_MaxRowsLine Include="    /// &lt;summary&gt;" />
+      <_MaxRowsLine Include="    /// Invariant spelling of &lt;see cref=&quot;DefaultMaxRows&quot;/&gt;, for descriptions." />
+      <_MaxRowsLine Include="    /// &lt;/summary&gt;" />
+      <_MaxRowsLine Include="    public const string DefaultMaxRowsText = &quot;$(_MaxRowsDigits)&quot;%3B" />
+      <_MaxRowsLine Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(_MaxRowsGenerated)" Lines="@(_MaxRowsLine)" Overwrite="true" />
+    <ItemGroup>
+      <Compile Include="$(_MaxRowsGenerated)" />
+      <FileWrites Include="$(_MaxRowsGenerated)" />
+    </ItemGroup>
+  </Target>
+
 </Project>

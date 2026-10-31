@@ -45,6 +45,16 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// <summary>The configuration section this binds to.</summary>
     public const string SectionName = "MarketData";
 
+    /// <summary>
+    /// The shipped <see cref="MaxRows"/>. Descriptions name this, and the property defaults to it.
+    /// </summary>
+    /// <remarks>
+    /// One value, so the schema and the default cannot advertise two caps. A running server enforces
+    /// <see cref="MaxRows"/>, which an operator may change; a description is fixed at build time and can
+    /// only promise this.
+    /// </remarks>
+    public const int DefaultMaxRows = 5_000;
+
     /// <summary>How long the recorder stays disconnected after a session conflict before it finishes stopping.</summary>
     public static readonly TimeSpan DefaultSessionConflictBackoff = TimeSpan.FromSeconds(5);
 
@@ -108,7 +118,7 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </para>
     /// </remarks>
     [Range(1, 1_000_000)]
-    public int MaxRows { get; init; } = 5_000;
+    public int MaxRows { get; init; } = DefaultMaxRows;
 
     /// <summary>
     /// The instrument symbols this server will serve, comma-separated.

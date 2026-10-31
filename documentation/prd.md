@@ -469,7 +469,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   not be indistinguishable. A *known* instrument with no data in the window returns an empty series.
 - **R-5.4** A windowed read that would exceed **either** cap on its size — the configured row cap, or the
   buckets one gap-detection pass will enumerate — **refuses and says so with the count**, naming the tighter of
-  the two. It never silently truncates, and it costs no vendor request to be told (gh#96). **Size is not the
+  the two. It never silently truncates, and it costs no vendor request to be told (gh#96). The row-cap
+  refusal names the bars the window would have needed and how to page — narrower start and end windows, or a
+  coarser unit — and gives a concrete example of a window that fits. `get_bars` states the shipped cap in its
+  description and on those parameters (gh#868). **Size is not the
   only bound**: a window must also **end** far enough before the end of the representable calendar for the
   machinery serving it to reason about its last bucket — two bar spans plus three days, because the bucket
   grid is aligned *up* from the window's start, the gap detector tests one bucket beyond the last, and the

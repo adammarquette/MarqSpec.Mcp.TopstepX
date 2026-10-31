@@ -652,9 +652,11 @@ jobs:
           echo "IMAGE=$ref" >> "$GITHUB_ENV"
 
       # The container never sees .git, so MinVer inside it stamps 0.0.0-alpha.0 unless this argument
-      # arrives (gh#867). This job installs no SDK; git describe is the stamp, not MinVer's own height.
-      # release.yml passes the tag itself. Same Dockerfile ARG either way. Assigned, then checked
-      # (gh#126): a failed describe must not export an empty VERSION and publish the fallback.
+      # arrives (gh#867). This job installs no SDK. git describe is not MinVer's height: with v0.7.0
+      # tagged on main and not on develop, describe reads v0.6.0-<n>-g<sha>, and that string sorts
+      # below 0.6.0. Harmless here — this image is loaded for the smoke and never pushed. release.yml
+      # passes the tag itself. Same Dockerfile ARG either way. Assigned, then checked (gh#126): a
+      # failed describe must not export an empty VERSION and publish the fallback.
       - name: Resolve the version the image stamps
         run: |
           desc="$(git describe --tags --match 'v[0-9]*' --abbrev=7)"

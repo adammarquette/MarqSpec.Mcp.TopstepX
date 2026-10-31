@@ -793,8 +793,9 @@ and is still traced.
 
 `version` is the assembly informational version, with `+` build metadata removed — the same string
 `initialize` reports as `serverInfo.version` (gh#867). The image build does not see `.git`, so CI and
-`release.yml` pass the tag in as `MinVerVersionOverride`. `digest` still comes from the optional
-`Deployment__ImageDigest`, `unknown` when unset. Nothing in a file declares a version
+`release.yml` pass the tag in as `MinVerVersionOverride`. `Deployment__Version`, when set and different,
+is one startup warning naming both values; a match or an unset key is silent. `digest` still comes from
+the optional `Deployment__ImageDigest`, `unknown` when unset. Nothing in a file declares a version
 ([ADR-0001](adr/0001-tag-driven-versioning.md)).
 
 ### What the host measures

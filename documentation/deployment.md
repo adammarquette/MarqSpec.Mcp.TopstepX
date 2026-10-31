@@ -80,8 +80,8 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 
 `Deployment__ImageDigest` is derived from `SERVER_IMAGE`, never typed separately, and `/health` reports
 it as `digest`. `version` is the informational version stamped into that image at build
-(`MinVerVersionOverride`, the release tag). `Deployment__Version` is still set to the same tag so the
-template check can see it; the process does not read it (gh#867).
+(`MinVerVersionOverride`, the release tag). `Deployment__Version` is set to the same tag. Startup logs
+one warning when that value is set and differs from the stamp, and logs nothing when they match (gh#867).
 [`check-deployment.sh`](../scripts/check-deployment.sh) `<url> X.Y.Z` passes when that stamp is the tag.
 
 **Production and staging keep the Postgres data; other environments are disposable.**

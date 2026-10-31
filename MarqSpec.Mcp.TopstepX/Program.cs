@@ -72,6 +72,10 @@ public static class Program
 
         WebApplication app = builder.Build();
 
+        // The tag a deploy named, against the stamp in this process. One warning when they differ
+        // (gh#867). A match, or a key that was never set, logs nothing.
+        WarnWhenDeploymentVersionDiffers(app.Configuration, app.Logger);
+
         // A CLI verb rather than a separate script, so the rebuild path cannot drift from the code it re-runs
         // (ADR-0006).
         if (args.Length > 0 && string.Equals(args[0], "rebuild-indicators", StringComparison.Ordinal))
@@ -309,6 +313,39 @@ public static class Program
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Warns once when <c>Deployment__Version</c> is set and is not <see cref="ProductVersion"/>.
+    /// </summary>
+    /// <param name="configuration">The host configuration. An absent key is not the options default.</param>
+    /// <param name="logger">Where the one warning goes.</param>
+    /// <remarks>
+    /// The bound default is <c>unknown</c>, which would warn on every process that never set the key.
+    /// Reading the configuration value keeps an unset key silent. A match is also silent. gh#867.
+    /// </remarks>
+    internal static void WarnWhenDeploymentVersionDiffers(IConfiguration configuration, ILogger logger)
+    {
+        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(logger);
+
+        string? stamped = configuration["Deployment:Version"];
+        if (string.IsNullOrWhiteSpace(stamped))
+        {
+            return;
+        }
+
+        string release = ProductVersion.Read();
+        if (string.Equals(stamped, release, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        logger.LogWarning(
+            "Deployment__Version is {DeploymentVersion} and this process is {ProductVersion}. "
+                + "/health and serverInfo report the process.",
+            stamped,
+            release);
     }
 
     /// <summary>

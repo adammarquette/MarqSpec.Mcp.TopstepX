@@ -125,8 +125,8 @@ usage: MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=�
          scripts/check-deployment.sh <base-url> <expected-version>
 
   <base-url>          the origin the endpoint is served on, with no path: https://host[:port]
-  <expected-version>  what /health must report as `version` — the Deployment__Version the deploy stamped,
-                      which for this repository is the image tag (ADR-0001)
+  <expected-version>  what /health must report as `version` — the release tag stamped into the image
+                      (MinVerVersionOverride, gh#867), which for this repository is the image tag
 
   MCP_CHECK_CLIENT_ID / MCP_CHECK_CLIENT_SECRET   the Cognito deploy-check app client (ADR-0023 §9)
   MCP_CHECK_TOKEN_URL                             its `client_credentials` token endpoint
@@ -615,8 +615,8 @@ FOUND_VERSION="$(value_of "$BODY" version)"
 if [ "$FOUND_VERSION" != "$EXPECTED_VERSION" ]; then
   die "  WRONG VERSION  /health reports version=\"${FOUND_VERSION:-<absent>}\", expected \"$EXPECTED_VERSION\""
   die "The deployment converged onto a DIFFERENT release than the one being checked — a rollout that did not"
-  die "finish, a task from the previous revision still serving, or a Deployment__Version the deploy never"
-  die "stamped (an unstamped task reports \"unknown\"). Nothing below this line would have caught it: an old"
+  die "finish, a task from the previous revision still serving, or an image built without MINVER_VERSION"
+  die "(that stamp is 0.0.0-alpha.0, gh#867). Nothing below this line would have caught it: an old"
   die "release answers every other assertion here perfectly well."
   exit 1
 fi

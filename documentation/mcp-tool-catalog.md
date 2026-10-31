@@ -41,7 +41,11 @@ page against either**, so check it against the code, never against another docum
   to 1,000,000 and one fixed, so above 250,000 the configured number stops being the binding one (gh#96). The
   window is measured *before* anything is read and the refusal carries the real bucket count and the cap it is
   over, so "you asked for too much" never arrives disguised as "here is all there was", and it costs no vendor
-  request to find out.
+  request to find out. The row-cap refusal names the bars the window would have needed, the cap, and how to
+  page from the request itself: a shorter window from its start through that many bars at the requested
+  unit, or the smallest bar unit that fits the whole window. `get_bars` states that shipped cap
+  (`MarketDataOptions.DefaultMaxRows`) in its tool description (gh#868). The parameter descriptions
+  do not repeat it.
 - **Times are ISO-8601 UTC**, in and out. An offset-bearing stamp is **converted** via `ToUniversalTime()`,
   not rejected — a `-05:00` instant becomes the matching UTC instant. Whether a missing `Z` dies at JSON
   parse is the SDK, not this repo. There is no application check that the offset is zero.
@@ -281,6 +285,13 @@ the boundary (gh#110).
 
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
+
+A window may span at most `MaxRows` bars at any resolution. The shipped default is 5000, and that is the
+number the `get_bars` description states. The parameter descriptions do not repeat it. An operator can set a
+different cap; the refusal names the cap in force. Over it the read refuses, naming the bars the window
+would have needed and how to page from the request: a shorter window from its start through that many
+bars at the requested unit, or the smallest bar unit that fits the whole window (gh#868). It does not
+truncate.
 
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },
@@ -1033,7 +1044,8 @@ Whether this process's recorder is doing its job (R-5.14, gh#756). A dead record
 an end-of-day job. The same payload is served to a monitor at `GET /health/recorder`, behind the bearer
 gate. `/health` stays the unauthenticated liveness probe and does not open a database connection.
 
-Returns `{ asOfUtc, feedConnected, feed, database, session?, contracts, gaps?, cachedAtUtc?, ageMs? }`.
+Returns `{ asOfUtc, feedConnected, feed, database, hubReconnects, session?, contracts, gaps?,
+cachedAtUtc?, ageMs? }`.
 
 `feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
 subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
@@ -1046,7 +1058,13 @@ covered inside the elapsed session. A rolled-off contract, and a symbol that is 
 neither becomes a row, so neither shows up as a session-long gap or keeps the report degraded. `listening`
 and `tape` are that symbol's tape health. `contractId` is omitted when the symbol has no contract active in
 the session. `lastTickUtc` is omitted when that contract has no print inside the session — a missing print
-time is not filled in.
+time is not filled in. `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus that `lastTickUtc`,
+in seconds, clamped at zero, and is omitted with the print time. Zero is a real age. A print
+later than `asOfUtc` is outside this report's window and is omitted. A reply reused from the
+five-second memo keeps that age against the cached `asOfUtc`. `hubReconnects`
+counts a successful market-hub connect after a connection was lost or a connect attempt failed.
+A clean first connect is zero, and zero is a real count. It is not the export-only
+`mcp.tape.reconnects` series.
 
 `session` is the product session in progress, or the one that most recently closed when the market is shut.
 It is omitted when the calendar cannot name one. A declared early close (`MarketData__EarlyCloses`) applies

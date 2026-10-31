@@ -469,7 +469,10 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   not be indistinguishable. A *known* instrument with no data in the window returns an empty series.
 - **R-5.4** A windowed read that would exceed **either** cap on its size — the configured row cap, or the
   buckets one gap-detection pass will enumerate — **refuses and says so with the count**, naming the tighter of
-  the two. It never silently truncates, and it costs no vendor request to be told (gh#96). **Size is not the
+  the two. It never silently truncates, and it costs no vendor request to be told (gh#96). The row-cap
+  refusal names the bars the window would have needed and how to page from the request — a shorter window
+  from its start, or the smallest bar unit that fits the whole window. `get_bars` states the shipped
+  cap in its description (gh#868). **Size is not the
   only bound**: a window must also **end** far enough before the end of the representable calendar for the
   machinery serving it to reason about its last bucket — two bar spans plus three days, because the bucket
   grid is aligned *up* from the window's start, the gap detector tests one bucket beyond the last, and the
@@ -615,11 +618,16 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   symbol, and a `contractId` only when that contract printed or was covered inside the elapsed session. A
   rolled-off contract, and an unconfigured symbol, are absent — neither is a row, so neither is a
   session-long gap and neither keeps the report degraded. `lastTickUtc` is omitted when that contract has
-  no print inside the session. `gaps` are the `TapeCoverage` holes in the elapsed portion of the current
-  product session, or of the session that most recently closed when the market is shut. A declared early
-  close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this report's session and
-  ends that session at the declared time; the hours after it are not a hole in this report, and bar
-  expectation is unchanged. An open listen counts through the report instant only
+  no print inside the session. `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus that time,
+  in seconds, clamped at zero, and is omitted with it. A print later than `asOfUtc` is outside
+  the report window and is omitted. A reply reused from the five-second memo keeps that age
+  against the cached `asOfUtc`. `hubReconnects` counts a successful market-hub
+  connect after a connection was lost or a connect attempt failed. A clean first connect is zero,
+  and zero is reported (gh#793). `gaps` are the `TapeCoverage` holes in the elapsed portion of the
+  current product session, or of the session that most recently closed when the market is shut.
+  A declared early close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this
+  report's session and ends that session at the declared time; the hours after it are not a hole in this
+  report, and bar expectation is unchanged. An open listen counts through the report instant only
   while that instrument is listening; a still-open row while it is not listening is not coverage. `gaps`
   is omitted when the ledger could not be read — an empty array means the window is covered. A missing
   print time is omitted, never substituted. The endpoint is not the liveness probe: a down feed is still

@@ -35,6 +35,8 @@ public sealed class TapeAvailabilityHolder
     private readonly ConcurrentDictionary<string, TapeAvailability> _byInstrument = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, TapeAvailability> _unclaimed = new(StringComparer.Ordinal);
     private readonly Func<string, TapeAvailability>? _forProbe;
+    private int _hubReconnects;
+    private int _hubConnectionLost;
 
     /// <summary>The production holder. Nothing can replace <see cref="For"/> after this.</summary>
     public TapeAvailabilityHolder()
@@ -54,6 +56,34 @@ public sealed class TapeAvailabilityHolder
 
     /// <summary>The process-wide state, when no per-instrument override applies.</summary>
     public TapeAvailability Value => _value;
+
+    /// <summary>
+    /// Successful market-hub connects, after a previous connection was lost or a connect attempt
+    /// failed, counted in this process since it started.
+    /// </summary>
+    /// <remarks>
+    /// A clean first connect leaves this at zero, and zero is a real count. The export counter is
+    /// a different series and is not read back into the health report (gh#793).
+    /// </remarks>
+    public int HubReconnects => Volatile.Read(ref _hubReconnects);
+
+    /// <summary>
+    /// Records that a connection was lost or a connect attempt failed. The next successful connect
+    /// then counts as one reconnect.
+    /// </summary>
+    public void NoteHubConnectionLost() => Interlocked.Exchange(ref _hubConnectionLost, 1);
+
+    /// <summary>
+    /// Counts one reconnect when <see cref="NoteHubConnectionLost"/> has been called since the
+    /// previous successful connect. A clean first connect does not move the count.
+    /// </summary>
+    public void NoteHubReconnect()
+    {
+        if (Interlocked.Exchange(ref _hubConnectionLost, 0) == 1)
+        {
+            Interlocked.Increment(ref _hubReconnects);
+        }
+    }
 
     /// <summary>The current subscription state for one instrument.</summary>
     /// <param name="instrument">The instrument symbol.</param>

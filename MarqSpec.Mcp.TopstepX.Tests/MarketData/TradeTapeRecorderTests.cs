@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Client.ProjectX.Authentication;
@@ -64,6 +65,37 @@ public sealed class TradeTapeRecorderTests
             hub.MarketConnects.Should().Be(0);
             hub.TradeSubscriptions.Should().BeEmpty();
             database.Trades.Should().BeEmpty();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// An unavailable store is logged once and then left alone. No lease, no hub, no tape write, and
+    /// the process is not failed from this loop (gh#843).
+    /// </summary>
+    [Fact]
+    public async Task TheRecorderDoesNotClaimOrRecord_WhenTheStoreIsUnavailable()
+    {
+        StoreAvailabilityHolder store = new();
+        store.Set(StoreAvailability.Unavailable(string.Empty));
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
+            Build(McpTransport.Http, recordTape: true, logger: logger, store: store);
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+
+            hub.MarketConnects.Should().Be(0);
+            hub.TradeSubscriptions.Should().BeEmpty();
+            database.Trades.Should().BeEmpty();
+            recorder.HoldsRecorderLease.Should().BeFalse();
+            logger.Errors.Should().BeEmpty();
+            logger.Warnings.Should().ContainSingle()
+                .Which.Should().Contain("store is unavailable");
 
             await recorder.StopAsync(CancellationToken.None);
         }
@@ -327,25 +359,466 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
-    public async Task TheRecorderCompletesWithoutFaulting_WhenTheHubThrows()
+    public async Task AnInitialConnectThatThrows_SubscribesAfterTheProbeBackoff_AndKeepsRunning()
     {
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, _) =
-            Build(McpTransport.Http, recordTape: true);
+        // The first handshake used to end the loop (gh#757). A later valid probe must connect,
+        // and ExecuteTask must still be running. Automatic reconnect stays off.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
 
         hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
 
         await using (services)
         await using (database)
         {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
             await recorder.StartAsync(CancellationToken.None);
 
-            recorder.ExecuteTask.Should().NotBeNull();
-            await recorder.ExecuteTask!;
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
 
+            sockets.AutoReconnect.Should().BeFalse();
+            hub.MarketConnects.Should().Be(0);
+            hub.TradeSubscriptions.Should().BeEmpty();
+            probe.Calls.Should().Be(0);
+
+            hub.ConnectThrows = null;
+            clock.Advance(SessionReprobe.MinimumInterval);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            probe.Calls.Should().BeGreaterThanOrEqualTo(1);
+            hub.MarketConnects.Should().Be(1);
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
             recorder.ExecuteTask.IsFaulted.Should().BeFalse(
                 "a faulted ExecuteTask is what Program.AnyFaulted reads, and would turn a stdio EOF into a crash");
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AValidProbeWithTheHubDown_BacksOffToTheThirtySecondCap_AndStaysThere()
+    {
+        // REST validate can be healthy while the market hub stays down. The wait has to
+        // double to the 30 second cap and stay there, or this loop hits the vendor every
+        // second for as long as the hub is down (gh#869).
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            sockets.AutoReconnect.Should().BeFalse();
+            hub.MarketConnects.Should().Be(0);
+            int armed = clock.DelayCalls;
+            int[] seconds = [1, 2, 4, 8, 16, 30, 30];
+            foreach (int second in seconds)
+            {
+                int calls = probe.Calls;
+                clock.Advance(TimeSpan.FromSeconds(second) - TimeSpan.FromMilliseconds(1));
+                probe.Calls.Should().Be(
+                    calls,
+                    "the next validate must wait {0} seconds, not fire inside that wait",
+                    second);
+                hub.MarketConnects.Should().Be(0);
+                clock.Advance(TimeSpan.FromMilliseconds(1));
+                await WaitUntil(() => probe.Calls == calls + 1);
+                await WaitUntil(() => clock.DelayCalls > armed);
+                armed = clock.DelayCalls;
+            }
+
+            hub.TradeSubscriptions.Should().BeEmpty();
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ASuccessfulConnect_ResetsTheProbeBackoff_ToOneSecond()
+    {
+        // The wait grows while the hub stays down, then a connect that lands starts the
+        // next outage at one second again. Resetting before that connect lands keeps the
+        // loop at one second forever (gh#869).
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            int armed = clock.DelayCalls;
+            foreach (int second in new[] { 1, 2 })
+            {
+                int calls = probe.Calls;
+                clock.Advance(TimeSpan.FromSeconds(second) - TimeSpan.FromMilliseconds(1));
+                probe.Calls.Should().Be(calls, "a failed connect must not collapse the next wait");
+                clock.Advance(TimeSpan.FromMilliseconds(1));
+                await WaitUntil(() => probe.Calls == calls + 1);
+                await WaitUntil(() => clock.DelayCalls > armed);
+                armed = clock.DelayCalls;
+            }
+
+            hub.ConnectThrows = null;
+            int callsBeforeSuccess = probe.Calls;
+            clock.Advance(TimeSpan.FromSeconds(4) - TimeSpan.FromMilliseconds(1));
+            probe.Calls.Should().Be(
+                callsBeforeSuccess,
+                "the connect that lands is the four second wait, not an early one");
+            clock.Advance(TimeSpan.FromMilliseconds(1));
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            hub.MarketConnects.Should().Be(1);
+            sockets.AutoReconnect.Should().BeFalse();
+
+            hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+            int connects = hub.MarketConnects;
+            int callsBeforeDrop = probe.Calls;
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                probe.Calls > callsBeforeDrop
+                && clock.DelayCalls > armed
+                && hub.MarketConnects == connects
+                && !tape.For("ES").IsListening);
+
+            int callsAfterTheThrow = probe.Calls;
+            clock.Advance(TimeSpan.FromSeconds(1) - TimeSpan.FromMilliseconds(1));
+            probe.Calls.Should().Be(
+                callsAfterTheThrow,
+                "the outage after a successful connect starts again at one second");
+            clock.Advance(TimeSpan.FromMilliseconds(1));
+            await WaitUntil(() => probe.Calls > callsAfterTheThrow);
+
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AFailedFirstConnect_RetriesWhenStopOnSessionConflictIsOff()
+    {
+        // The switch off used to leave the process at Reconnecting with nothing queued.
+        // The same one-second backoff must connect, and must not turn AutoReconnect on.
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = false,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                stopOnSessionConflict: false,
+                webSocketOptions: sockets);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            sockets.AutoReconnect.Should().BeFalse();
+            hub.MarketConnects.Should().Be(0);
             hub.TradeSubscriptions.Should().BeEmpty();
 
+            hub.ConnectThrows = null;
+            clock.Advance(SessionReprobe.MinimumInterval);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening
+                && hub.MarketConnects == 1);
+
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AFailedFirstConnect_RetriesWhenNoSessionProbeIsRegistered()
+    {
+        // No probe used to return from the backoff before the delay, so the process
+        // sat at Reconnecting. The connect itself is retried on that same backoff.
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                webSocketOptions: sockets);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            sockets.AutoReconnect.Should().BeFalse();
+            hub.MarketConnects.Should().Be(0);
+            hub.TradeSubscriptions.Should().BeEmpty();
+
+            hub.ConnectThrows = null;
+            clock.Advance(SessionReprobe.MinimumInterval);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening
+                && hub.MarketConnects == 1);
+
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AFailedFirstConnect_StopsWhenTheHeldTokenExpiresDuringBackoff()
+    {
+        // The switch is on and there is no probe, so a failed handshake retries without
+        // validate. The token is fresh at that failure and expires during the wait. The
+        // retry has to stop instead of connecting, and it must not call loginKey.
+        HeldSession held = new();
+        LoginDouble inner = new();
+        SessionLoginGate gate = new();
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                heldSession: held,
+                loginGate: gate);
+        held.Remember("held-token", clock);
+        hub.Authentication = new GatedAuthenticationService(
+            inner, held, gate, clock, _telemetry);
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && held.TryReadFresh(clock, out _)
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            hub.MarketConnects.Should().Be(0);
+            inner.GetCalls.Should().Be(0);
+
+            clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Stopped
+                && tape.For("ES").Explanation != null
+                && tape.For("ES").Explanation!.Contains("will not call loginKey", StringComparison.Ordinal));
+
+            hub.MarketConnects.Should().Be(0);
+            hub.TradeSubscriptions.Should().BeEmpty();
+            inner.GetCalls.Should().Be(0);
+            tape.For("ES").Explanation.Should().Contain("will not reconnect the market hub");
+
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+            hub.MarketConnects.Should().Be(0);
+            inner.GetCalls.Should().Be(0);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AFailedFirstConnect_DoesNotCallLoginKeyWhenTheSwitchIsOffAndTheTokenExpires()
+    {
+        // The hub connect asks for a token. A token that is not fresh posts loginKey.
+        // The switch-off retry must skip that connect and leave AutoReconnect as set.
+        HeldSession held = new();
+        LoginDouble inner = new();
+        SessionLoginGate gate = new();
+        CollectingLogger logger = new();
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                stopOnSessionConflict: false,
+                webSocketOptions: sockets,
+                heldSession: held,
+                loginGate: gate,
+                logger: logger);
+        held.Remember("held-token", clock);
+        hub.Authentication = new GatedAuthenticationService(
+            inner, held, gate, clock, _telemetry);
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && held.TryReadFresh(clock, out _)
+                && sockets.AutoReconnect
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
+            await WaitUntil(() =>
+                inner.GetCalls > 0
+                || logger.Warnings.Any(warning =>
+                    warning.Contains("will not call loginKey", StringComparison.Ordinal)));
+
+            inner.GetCalls.Should().Be(0);
+            hub.MarketConnects.Should().Be(0);
+            sockets.AutoReconnect.Should().BeTrue();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AFailedConnectRetry_LogsTheFirstFailureAsError_AndTheNextAsWarning()
+    {
+        CollectingLogger logger = new();
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                logger: logger);
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2);
+
+            // The first-connect error says "stays up and will try the handshake again".
+            // The retry sentence has no comma between "again" and "and".
+            static int RetryHandshake(IEnumerable<string> messages) =>
+                messages.Count(message =>
+                    message.Contains("handshake again and will not", StringComparison.Ordinal));
+
+            RetryHandshake(logger.Errors.Select(error => error.Message)).Should().Be(0);
+
+            clock.Advance(SessionReprobe.MinimumInterval);
+            await WaitUntil(() =>
+                RetryHandshake(logger.Errors.Select(error => error.Message)) == 1);
+
+            clock.Advance(SessionReprobe.DelayForAttempt(1));
+            await WaitUntil(() => RetryHandshake(logger.Warnings) >= 1);
+
+            RetryHandshake(logger.Errors.Select(error => error.Message)).Should().Be(1);
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
             await recorder.StopAsync(CancellationToken.None);
         }
     }
@@ -2666,6 +3139,427 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AConnectThatThrowsAfterAValidProbe_SubscribesOnTheFollowingBackoff()
+    {
+        // The throw after a valid probe used to be the last attempt. The next backoff must
+        // connect, and the subscriptions must come back. Automatic reconnect stays off.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening
+                && recorder.PendingLifecycleCount == 0);
+
+            hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+            int delaysBefore = clock.DelayCalls;
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                probe.Calls >= 1
+                && clock.DelayCalls > delaysBefore
+                && hub.MarketConnects == 1);
+
+            hub.TradeSubscriptions.Should().BeEmpty();
+            sockets.AutoReconnect.Should().BeFalse();
+
+            hub.ConnectThrows = null;
+            clock.Advance(SessionReprobe.MinimumInterval);
+            await WaitUntil(() =>
+                hub.MarketConnects >= 2
+                && hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            probe.Calls.Should().BeGreaterThanOrEqualTo(2);
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Theory]
+    [InlineData("hub")]
+    [InlineData("invalid-session")]
+    [InlineData("unauthorized")]
+    [InlineData("no-token")]
+    public async Task AStandDownEndsTheLoop_AndALongClockAdvanceDoesNotConnectAgain(string path)
+    {
+        // InvalidSession and HTTP 401 both reach this loop as Conflict. The rows stay separate so
+        // a later split that retries one of them is red. None of the four may keep connecting.
+        bool noToken = path == "no-token";
+        bool hub = path == "hub";
+        ScriptedSessionProbe probe = new()
+        {
+            Verdict = noToken ? SessionProbeVerdict.Inconclusive : SessionProbeVerdict.Conflict,
+        };
+        HeldSession? held = noToken ? new HeldSession() : null;
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hubClient,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets,
+                heldSession: held);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hubClient.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+            sockets.AutoReconnect.Should().BeFalse();
+
+            int delaysBeforeStop = clock.DelayCalls;
+            if (hub)
+            {
+                hubClient.SimulateSessionConflict("invalid session");
+            }
+            else
+            {
+                hubClient.SimulateMarketDisconnect();
+            }
+
+            await WaitUntil(() =>
+                clock.DelayCalls > delaysBeforeStop
+                && (noToken
+                    ? tape.For("ES").Reason == TapeUnavailableReason.Stopped
+                    : tape.For("ES").Reason == TapeUnavailableReason.StoppedForSessionConflict));
+
+            int connects = hubClient.MarketConnects;
+            int subscribes = hubClient.SubscribeAttempts;
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+
+            recorder.ExecuteTask!.IsCompleted.Should().BeTrue();
+            recorder.ExecuteTask.IsFaulted.Should().BeFalse();
+            hubClient.FollowAutomaticResubscribe(sockets);
+            clock.Advance(TimeSpan.FromHours(12));
+
+            hubClient.MarketConnects.Should().Be(connects);
+            hubClient.SubscribeAttempts.Should().Be(subscribes);
+            hubClient.TradeSubscriptions.Should().NotContain(CountingGateway.DefaultContractId);
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask.IsCompleted.Should().BeTrue();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AConnectAtFridayEveningCentral_StillSubscribes()
+    {
+        // Friday 20:40 CT is after the 16:00 close. The session calendar does not start or stop
+        // the tape, so this instant still subscribes.
+        DateTimeOffset fridayEvening = MarketClock
+            .FromMarket(new DateOnly(2026, 8, 28), new TimeOnly(20, 40))
+            .ToUniversalTime();
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(McpTransport.Http, recordTape: true, leaseTimeToLive: TimeSpan.FromHours(1));
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            clock.SetUtcNow(fridayEvening);
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            MarketClock.ToMarket(clock.GetUtcNow()).DayOfWeek.Should().Be(DayOfWeek.Friday);
+            MarketClock.MarketTimeOfDay(clock.GetUtcNow()).Should().Be(new TimeOnly(20, 40));
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TheTapeClaimIsRenewed_WhileAFailedConnectWaitsToProbeAgain()
+    {
+        // The renewal task starts with the retry, so a weekend of backoffs does not expire the
+        // claim and invite a second writer.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Inconclusive };
+        TimeSpan timeToLive = TimeSpan.FromSeconds(3);
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: timeToLive,
+                sessionProbe: probe);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                LeaseRows(database).Count == 1
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            DateTimeOffset expiry = LeaseRows(database).Single().ExpiresAt;
+            clock.Advance(timeToLive / 3);
+            await WaitUntil(() => LeaseRows(database).Single().ExpiresAt > expiry);
+
+            hub.MarketConnects.Should().Be(0);
+            recorder.HoldsRecorderLease.Should().BeTrue();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task TheTapeClaimIsStillHeld_PastOneLeaseLifetime_AndASecondRecorderIsRefused()
+    {
+        // One renewal tick is not the guarantee. The claim has to survive a wait longer
+        // than the 90 second term, and a second recorder on that clock must still be refused.
+        string sharedStore = Guid.NewGuid().ToString();
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Inconclusive };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                sessionProbe: probe,
+                sharedDatabaseName: sharedStore);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                LeaseRows(database).Count == 1
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            DateTimeOffset startedAt = clock.GetUtcNow();
+            for (int tick = 0; tick < 4; tick++)
+            {
+                DateTimeOffset expiry = LeaseRows(database).Single().ExpiresAt;
+                clock.Advance(TapeLease.DefaultTimeToLive / 3);
+                await WaitUntil(() => LeaseRows(database).Single().ExpiresAt > expiry);
+            }
+
+            (clock.GetUtcNow() - startedAt).Should().BeGreaterThan(TapeLease.DefaultTimeToLive);
+            LeaseRows(database).Single().ExpiresAt.Should().BeAfter(clock.GetUtcNow());
+            hub.MarketConnects.Should().Be(0);
+            recorder.HoldsRecorderLease.Should().BeTrue();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+
+            (TradeTapeRecorder second,
+                FakeMarketHub secondHub,
+                _,
+                ServiceProvider secondServices,
+                RecordingClock secondClock) =
+                Build(
+                    McpTransport.Http,
+                    recordTape: true,
+                    sharedDatabaseName: sharedStore);
+            secondClock.SetUtcNow(clock.GetUtcNow());
+
+            await using (secondServices)
+            {
+                TapeAvailabilityHolder secondTape =
+                    secondServices.GetRequiredService<TapeAvailabilityHolder>();
+                await second.StartAsync(CancellationToken.None);
+                await WaitUntil(() =>
+                    secondTape.For("ES").Reason == TapeUnavailableReason.HeldByAnotherRecorder);
+
+                secondHub.TradeSubscriptions.Should().BeEmpty();
+                recorder.HoldsRecorderLease.Should().BeTrue();
+                await second.StopAsync(CancellationToken.None);
+            }
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_ReportsHubReconnects_AndOmitsLastTickAgeWhenThereIsNoPrint()
+    {
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(McpTransport.Http, recordTape: true, leaseTimeToLive: TimeSpan.FromHours(1));
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            RecorderHealthReport.Report before = await HealthReport(database, tape, clock);
+
+            before.HubReconnects.Should().Be(0);
+            before.Feed.Should().Be(TapeUnavailableReason.NeverStarted);
+            JsonElement beforeWire = HealthWire(before);
+            beforeWire.GetProperty("hubReconnects").GetInt32().Should().Be(0);
+            JsonElement beforeContract = beforeWire.GetProperty("contracts").EnumerateArray().Single();
+            beforeContract.TryGetProperty("lastTickUtc", out _).Should().BeFalse();
+            beforeContract.TryGetProperty("lastTickAgeSeconds", out _).Should().BeFalse();
+
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
+
+            RecorderHealthReport.Report connected = await HealthReport(database, tape, clock);
+            connected.HubReconnects.Should().Be(0);
+            connected.Contracts.Should().ContainSingle().Which.LastTickAgeSeconds.Should().BeNull();
+
+            DateTime stamped = DateTime.SpecifyKind(clock.GetUtcNow().UtcDateTime, DateTimeKind.Utc);
+            hub.Raise(Print(stamped, TradeLogType.Buy, price: 5000m));
+            await WaitUntil(() => recorder.RecordedPrints == 1);
+
+            RecorderHealthReport.Report printed = await HealthReport(database, tape, clock);
+            RecorderHealthReport.ContractStatus row = printed.Contracts.Should().ContainSingle().Subject;
+            row.LastTickUtc.Should().Be(new DateTimeOffset(stamped, TimeSpan.Zero));
+            row.LastTickAgeSeconds.Should().Be(0);
+            HealthWire(printed).GetProperty("contracts").EnumerateArray().Single()
+                .GetProperty("lastTickAgeSeconds").GetDouble().Should().Be(0);
+
+            clock.Advance(TimeSpan.FromSeconds(20));
+            RecorderHealthReport.Report aged = await HealthReport(database, tape, clock);
+            aged.Contracts.Should().ContainSingle().Which.LastTickAgeSeconds.Should().Be(20);
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() => tape.Value.Reason == TapeUnavailableReason.Reconnecting);
+            (await HealthReport(database, tape, clock)).HubReconnects.Should().Be(0);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task ACleanStart_ReportsHubReconnectsZero_AndARecoveryCountsOne()
+    {
+        // The first connect is not a reconnect. A later connect, after the hub dropped,
+        // is one. Zero stays on the wire.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            RecorderHealthReport.Report started = await HealthReport(database, tape, clock);
+            started.HubReconnects.Should().Be(0);
+            HealthWire(started).GetProperty("hubReconnects").GetInt32().Should().Be(0);
+
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                hub.MarketConnects >= 2
+                && hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            RecorderHealthReport.Report recovered = await HealthReport(database, tape, clock);
+            recovered.HubReconnects.Should().Be(1);
+            HealthWire(recovered).GetProperty("hubReconnects").GetInt32().Should().Be(1);
+            sockets.AutoReconnect.Should().BeFalse();
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task AConnectThatFailsBeforeItSucceeds_CountsOneHubReconnect()
+    {
+        // A handshake that throws is a failed attempt. The connect that then lands is
+        // a reconnect, so the count is one rather than the clean start's zero.
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2);
+
+            (await HealthReport(database, tape, clock)).HubReconnects.Should().Be(0);
+
+            hub.ConnectThrows = null;
+            clock.Advance(SessionReprobe.MinimumInterval);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            (await HealthReport(database, tape, clock)).HubReconnects.Should().Be(1);
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task TradeTapeRecorder_InconclusiveSessionProbe_DoesNotReconnectOrLogIn()
     {
         // Expiry, an unknown code, a timeout, or a probe that could not land is not another session.
@@ -3358,6 +4252,28 @@ public sealed class TradeTapeRecorderTests
         }
     }
 
+    private static readonly JsonSerializerOptions _healthWire = McpJsonUtilities.DefaultOptions;
+
+    private static Task<RecorderHealthReport.Report> HealthReport(
+        TopstepXDbContext database,
+        TapeAvailabilityHolder tape,
+        TimeProvider clock)
+    {
+        IOptions<MarketDataOptions> options = Options.Create(new MarketDataOptions { Instruments = "ES" });
+        RecorderHealthService service = new(
+            new EfRecorderHealthStore(database),
+            tape,
+            new InstrumentRegistry(options),
+            BarSessionCalendar.Parse("16:00", []),
+            clock,
+            _telemetry,
+            new RecorderHealthMemo());
+        return service.ReadAsync(CancellationToken.None);
+    }
+
+    private static JsonElement HealthWire(RecorderHealthReport.Report report) =>
+        JsonDocument.Parse(JsonSerializer.Serialize(report, _healthWire)).RootElement;
+
     private static void ArmOneGuard(TradeTapeRecorder recorder, string which)
     {
         switch (which)
@@ -3407,7 +4323,8 @@ public sealed class TradeTapeRecorderTests
             ISessionConflictProbe? sessionProbe = null,
             MarqSpec.Client.ProjectX.Configuration.WebSocketOptions? webSocketOptions = null,
             HeldSession? heldSession = null,
-            SessionLoginGate? loginGate = null)
+            SessionLoginGate? loginGate = null,
+            StoreAvailabilityHolder? store = null)
     {
         FakeMarketHub hub = new();
         RecordingClock clock = new(_receipt);
@@ -3490,7 +4407,8 @@ public sealed class TradeTapeRecorderTests
             tape,
             telemetry ?? _telemetry,
             channelCapacity,
-            leaseTimeToLive ?? TapeLease.DefaultTimeToLive);
+            leaseTimeToLive ?? TapeLease.DefaultTimeToLive,
+            store ?? new StoreAvailabilityHolder());
 
         return (recorder, hub, database, provider, clock);
     }

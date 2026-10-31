@@ -608,8 +608,8 @@ jobs:
           # here: the context goes to buildx and the assembly is produced inside the container, which never
           # sees .git because .dockerignore excludes it. Read off the published image rather than off a build
           # log -- MarqSpec.Mcp.TopstepX.dll inside ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0 carries
-          # AssemblyInformationalVersion 0.0.0-alpha.0, at this very depth. The image TAG is the version
-          # (ADR-0001's decision log).
+          # AssemblyInformationalVersion 0.0.0-alpha.0, at this very depth. Depth still does not feed
+          # MinVer. gh#867 passes MINVER_VERSION into the Dockerfile instead, below.
           #
           # KEPT ANYWAY, deliberately. This job exists to build by the mechanism the release uses (gh#54),
           # the checkout is an input to that build, and release.yml's `publish` declares the same depth --
@@ -650,6 +650,18 @@ jobs:
           ref="$(./scripts/image-reference.sh)"
           [ -n "$ref" ] || { echo "::error::image-reference.sh exited 0 without naming a reference"; exit 1; }
           echo "IMAGE=$ref" >> "$GITHUB_ENV"
+
+      # The container never sees .git, so MinVer inside it stamps 0.0.0-alpha.0 unless this argument
+      # arrives (gh#867). This job installs no SDK. git describe is not MinVer's height: with v0.7.0
+      # tagged on main and not on develop, describe reads v0.6.0-<n>-g<sha>, and that string sorts
+      # below 0.6.0. Harmless here — this image is loaded for the smoke and never pushed. release.yml
+      # passes the tag itself. Same Dockerfile ARG either way. Assigned, then checked (gh#126): a
+      # failed describe must not export an empty VERSION and publish the fallback.
+      - name: Resolve the version the image stamps
+        run: |
+          desc="$(git describe --tags --match 'v[0-9]*' --abbrev=7)"
+          [ -n "$desc" ] || { echo "::error::git describe produced no version"; exit 1; }
+          echo "VERSION=${desc#v}" >> "$GITHUB_ENV"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -694,13 +706,15 @@ jobs:
           # from Docker Hub, which reads like a typo in the tag rather than like a missing export.
           load: true
           tags: ${{ env.IMAGE }}:ci
+          build-args: |
+            MINVER_VERSION=${{ env.VERSION }}
         env:
           # DISABLED, and stated rather than inherited (gh#54 review). `build-push-action` v6+ exports a
           # `.dockerbuild` build record and uploads it as a downloadable workflow ARTIFACT on every run --
           # something `docker build` never did, and a fourth surface on a PUBLIC repo whose non-negotiable is
-          # "no secret reaches a workflow, log, or image layer". It is benign as this step stands (no
-          # `build-args`, no `secrets`), but the day someone adds `build-args` for a private NuGet feed the
-          # build definition lands in that artifact and nothing would have said so.
+          # "no secret reaches a workflow, log, or image layer". The one build-arg is MINVER_VERSION, a
+          # version string, not a credential. A private NuGet feed added as a build-arg would land in
+          # that artifact, which is why the upload stays off.
           #
           # IT IS NOT FREE, and the cost lands on the worst job to pay it. The record is what `buildx
           # history` reads, so switching it off gives up post-hoc build-RECORD forensics -- the structured
@@ -742,6 +756,11 @@ jobs:
         #
         # A SCRIPT rather than an inline block so the same check runs against a locally built image. A local
         # check that disagrees with CI is worse than no local check.
+        #
+        # EXPECTED_VERSION is the string this job passed as MINVER_VERSION (gh#867). The smoke requires
+        # serverInfo.version to equal it, and still refuses 0.0.0.0 and 0.0.0-alpha.0 when it is unset.
+        env:
+          EXPECTED_VERSION: ${{ env.VERSION }}
         run: ./scripts/check-image-entrypoint.sh "$IMAGE:ci"
 
       # THE GATE ABOVE HAS TO BE ABLE TO FAIL (gh#98). It is the only thing standing between a broken

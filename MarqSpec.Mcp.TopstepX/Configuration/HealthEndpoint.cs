@@ -91,11 +91,14 @@ public static class HealthEndpoint
         // The explanation StoreAvailability carries when it is unavailable is NOT written here: it names the
         // connection string and the fix, which is the right thing to tell an operator holding a token and
         // the wrong thing to hand an unauthenticated caller.
+        // version is ProductVersion, the same string initialize reports. The deployment's
+        // Version is not that number (gh#867). digest still is the deployment's, because the
+        // assembly does not carry an image digest.
         await context.Response.WriteAsJsonAsync(
             new HealthReport(
                 "ok",
                 store.IsAvailable ? Available : Unavailable,
-                OrUnknown(deployment.Version),
+                ProductVersion.Read(),
                 OrUnknown(deployment.ImageDigest)))
             .ConfigureAwait(false);
     }

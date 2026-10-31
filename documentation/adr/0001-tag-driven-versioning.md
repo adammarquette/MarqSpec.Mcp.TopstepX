@@ -51,8 +51,9 @@ which is the thing being removed.
   depth 1 — which yields `0.0.0-alpha.0` **silently** rather than failing. **Nothing here packs**, so the rule
   is *every job that builds*, not *every job that packs*: the version is stamped into an assembly rather than
   into a package. **Which artifacts that stamp actually reaches is gh#176** — `.dockerignore` excludes
-  `.git/`, so the container build is not one of them, and it stamps `0.0.0-alpha.0` however deep the runner's
-  clone is. Read this bullet as a rule about the checkout, never as a claim about the published image.
+  `.git/`, so the container build is not one of them, and without a version argument it stamps
+  `0.0.0-alpha.0` however deep the runner's clone is. The 2026-10-30 update passes the tag in; depth still
+  does not. Read this bullet as a rule about the checkout, never as a claim that depth stamps the image.
 - A local build with no tags nearby yields a pre-release version. Correct, and occasionally surprising.
 - Cutting a release is: promote, tag, publish. No file edit is part of it.
 
@@ -61,6 +62,7 @@ which is the thing being removed.
 | Update | What changed |
 |---|---|
 | [2026-08-25](#update-2026-08-25--the-stamp-does-not-reach-the-shipped-image) | The stamp inside the published image is `0.0.0-alpha.0`, read off the DLL; the image tag carries the release number, by decision rather than by accident |
+| [2026-10-30](#update-2026-10-30--the-image-build-stamps-the-release-tag) | The image build stamps the tag; `/health` and `serverInfo` read it (gh#867) |
 
 ## Update (2026-08-25) — the stamp does not reach the shipped image
 
@@ -146,6 +148,28 @@ they produce is built inside the container. Neither reads history for anything e
 deliberately: `image` exists to build by the mechanism the release uses (gh#54), the checkout is an input to
 that build, and `publish` is the run that can least cheaply be repeated. Trimming it would change the release
 path and buy nothing.
+
+## Update (2026-10-30) — the image build stamps the release tag
+
+The 2026-08-25 update stands as a measurement of `ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0` and of
+every image built the same way through v0.7.0. What changed is reason 1 of that update: something now
+consumes the assembly's version. Production `initialize` answered `serverInfo.version` `0.0.0.0` while
+`/health` answered `0.7.0` (gh#867).
+
+**Both answers read one value,** the entry project's informational version, with `+` build metadata removed.
+The SDK's default is the entry assembly's `AssemblyVersion`, which is `0.0.0.0` when MinVer falls back and
+is a four-part number even when MinVer succeeds, so the composition root sets `ServerInfo` rather than
+leaving the default. `/health`'s `version` is that same string. `Deployment__Version` is compared with
+it at startup: one warning when the key is set and differs, and nothing when they match or the key is
+unset. `digest` is unchanged.
+
+**The image receives the tag as a build argument,** `MINVER_VERSION`, passed to
+`dotnet publish -p:MinVerVersionOverride`. `release.yml` passes `${TAG#v}`. `ci.yml`'s `image` job passes
+`git describe` so the same argument is exercised on every pull request. On `develop` that reads
+`v0.6.0-<n>-g<sha>` while `v0.7.0` is tagged only on `main`, and that string sorts below `0.6.0`. The
+CI image is smoked and never pushed. The job still installs no SDK.
+`.dockerignore` still excludes `.git`. An image built without the argument is still `0.0.0-alpha.0`, and
+`check-image-entrypoint.sh` refuses `0.0.0.0` and `0.0.0-alpha.0` on the wire.
 
 ## Follow-ups
 

@@ -791,10 +791,12 @@ carries the same `outcome`. Tracing excludes only the exact
 `/health` probe, matched ordinally, the same comparison the probe uses, so `/Health` stays behind the gate
 and is still traced.
 
-`version` and `digest` come from the optional `Deployment__Version` / `Deployment__ImageDigest`, `unknown`
-when unset. Nothing here declares a version in a file — the tag is the version
-([ADR-0001](adr/0001-tag-driven-versioning.md)) and the image build never sees `.git` — so the only honest
-source for "which release is this" is the deployment that started the task.
+`version` is the assembly informational version, with `+` build metadata removed — the same string
+`initialize` reports as `serverInfo.version` (gh#867). The image build does not see `.git`, so CI and
+`release.yml` pass the tag in as `MinVerVersionOverride`. `Deployment__Version`, when set and different,
+is one startup warning naming both values; a match or an unset key is silent. `digest` still comes from
+the optional `Deployment__ImageDigest`, `unknown` when unset. Nothing in a file declares a version
+([ADR-0001](adr/0001-tag-driven-versioning.md)).
 
 ### What the host measures
 
@@ -961,6 +963,18 @@ the database row are load-bearing once this runs somewhere without an operator w
   bound governs the delay between probes, not a probe in flight**, so wall-clock time can exceed it by about
   one probe's duration — measured at 10.6 s against a 10 s bound on PR #548 — which matters when an
   orchestrator's own start-up grace period is sized against this value (gh#551).
+- **`Store__Required` narrows the rule, and only where it is set.** It defaults to false, which is the
+  paragraph above: unreachable degrades, `/health` does not consult the store, and
+  `StoreAvailabilityHolder` is set once. True — Railway, on the server and the recorder, in production
+  and in staging — logs an error and exits non-zero when the store never answers or the connection
+  drops while migrations are applied — a socket reset, or Postgres `57P01` or `57P03`, including
+  the `InvalidOperationException` EF wraps around that SQLSTATE — so the
+  orchestrator can restart the process. `reselect-bars`,
+  `export-tape` and `import-tape` catch that failure, log their cannot-run line, and return their
+  store exit codes. A migration that fails against a database that did answer still fails the
+  process either way (gh#843). Nothing retries
+  the migration in the background. The recorder, when the holder says unavailable at startup, does not
+  claim a lease or record tape, and logs that once; a failure after a run has started is unchanged.
 
 The one thing that still fails hard is a migration that fails against a database which **did** answer. That is
 a defect here, not an environment fact, and serving reads against an unverified schema is worse than not
@@ -970,10 +984,16 @@ orchestrator's health check, which is shorter, because the migration runs before
 ([`deployment.md`](deployment.md)). Npgsql's 30-second default is shorter than a per-chunk index build on a
 large `Trades` hypertable, and a cancel there leaves an invalid index that the next start drops and rebuilds
 under the same cap (gh#756). The previous timeout is restored when the migration returns, including when
-it throws. The five statements
-that build `IX_Trades_Instrument_TradeTimeUtc` share one connection; the session advisory lock and the
-per-chunk mark do not survive a reconnect, and a second replica waits on the lock rather than receiving
-`55P03` — that code is raised only when `lock_timeout` is set, which this migration does not do.
+it throws. The whole apply, not only that index build, also holds its own session advisory lock,
+`pg_advisory_lock(138608641, 843)` (`0x08430001`), on a dedicated unpooled connection, released in a
+finally. The lock is a guard against concurrent applies. The second waits, then finds the schema
+already applied (gh#843). The wait is `Migrations__LockWaitSeconds` (1..604800, default 300),
+separate from the command timeout. A normal multi-command apply finishes inside the default. A wait
+that times out is the store unavailable: degrade when the store is optional, and an error plus a
+non-zero exit when it is required. The five statements
+that build `IX_Trades_Instrument_TradeTimeUtc` share one connection; that migration's own advisory lock
+and the per-chunk mark do not survive a reconnect, and a second replica waits on that lock rather
+than receiving `55P03` — raised only when `lock_timeout` is set, which this migration does not do.
 `dotnet ef migrations script` emits the Timescale reloption unconditionally, because the skip lives in the
 context interceptor rather than in the script.
 
@@ -1261,14 +1281,25 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   account, including a healthy trading platform. A failed recovery waits, from 30 seconds doubling
   to 5 minutes, before the next REST call tries again. With the switch off, replicas (gh#772) kick
   each other about once per 54-minute cycle; with it on, the other replica latches until restart.
-  Freshness follows a monotonic clock, which does not advance across a Linux suspend. An inconclusive probe does not
-  reconnect and does not latch login; a still-fresh token is probed again on its own interval
-  (one second, doubling to 30 seconds), and no fresh token stops the recorder rather than logging in
-  without closing login for REST tools. The one-way latch is only a documented hub name, HTTP 401,
-  `InvalidSession`, or `SessionNotFound`. `AutoReconnect` stays off for both hubs while the recorder
-  is alive, because they share one options instance. A validate result of valid is connected by
-  this process with automatic reconnect left off. The refusal the tape tools return names the
-  platform, the switch, and that limit.
+  Freshness follows a monotonic clock, which does not advance across a Linux suspend.
+  An inconclusive probe does not reconnect and does not latch login. A still-fresh token
+  is probed again on its own interval (one second, doubling to 30 seconds), and no fresh
+  token stops the recorder rather than logging in without closing login for REST tools.
+  The one-way latch is only a documented hub name, HTTP 401, `InvalidSession`, or
+  `SessionNotFound`. `AutoReconnect` stays off for both hubs while the recorder is alive,
+  because they share one options instance. A validate result of valid is connected by
+  this process with automatic reconnect left off. A connect that fails without a latched
+  conflict, including the first handshake, does not end the loop (gh#869). The hooks stay
+  and the tape reports reconnecting. That same backoff runs, with no attempt cap. It
+  grows until a connect lands, then starts again at one second. A throw from the connect
+  after a valid probe re-enters it. With the switch on and no session probe, that wait
+  connects while the held token is fresh, and a token that expires during the wait stops
+  the loop and does not call loginKey. With the switch off, that wait connects without a
+  validate call while the held token is fresh, it does not call loginKey, and it does not
+  turn automatic reconnect on. A conflict or a missing fresh token still ends the loop
+  and does not connect again.
+  The drain loop renews the tape claim during the wait.
+  The refusal the tape tools return names the platform, the switch, and that limit.
   Live tape health is a
   mutable holder written from that same lifecycle and read at the point of use (gh#218) — the opposite
   of the store probe, which is set once at startup and never re-probed.   `get_footprint` and
@@ -1292,6 +1323,12 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
   in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).
+  `hubReconnects` counts a successful market-hub connect after a connection was lost or a
+  connect attempt failed. A clean first connect is zero, and zero is a real count.
+  `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus `lastTickUtc`, clamped at zero, and
+  omitted when that contract has no print. A print later than `asOfUtc` is outside the
+  report window and is omitted. A report reused from the five-second memo keeps that age
+  relative to the cached `asOfUtc` (gh#793).
   A declared early close shortens only that session. This process reuses a built report for five seconds.
   `/health` stays liveness and the one unauthenticated path.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push

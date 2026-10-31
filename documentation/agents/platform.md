@@ -114,10 +114,14 @@ The root contract's six apply here unchanged. Four land specifically on the pipe
   container, which never sees `.git` because `.dockerignore` excludes it. Read off the published artifact
   rather than off a log: `MarqSpec.Mcp.TopstepX.dll` inside
   `ghcr.io/adammarquette/marqspec.mcp.topstepx:0.1.0` carries `AssemblyInformationalVersion`
-  **`0.0.0-alpha.0`** and `AssemblyVersion` `0.0.0.0`, at `fetch-depth: 0`. What carries the release number
-  on the published artifact is the image **tag** and the `org.opencontainers.image.version` label, and that
-  is [ADR-0001](../adr/0001-tag-driven-versioning.md)'s decision rather than an accident — with the cost
-  named there. **The depth on those two stays**: they read no history for anything else either
+  **`0.0.0-alpha.0`** and `AssemblyVersion` `0.0.0.0`, at `fetch-depth: 0`. That measurement is the image
+  shipped before gh#867. `image` and `publish` now pass `MINVER_VERSION` into the Dockerfile, and
+  `dotnet publish` sets `MinVerVersionOverride` from it. Depth still does not feed MinVer — there is still
+  no `.git` in the context — so an image built without that argument is still `0.0.0-alpha.0`. With the
+  argument, the informational version is that string, and `/health` and `serverInfo.version` both report it
+  with `+` build metadata removed. The image **tag** and the `org.opencontainers.image.version` label still
+  carry the same release number ([ADR-0001](../adr/0001-tag-driven-versioning.md)). **The depth on those two
+  stays**: they read no history for anything else either
   (`image-reference.sh` reads `remote.origin.url` from git *config*, the tag check reads `GITHUB_REF_NAME`),
   but `image` exists to build by the mechanism the release uses (gh#54), the checkout is an input to that
   build, and trimming the release path buys nothing. **Correct the claim, not the setting.**
@@ -131,8 +135,9 @@ The root contract's six apply here unchanged. Four land specifically on the pipe
   range and this line, so trimming it now costs a failed run instead of a silent hole. So the question is
   **"does this job read git history?"**, never "does it build" and never "does it install an SDK". Deciding
   it by SDK is how `commit-hygiene` gets trimmed; deciding it by "does it build" is how `image` and `publish`
-  came to be listed under MinVer for a stamp their checkout depth cannot change. They do produce one — it is
-  just `0.0.0-alpha.0` at every depth.
+  came to be listed under MinVer for a stamp their checkout depth cannot change. Depth still cannot change
+  it. The version they stamp is the `MINVER_VERSION` build-arg (gh#867); without that argument it is still
+  `0.0.0-alpha.0`.
 - **One target framework, and the SDK a job installs must match what the projects declare.** All five projects
   declare `net10.0` **alone** — this is an application, not the multi-targeting library the template came
   from — and `global.json` pins the SDK to `10.0.300`. `ci.yml` and `codeql.yml` therefore each install

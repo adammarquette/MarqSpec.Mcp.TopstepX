@@ -39,11 +39,13 @@
 # and `check-doc-sizes-selftest.sh` took the same assertion after gh#271 measured it. This suite cannot,
 # for two independent reasons, either of which is sufficient:
 #
-#   1. THERE IS NO GREEN CASE TO PUT IT ON. That assertion is a claim about a run the gate ACCEPTS. This file
-#      runs the gate exactly once, against a fixture it must REJECT -- and on a red run stderr is not stray
-#      output, it is THE ANSWER: `die` reports every fault through it. Both suites that carry the assertion
-#      exempt their red cases for precisely that reason. Adding a green case here would mean running the real
-#      `:ci` image a second time, which `ci.yml` already does in the step immediately above this one.
+#   1. THERE IS NO GREEN CASE TO PUT IT ON. That assertion is a claim about a run the gate ACCEPTS. The docker
+#      run of this file is exactly once, against a fixture it must REJECT -- and on a red run stderr is not
+#      stray output, it is THE ANSWER: `die` reports every fault through it. Both suites that carry the
+#      assertion exempt their red cases for precisely that reason. Adding a green docker case here would mean
+#      running the real `:ci` image a second time, which `ci.yml` already does in the step immediately above
+#      this one. The serverInfo.version cases further down call assert_serverinfo_version on fixture frames
+#      and never start a container, so they are not that green docker run.
 #
 #   2. "GREEN IMPLIES SILENT" IS NOT STRUCTURAL FOR THIS GATE, and the one-command check that establishes it
 #      elsewhere cannot see why. `grep -n '>&2' scripts/check-image-entrypoint.sh` finds every writer on a
@@ -91,6 +93,55 @@ GATE="$HERE/check-image-entrypoint.sh"
 die() { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 ok()  { printf '\033[32m%s\033[0m\n' "$*"; }
 
+# shellcheck disable=SC1090
+source "$GATE"
+
+# gh#867. No container. The deny-list rejects an unstamped version even when EXPECTED_VERSION
+# names something else; a matching value passes; a different value fails.
+VERSION_FRAME="$(mktemp)"
+VERSION_OUT="$(mktemp)"
+cleanup_version() { rm -f "$VERSION_FRAME" "$VERSION_OUT"; }
+trap cleanup_version EXIT
+
+fail_version() {
+  local status=0
+  assert_serverinfo_version "$VERSION_FRAME" >"$VERSION_OUT" 2>&1 || status=$?
+  if [ "$status" -eq 0 ]; then
+    die "  VACUOUS  $1"
+    cat "$VERSION_OUT" >&2
+    exit 1
+  fi
+  if ! grep -qF "$2" "$VERSION_OUT"; then
+    die "  WRONG FAILURE  $1 exited $status without '$2'"
+    cat "$VERSION_OUT" >&2
+    exit 1
+  fi
+}
+
+printf '%s\n' '{"result":{"serverInfo":{"name":"fixture","version":"0.0.0.0"}}}' >"$VERSION_FRAME"
+EXPECTED_VERSION="1.2.3" fail_version "an unstamped serverInfo.version" "UNSTAMPED VERSION"
+
+printf '%s\n' '{"result":{"serverInfo":{"name":"fixture","version":"1.2.3"}}}' >"$VERSION_FRAME"
+EXPECTED_VERSION="1.2.3"
+STATUS=0
+assert_serverinfo_version "$VERSION_FRAME" >"$VERSION_OUT" 2>&1 || STATUS=$?
+if [ "$STATUS" -ne 0 ]; then
+  die "  REJECTED A MATCH  EXPECTED_VERSION=1.2.3 against serverInfo.version 1.2.3 exited $STATUS"
+  cat "$VERSION_OUT" >&2
+  exit 1
+fi
+if ! grep -qF "serverInfo.version 1.2.3" "$VERSION_OUT"; then
+  die "  SILENT MATCH  the gate exited 0 without naming serverInfo.version 1.2.3"
+  cat "$VERSION_OUT" >&2
+  exit 1
+fi
+
+printf '%s\n' '{"result":{"serverInfo":{"name":"fixture","version":"1.2.3"}}}' >"$VERSION_FRAME"
+EXPECTED_VERSION="9.9.9" fail_version "a serverInfo.version other than EXPECTED_VERSION" "WRONG VERSION"
+unset EXPECTED_VERSION
+
+ok "  OK  serverInfo.version: unstamped rejected, match accepted, mismatch rejected"
+
 # DERIVED, matching check-image-entrypoint.sh and for the same reason (gh#121 review): CI builds
 # `$(image-reference.sh):ci`, so a hardcoded default here would name a tag nothing produces and the
 # documented no-argument form would fail on a pull attempt rather than on the image.
@@ -130,7 +181,7 @@ ABSENT_ASSEMBLY="MarqSpec.Mcp.TopstepX.DoesNotExist.dll"
 OUTPUT="$(mktemp)"
 cleanup() {
   docker image rm -f "$FIXTURE" >/dev/null 2>&1 || true
-  rm -f "$OUTPUT"
+  rm -f "$OUTPUT" "${VERSION_FRAME:-}" "${VERSION_OUT:-}"
 }
 trap cleanup EXIT
 

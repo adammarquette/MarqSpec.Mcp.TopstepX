@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
@@ -79,12 +80,19 @@ public sealed class BarTools(
         + "Compare `available.earliest` to `fromUtc`: a later earliest means the vendor and this store "
         + "have no bars before that instant. On Simulated-tier minute bars that edge is a rolling window "
         + "of about nine weeks, not a quiet market; hourly history reaches about a year. The numbers are "
-        + "on the gateway wiki and they age — the timestamps in `available` are the measurement.")]
+        + "on the gateway wiki and they age — the timestamps in `available` are the measurement. "
+        + "A window may span at most " + MarketDataOptions.DefaultMaxRowsText
+        + " bars at any resolution, the shipped MaxRows default. The cap counts bars, "
+        + "so it binds at every unit, and a finer unit reaches it over a shorter clock span. "
+        + "Page with narrower start and end windows, or a coarser unit.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
-        [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")] int resolutionMinutes,
-        [Description("Window start, ISO-8601 UTC, inclusive.")] DateTimeOffset fromUtc,
-        [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
+        [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")]
+        int resolutionMinutes,
+        [Description("Window start, ISO-8601 UTC, inclusive.")]
+        DateTimeOffset fromUtc,
+        [Description("Window end, ISO-8601 UTC, exclusive.")]
+        DateTimeOffset toUtc,
         CancellationToken cancellationToken)
     {
         InstrumentId instrument = _resolver.Resolve(symbol);

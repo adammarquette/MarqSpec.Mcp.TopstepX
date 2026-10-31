@@ -60,6 +60,30 @@ public sealed class StoreOptionsTests
             .StartupWaitSeconds.Should().Be(600);
     }
 
+    /// <summary>
+    /// Absent means optional. The documented local recipes and stdio start with no database, and that
+    /// stays a degrade rather than an exit (ADR-0007, gh#843).
+    /// </summary>
+    [Fact]
+    public void Required_DefaultsToFalse_WhenTheKeyIsAbsent()
+    {
+        Bind([]).Required.Should().BeFalse();
+    }
+
+    /// <summary>The Railway key binds through the real composition root.</summary>
+    [Fact]
+    public void Required_BindsTrue()
+    {
+        Bind(new Dictionary<string, string?> { ["Store:Required"] = "true" }).Required.Should().BeTrue();
+    }
+
+    /// <summary>An explicit false stays false, so stating the default does not arm the exit.</summary>
+    [Fact]
+    public void Required_BindsFalse()
+    {
+        Bind(new Dictionary<string, string?> { ["Store:Required"] = "false" }).Required.Should().BeFalse();
+    }
+
     /// <summary>Binds through the real composition root, so this measures what the deployed server does.</summary>
     /// <param name="configured">The <c>Store:*</c> settings to add.</param>
     /// <returns>The bound and validated options.</returns>

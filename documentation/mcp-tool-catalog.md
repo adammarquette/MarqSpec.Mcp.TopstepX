@@ -1033,7 +1033,8 @@ Whether this process's recorder is doing its job (R-5.14, gh#756). A dead record
 an end-of-day job. The same payload is served to a monitor at `GET /health/recorder`, behind the bearer
 gate. `/health` stays the unauthenticated liveness probe and does not open a database connection.
 
-Returns `{ asOfUtc, feedConnected, feed, database, session?, contracts, gaps?, cachedAtUtc?, ageMs? }`.
+Returns `{ asOfUtc, feedConnected, feed, database, hubReconnects, session?, contracts, gaps?,
+cachedAtUtc?, ageMs? }`.
 
 `feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
 subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
@@ -1046,7 +1047,10 @@ covered inside the elapsed session. A rolled-off contract, and a symbol that is 
 neither becomes a row, so neither shows up as a session-long gap or keeps the report degraded. `listening`
 and `tape` are that symbol's tape health. `contractId` is omitted when the symbol has no contract active in
 the session. `lastTickUtc` is omitted when that contract has no print inside the session — a missing print
-time is not filled in.
+time is not filled in. `lastTickAgeSeconds` is `asOfUtc` minus that `lastTickUtc`, in seconds, and is
+omitted with the print time. Zero is a real age. `hubReconnects` is how many market-hub connection
+transitions this process has counted since it started. Zero is a real count: this process has not
+connected. It is not the export-only `mcp.tape.reconnects` series.
 
 `session` is the product session in progress, or the one that most recently closed when the market is shut.
 It is omitted when the calendar cannot name one. A declared early close (`MarketData__EarlyCloses`) applies

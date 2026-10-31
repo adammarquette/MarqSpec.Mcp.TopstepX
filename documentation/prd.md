@@ -615,11 +615,13 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   symbol, and a `contractId` only when that contract printed or was covered inside the elapsed session. A
   rolled-off contract, and an unconfigured symbol, are absent — neither is a row, so neither is a
   session-long gap and neither keeps the report degraded. `lastTickUtc` is omitted when that contract has
-  no print inside the session. `gaps` are the `TapeCoverage` holes in the elapsed portion of the current
-  product session, or of the session that most recently closed when the market is shut. A declared early
-  close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this report's session and
-  ends that session at the declared time; the hours after it are not a hole in this report, and bar
-  expectation is unchanged. An open listen counts through the report instant only
+  no print inside the session. `lastTickAgeSeconds` is `asOfUtc` minus that time, in seconds, and is
+  omitted with it. `hubReconnects` counts market-hub connection transitions in this process since it
+  started, and zero is reported (gh#793). `gaps` are the `TapeCoverage` holes in the elapsed portion of the
+  current product session, or of the session that most recently closed when the market is shut.
+  A declared early close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this
+  report's session and ends that session at the declared time; the hours after it are not a hole in this
+  report, and bar expectation is unchanged. An open listen counts through the report instant only
   while that instrument is listening; a still-open row while it is not listening is not coverage. `gaps`
   is omitted when the ledger could not be read — an empty array means the window is covered. A missing
   print time is omitted, never substituted. The endpoint is not the liveness probe: a down feed is still

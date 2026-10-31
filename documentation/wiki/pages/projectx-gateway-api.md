@@ -352,9 +352,10 @@ or HTTP 401, and it does not call `loginKey` to reconnect
 validate whenever the venue client is configured, not only while the recorder is running, and not
 with `loginKey`. A latched stop posts no further validate. An expired token may post a budgeted
 `loginKey`, which disconnects any live session on the account. A failed login waits before it
-tries again. A drop
-that is not one of those signals stops the recorder and leaves
-REST login open. `AutoReconnect` stays off for both hubs while the recorder is alive.
+tries again. A drop that is not one of those signals is probed again. No fresh token stops the
+recorder and leaves REST login open. A failed connect, including the first handshake, waits on that
+same probe and does not end the loop (gh#869). `AutoReconnect` stays off for both hubs while the
+recorder is alive.
 
 > One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
 > root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream

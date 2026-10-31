@@ -160,7 +160,7 @@ public sealed class RecorderHealthService(
 
         bool databaseUp = probe == Probe.Up;
         IReadOnlyList<RecorderHealthReport.ContractStatus> contracts =
-            BuildContracts(ticks, slices, databaseUp, window);
+            BuildContracts(ticks, slices, databaseUp, window, asOf);
         IReadOnlyList<RecorderHealthReport.Gap>? gaps = databaseUp && named is { } reportedSession
             ? BuildGaps(reportedSession, asOf, slices, contracts)
             : null;
@@ -183,7 +183,8 @@ public sealed class RecorderHealthService(
                     open is not null)
                 : null,
             contracts,
-            gaps);
+            gaps,
+            _tape.HubReconnects);
         return (report, outcome);
     }
 
@@ -204,7 +205,8 @@ public sealed class RecorderHealthService(
         IReadOnlyList<ContractLastTick> ticks,
         IReadOnlyList<CoverageSlice> slices,
         bool databaseUp,
-        Window? window)
+        Window? window,
+        DateTimeOffset asOf)
     {
         Dictionary<string, Dictionary<string, DateTimeOffset?>> bySymbol = new(StringComparer.Ordinal);
         foreach (InstrumentId instrument in _instruments.Instruments)
@@ -255,6 +257,7 @@ public sealed class RecorderHealthService(
                     null,
                     availability.IsListening,
                     availability.Reason,
+                    null,
                     null));
                 continue;
             }
@@ -266,7 +269,8 @@ public sealed class RecorderHealthService(
                     contractId,
                     availability.IsListening,
                     availability.Reason,
-                    lastTick));
+                    lastTick,
+                    TickAgeSeconds(asOf, lastTick)));
             }
         }
 
@@ -277,6 +281,9 @@ public sealed class RecorderHealthService(
         });
         return rows;
     }
+
+    private static double? TickAgeSeconds(DateTimeOffset asOf, DateTimeOffset? lastTick) =>
+        lastTick is { } tick ? (asOf - tick).TotalSeconds : null;
 
     private static bool TryContractsFor(
         Dictionary<string, Dictionary<string, DateTimeOffset?>> bySymbol,

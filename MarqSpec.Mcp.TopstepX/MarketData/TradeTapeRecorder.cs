@@ -59,10 +59,12 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <para>
 /// <b>A session conflict stops this service instead of reconnecting</b> (gh#757). The recorder and
 /// the trading platform share one TopstepX login, and another login disconnects the platform. A hub
-/// close that names another session, or a validate result of invalid session or session not found,
-/// disconnects, waits <see cref="MarketDataOptions.SessionConflictBackoff"/>, and does not subscribe
-/// again. A missing token or an inconclusive probe stops this service without latching that login
-/// closed for REST tools. A transport drop is still restored.
+/// close that names another session, or a validate result of invalid session, session not found, or
+/// HTTP 401, disconnects, waits <see cref="MarketDataOptions.SessionConflictBackoff"/>, and does not
+/// subscribe again. No fresh token stops this service without latching that login closed for REST
+/// tools. A connect that fails without one of those signals, including the first handshake, stays
+/// up and uses the inconclusive-probe backoff. A valid probe connects with automatic reconnect left
+/// off, and the tape claim keeps renewing during that wait (gh#869).
 /// <see cref="MarketDataOptions.StopOnSessionConflict"/> defaults on.
 /// </para>
 /// <para>
@@ -452,12 +454,30 @@ public sealed class TradeTapeRecorder : BackgroundService
                     await _hub.ConnectMarketHubAsync(stoppingToken).ConfigureAwait(false);
                     drain = true;
                 }
-                catch
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
                 {
                     Unhook();
                     _channel.Writer.TryComplete();
                     _lifecycle.Writer.TryComplete();
                     throw;
+                }
+                catch (Exception)
+                {
+                    // A handshake that did not land is not a conflict and not a reason to exit.
+                    // The hooks stay, the claim keeps renewing, and the same backoff as an
+                    // inconclusive probe decides the next connect (gh#869). The exception is not
+                    // logged: a hub failure can carry vendor text.
+                    _logger.LogError(
+                        "The trade-tape recorder could not connect the market hub. It stays up and "
+                        + "will probe again, and it will not call loginKey.");
+                    _tape.Set(TapeAvailability.Reconnecting());
+                    if (_market.StopOnSessionConflict)
+                    {
+                        _loginGate.BeginSuspecting();
+                        await WaitAndReprobeAsync(stoppingToken).ConfigureAwait(false);
+                    }
+
+                    drain = true;
                 }
             }
 
@@ -988,6 +1008,7 @@ public sealed class TradeTapeRecorder : BackgroundService
 
             // Connected is not listening. Tools must refuse until restore completes.
             _telemetry.TapeReconnect(TapeTransition.Connected);
+            _tape.NoteHubReconnect();
             _tape.Set(TapeAvailability.ConnectedButNotSubscribed());
             Enqueue(LifecycleWork.RestoreSubscriptions);
             return;
@@ -997,6 +1018,7 @@ public sealed class TradeTapeRecorder : BackgroundService
             && change.CurrentState != ConnectionState.Connected)
         {
             _telemetry.TapeReconnect(TapeTransition.Disconnected);
+            _tape.NoteHubReconnect();
             _ledger.CloseOpenRangesAt(_clock.GetUtcNow());
             Enqueue(LifecycleWork.PersistCloses);
 
@@ -1485,8 +1507,24 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
         catch (Exception)
         {
+            if (ConflictArmed || _loginGate.StopLatched)
+            {
+                return;
+            }
+
+            if (hub.MarketHubState is ConnectionState.Connected
+                or ConnectionState.Reconnecting
+                or ConnectionState.Connecting)
+            {
+                return;
+            }
+
+            // The exception is not logged. A hub failure can carry vendor text.
             _logger.LogError(
-                "The trade-tape recorder could not reconnect after a hub drop that was not a session conflict. It will not call loginKey.");
+                "The trade-tape recorder could not reconnect after a hub drop that was not a session "
+                + "conflict. It will probe the held token again and will not call loginKey.");
+            _loginGate.BeginSuspecting();
+            await WaitAndReprobeAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 

@@ -28,8 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AutoReconnect` stays off. The wait is one second, doubling to 30 seconds, and it resets
   only after a connect lands, so a hub that stays down does not validate every second. A
   session conflict, `InvalidSession`, HTTP 401, or no fresh token still stops the loop.
-  With `MarketData__StopOnSessionConflict` off, or with no session probe, the same wait
-  connects without a validate call. The tape claim keeps being renewed during the wait.
+  With the switch on and no session probe, a token that expires during the wait stops the
+  loop and does not call loginKey. With the switch off, that wait connects without a
+  validate call while the held token is fresh, and it does not call loginKey. The tape
+  claim keeps being renewed during the wait.
 - **Railway shows log messages again** (gh#873). Railway reads a JSON line's text only from a lowercase
   `message`, and the `json` console formatter writes `Message`, so every entry was blank. The Railway
   template now uses the `simple` formatter on one line with UTC timestamps. Railway no longer gets a level

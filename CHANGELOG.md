@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`get_bars` names its bar-window cap** (gh#868). The tool description states the shipped
   `MaxRows` default, 5000, as a bar count at any resolution. A window over the cap in force
   is refused with the bars it would have needed, that cap, and how to page from the request:
-  a shorter window from the requested start through that many bars at the requested unit, or
+  a shorter window from the requested start through exactly that cap at the requested unit, or
   the smallest bar unit that fits the whole requested window. It does not truncate.
 
 ### Fixed

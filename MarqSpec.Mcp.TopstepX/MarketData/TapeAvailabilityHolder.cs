@@ -36,6 +36,7 @@ public sealed class TapeAvailabilityHolder
     private readonly ConcurrentDictionary<string, TapeAvailability> _unclaimed = new(StringComparer.Ordinal);
     private readonly Func<string, TapeAvailability>? _forProbe;
     private int _hubReconnects;
+    private int _hubConnectionLost;
 
     /// <summary>The production holder. Nothing can replace <see cref="For"/> after this.</summary>
     public TapeAvailabilityHolder()
@@ -57,16 +58,32 @@ public sealed class TapeAvailabilityHolder
     public TapeAvailability Value => _value;
 
     /// <summary>
-    /// Market-hub connection transitions counted in this process since it started.
+    /// Successful market-hub connects, after a previous connection was lost or a connect attempt
+    /// failed, counted in this process since it started.
     /// </summary>
     /// <remarks>
-    /// Zero is a real count: this process has not taken a transition. The export counter is a
-    /// different series and is not read back into the health report (gh#793).
+    /// A clean first connect leaves this at zero, and zero is a real count. The export counter is
+    /// a different series and is not read back into the health report (gh#793).
     /// </remarks>
     public int HubReconnects => Volatile.Read(ref _hubReconnects);
 
-    /// <summary>Counts one market-hub transition. Called where the export counter is incremented.</summary>
-    public void NoteHubReconnect() => Interlocked.Increment(ref _hubReconnects);
+    /// <summary>
+    /// Records that a connection was lost or a connect attempt failed. The next successful connect
+    /// then counts as one reconnect.
+    /// </summary>
+    public void NoteHubConnectionLost() => Interlocked.Exchange(ref _hubConnectionLost, 1);
+
+    /// <summary>
+    /// Counts one reconnect when <see cref="NoteHubConnectionLost"/> has been called since the
+    /// previous successful connect. A clean first connect does not move the count.
+    /// </summary>
+    public void NoteHubReconnect()
+    {
+        if (Interlocked.Exchange(ref _hubConnectionLost, 0) == 1)
+        {
+            Interlocked.Increment(ref _hubReconnects);
+        }
+    }
 
     /// <summary>The current subscription state for one instrument.</summary>
     /// <param name="instrument">The instrument symbol.</param>

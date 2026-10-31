@@ -626,8 +626,8 @@ invite a second writer.
 `get_recorder_health` carries `hubReconnects`, a successful market-hub connect after a connection
 was lost or a connect attempt failed. A clean first connect is zero, and zero is a real count.
 `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus `lastTickUtc`, clamped at zero, and omitted
-when there is no print. A reply reused from the five-second memo keeps that age against the cached
-`asOfUtc` (gh#793).
+when there is no print. A print later than `asOfUtc` is outside the report window and is omitted.
+A reply reused from the five-second memo keeps that age against the cached `asOfUtc` (gh#793).
 
 ## Follow-ups
 

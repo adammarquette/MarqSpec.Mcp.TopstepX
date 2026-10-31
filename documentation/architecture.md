@@ -1323,8 +1323,9 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   `hubReconnects` counts a successful market-hub connect after a connection was lost or a
   connect attempt failed. A clean first connect is zero, and zero is a real count.
   `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus `lastTickUtc`, clamped at zero, and
-  omitted when that contract has no print. A report reused from the five-second memo keeps
-  that age relative to the cached `asOfUtc` (gh#793).
+  omitted when that contract has no print. A print later than `asOfUtc` is outside the
+  report window and is omitted. A report reused from the five-second memo keeps that age
+  relative to the cached `asOfUtc` (gh#793).
   A declared early close shortens only that session. This process reuses a built report for five seconds.
   `/health` stays liveness and the one unauthenticated path.
 - **No REST poller.** Bar, contract and account fetches stay caused by a tool call. The tape recorder is a push

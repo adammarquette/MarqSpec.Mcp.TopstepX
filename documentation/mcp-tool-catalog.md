@@ -1059,8 +1059,9 @@ neither becomes a row, so neither shows up as a session-long gap or keeps the re
 and `tape` are that symbol's tape health. `contractId` is omitted when the symbol has no contract active in
 the session. `lastTickUtc` is omitted when that contract has no print inside the session — a missing print
 time is not filled in. `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus that `lastTickUtc`,
-in seconds, clamped at zero, and is omitted with the print time. Zero is a real age. A reply
-reused from the five-second memo keeps that age against the cached `asOfUtc`. `hubReconnects`
+in seconds, clamped at zero, and is omitted with the print time. Zero is a real age. A print
+later than `asOfUtc` is outside this report's window and is omitted. A reply reused from the
+five-second memo keeps that age against the cached `asOfUtc`. `hubReconnects`
 counts a successful market-hub connect after a connection was lost or a connect attempt failed.
 A clean first connect is zero, and zero is a real count. It is not the export-only
 `mcp.tape.reconnects` series.

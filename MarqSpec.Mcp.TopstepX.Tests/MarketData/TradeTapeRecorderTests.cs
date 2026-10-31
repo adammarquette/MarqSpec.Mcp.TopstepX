@@ -658,6 +658,67 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AFailedFirstConnect_StopsWhenTheHeldTokenExpiresDuringBackoff()
+    {
+        // The switch is on and there is no probe, so a failed handshake retries without
+        // validate. The token is fresh at that failure and expires during the wait. The
+        // retry has to stop instead of connecting, and it must not call loginKey.
+        HeldSession held = new();
+        LoginDouble inner = new();
+        SessionLoginGate gate = new();
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                heldSession: held,
+                loginGate: gate);
+        held.Remember("held-token", clock);
+        hub.Authentication = new GatedAuthenticationService(
+            inner, held, gate, clock, _telemetry);
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && held.TryReadFresh(clock, out _)
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            hub.MarketConnects.Should().Be(0);
+            inner.GetCalls.Should().Be(0);
+
+            clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Stopped
+                && tape.For("ES").Explanation != null
+                && tape.For("ES").Explanation!.Contains("will not call loginKey", StringComparison.Ordinal));
+
+            hub.MarketConnects.Should().Be(0);
+            hub.TradeSubscriptions.Should().BeEmpty();
+            inner.GetCalls.Should().Be(0);
+            tape.For("ES").Explanation.Should().Contain("will not reconnect the market hub");
+
+            clock.Advance(TimeSpan.FromMinutes(1));
+            await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
+            recorder.ExecuteTask!.IsFaulted.Should().BeFalse();
+            hub.MarketConnects.Should().Be(0);
+            inner.GetCalls.Should().Be(0);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task AForcedDisconnectAndReconnect_ResumesPrints_OnlyWhenSubscribeRunsAgain()
     {
         CollectingLogger logger = new();

@@ -330,6 +330,19 @@ fi
 
 ok "  OK  the image's own entrypoint started and answered tools/list"
 
+# gh#867. The SDK's default serverInfo.version is the entry assembly's AssemblyVersion. An image
+# published with no MINVER_VERSION stamps 0.0.0.0 (AssemblyVersion) or, once serverInfo is set from
+# the informational version and the argument is still missing, 0.0.0-alpha.0. Either one is the bug.
+bad='"version"[[:space:]]*:[[:space:]]*"(0\.0\.0\.0|0\.0\.0-alpha\.0)"'
+if grep -Eq "\"serverInfo\"[[:space:]]*:[[:space:]]*\\{[^}]*${bad}" "$OUT"; then
+  die "  UNSTAMPED VERSION  initialize reported serverInfo.version 0.0.0.0 or 0.0.0-alpha.0"
+  die "The image was built without MINVER_VERSION, so MinVer fell back inside the container."
+  die "CI and release.yml pass that build-arg. A local docker build has to as well."
+  exit 1
+fi
+
+ok "  OK  initialize did not report the unstamped version"
+
 # ---------------------------------------------------------------------------
 # 3. And that container ended cleanly. SECOND SIGNAL — see THE DECISION in the header.
 # ---------------------------------------------------------------------------

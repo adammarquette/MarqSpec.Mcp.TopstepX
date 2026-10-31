@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `message`, and the `json` console formatter writes `Message`, so every entry was blank. The Railway
   template now uses the `simple` formatter on one line with UTC timestamps. Railway no longer gets a level
   or attributes; filter by text. Compose and the AWS path keep their formatters.
+- **`initialize` reports the release version** (gh#867). `serverInfo.version` and `/health`'s `version`
+  are the assembly informational version, with `+` build metadata removed. The image build takes
+  `MINVER_VERSION` (`MinVerVersionOverride`) from CI and from the release tag, so an image no longer
+  answers `0.0.0.0`.
 
 ## [0.7.1] - 2026-10-30
 

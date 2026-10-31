@@ -928,6 +928,11 @@ gap made *which release is running* unanswerable in-band: the shipped assembly i
 decision (ADR-0001) and `serverInfo.version` goes out as `0.0.0.0`, and reading either would answer
 confidently and wrongly.
 
+**gh#867 (2026-10-31).** The sentence above describes the image as shipped through v0.7.0. The image build
+now receives the release tag as `MinVerVersionOverride`, and both `/health`'s `version` and
+`serverInfo.version` read the assembly informational version with `+` build metadata removed.
+`Deployment__Version` is not that number.
+
 **So one path is allowed past the gate, and the gate is otherwise untouched.** `GET /health` answers
 `200 application/json`:
 
@@ -1017,10 +1022,10 @@ connection would be load rather than a measurement of it.
 
 **Nothing about the venue, the token or the connection string appears in the body.** This is the only thing on
 the server reachable with no credential and THIS REPOSITORY IS PUBLIC — the store's own unavailable
-explanation, which names the connection string and the fix, is deliberately not written there. `version` and
-`digest` come from an optional `Deployment` section (`Deployment__Version`, `Deployment__ImageDigest`),
-reported as `unknown` when unset and never validated: a probe that refused to answer over a missing stamp
-would fail a healthy task for a cosmetic reason.
+explanation, which names the connection string and the fix, is deliberately not written there. `digest`
+comes from an optional `Deployment` section (`Deployment__ImageDigest`), reported as `unknown` when unset
+and never validated: a probe that refused to answer over a missing stamp would fail a healthy task for a
+cosmetic reason. `version` is the assembly informational version (gh#867), not `Deployment__Version`.
 
 **The static token is unchanged, and so is the composed stack.** ADR-0021 replaces that token with
 Cognito-issued OAuth for the non-loopback instance; `/health` stays unauthenticated in that mode too, for the

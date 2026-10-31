@@ -78,9 +78,11 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 | `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **StaticToken** on `MCP_HTTP_BEARER_TOKEN` in every environment (ADR-0021 exception, temporary), `RecordTape=false` |
 | `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
 
-`Deployment__Version` and `Deployment__ImageDigest` are derived from `SERVER_IMAGE`, never typed separately.
-`/health` therefore reports the pinned tag and digest, and
-[`check-deployment.sh`](../scripts/check-deployment.sh) `<url> X.Y.Z` passes on a correct deploy.
+`Deployment__ImageDigest` is derived from `SERVER_IMAGE`, never typed separately, and `/health` reports
+it as `digest`. `version` is the informational version stamped into that image at build
+(`MinVerVersionOverride`, the release tag). `Deployment__Version` is still set to the same tag so the
+template check can see it; the process does not read it (gh#867).
+[`check-deployment.sh`](../scripts/check-deployment.sh) `<url> X.Y.Z` passes when that stamp is the tag.
 
 **Production and staging keep the Postgres data; other environments are disposable.**
 - `production` and `staging` each require exactly one volume (`postgres-data`, 10 GiB, at

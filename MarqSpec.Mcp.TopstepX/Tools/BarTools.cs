@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
@@ -79,12 +80,25 @@ public sealed class BarTools(
         + "Compare `available.earliest` to `fromUtc`: a later earliest means the vendor and this store "
         + "have no bars before that instant. On Simulated-tier minute bars that edge is a rolling window "
         + "of about nine weeks, not a quiet market; hourly history reaches about a year. The numbers are "
-        + "on the gateway wiki and they age — the timestamps in `available` are the measurement.")]
+        + "on the gateway wiki and they age — the timestamps in `available` are the measurement. "
+        + "A window may span at most " + MarketDataOptions.DefaultMaxRowsText
+        + " bars, the shipped MaxRows default. One-minute windows longer than that are refused. "
+        + "Page with narrower start and end windows, or a coarser unit such as resolutionMinutes 5.")]
     public async Task<ToolPayloads.BarSeries> GetBars(
         [Description("The instrument symbol, e.g. ES.")] string symbol,
-        [Description("The bar size in minutes, e.g. 1, 5, 15, 60.")] int resolutionMinutes,
-        [Description("Window start, ISO-8601 UTC, inclusive.")] DateTimeOffset fromUtc,
-        [Description("Window end, ISO-8601 UTC, exclusive.")] DateTimeOffset toUtc,
+        [Description(
+            "The bar size in minutes, e.g. 1, 5, 15, 60. A finer unit reaches the "
+            + MarketDataOptions.DefaultMaxRowsText
+            + "-bar cap sooner, and a 1-minute window longer than that is refused.")]
+        int resolutionMinutes,
+        [Description(
+            "Window start, ISO-8601 UTC, inclusive. With toUtc and resolutionMinutes the window "
+            + "may span at most " + MarketDataOptions.DefaultMaxRowsText + " bars.")]
+        DateTimeOffset fromUtc,
+        [Description(
+            "Window end, ISO-8601 UTC, exclusive. Narrow this or the start when the window would "
+            + "need more than " + MarketDataOptions.DefaultMaxRowsText + " bars, or use a coarser unit.")]
+        DateTimeOffset toUtc,
         CancellationToken cancellationToken)
     {
         InstrumentId instrument = _resolver.Resolve(symbol);

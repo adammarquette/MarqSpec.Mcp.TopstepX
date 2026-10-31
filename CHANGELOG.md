@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The Railway log formatter is pinned** (gh#878). `check-railway-template.sh` now requires the
   `simple` formatter, `SingleLine` true and `ColorBehavior` `Disabled` (new in the template), so a return to
   `json` fails CI instead of blanking Railway's log messages again.
+- **`initialize` reports the release version** (gh#867). `serverInfo.version` and `/health`'s `version`
+  are the assembly informational version, with `+` build metadata removed. The image build takes
+  `MINVER_VERSION` (`MinVerVersionOverride`) from CI and from the release tag, so an image no longer
+  answers `0.0.0.0`.
 
 ## [0.7.1] - 2026-10-30
 

@@ -19,7 +19,8 @@ images stay private on GHCR, and TopstepX ships only as an image.
 1. **`.railway/railway.ts` describes the Railway project.** This is Railway's Infrastructure-as-Code file;
    the legacy `railway.json` / `railway.toml` is deprecated and not used.
 2. **Image sources only.** `server` and `recorder` run ONE GHCR image constant, pinned `X.Y.Z@sha256:`, with
-   auto-updates off. `Deployment__Version` / `Deployment__ImageDigest` are derived from that constant.
+   auto-updates off. `Deployment__ImageDigest` is what `/health` reports as `digest`, derived from that
+   constant. `Deployment__Version` is set to the same tag; the process reports the image stamp (gh#867).
    Postgres is `timescale/timescaledb-ha:pg17`, pinned by digest. Railway never builds this repository.
 3. **Two roles from one image.** `server` is public and runs OAuth; its resource URL is its own Railway
    domain over https. `recorder` records the tape, is private, has no OAuth keys, and runs one replica.

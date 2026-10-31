@@ -157,23 +157,24 @@ public sealed class HealthEndpointTests
     }
 
     [Fact]
-    public async Task TheProbeReportsUnknown_WhenNothingStampedAVersionOrADigest()
+    public async Task TheProbeReportsTheReleaseVersion_AndAnUnknownDigest_WhenTheDeploymentStampedNothing()
     {
-        // The shipped assembly is stamped 0.0.0-alpha.0 by decision (ADR-0001), so there is no version to
-        // read out of the process -- only one a deployment hands it. "unknown" is the honest answer, and a
-        // missing number reported as missing is this repository's rule rather than this endpoint's habit.
+        // version is the assembly informational version (gh#867). The digest still has nowhere to
+        // come from but the deployment, so an unset one stays unknown.
         await using Probe probe = await StartAsync();
 
         JsonElement body = await ReadJsonAsync(await probe.Client.GetAsync("/health"));
 
-        body.GetProperty("version").GetString().Should().Be("unknown");
+        body.GetProperty("version").GetString().Should().Be(ProductVersion.Read());
+        body.GetProperty("version").GetString().Should().NotBe("0.0.0.0");
         body.GetProperty("digest").GetString().Should().Be("unknown");
     }
 
     [Fact]
-    public async Task TheProbeReportsWhatTheDeploymentStamped()
+    public async Task TheProbeReportsTheDigestTheDeploymentStamped_AndNotThatStampAsTheVersion()
     {
-        // The task definition sets these; nothing in the repository declares a version in a file.
+        // A Deployment__Version beside the process does not replace the assembly stamp (gh#867).
+        // The digest still comes from the deployment, because the assembly does not carry one.
         await using Probe probe = await StartAsync(extra: new Dictionary<string, string?>
         {
             ["Deployment:Version"] = "0.4.0",
@@ -182,7 +183,8 @@ public sealed class HealthEndpointTests
 
         JsonElement body = await ReadJsonAsync(await probe.Client.GetAsync("/health"));
 
-        body.GetProperty("version").GetString().Should().Be("0.4.0");
+        body.GetProperty("version").GetString().Should().Be(ProductVersion.Read());
+        body.GetProperty("version").GetString().Should().NotBe("0.4.0");
         body.GetProperty("digest").GetString().Should().Be("sha256:9f2c1d");
     }
 

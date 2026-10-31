@@ -141,10 +141,9 @@ public sealed class TelemetryCompositionTests
         attributes.Should().ContainKey("service.name")
             .WhoseValue.Should().Be(OtelOptions.DefaultServiceName);
 
-        // service.version is the ASSEMBLY's, and it is present rather than correct: ADR-0001 makes the git tag
-        // the version and the container stamps 0.0.0-alpha.0 by decision, so what this pins is that the
-        // attribute is always there and never blank. gh#513's Deployment__Version is what will make it mean
-        // something on a deployed instance.
+        // service.version is ProductVersion: the informational version, without + build metadata.
+        // The same string /health and serverInfo report (gh#867). What this pins is that the attribute
+        // is always there and never blank.
         attributes.Should().ContainKey("service.version");
         attributes["service.version"].As<string>().Should().NotBeNullOrWhiteSpace();
     }

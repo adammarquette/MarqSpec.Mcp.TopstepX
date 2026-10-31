@@ -560,10 +560,10 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     /// row cap stops being the binding one, and the refusal says so rather than faulting below this boundary.
     /// <para>
     /// <b>An over-cap window refuses and reports the real count.</b> It names the bars the window would
-    /// have needed, the cap, and how to page: narrower start and end windows, or a coarser unit, with a
-    /// concrete example of a one-minute window that fits. It does not truncate: a shortened series arrives
-    /// looking exactly like a complete one, and the part that was cut is the part the caller was reaching
-    /// for.
+    /// have needed, the cap, and how to page from that request: a shorter window from its start through
+    /// <see cref="MaxRows"/> bars at the requested unit, or the smallest bar unit that fits the whole
+    /// window. It does not truncate: a shortened series arrives looking exactly like a complete one, and
+    /// the part that was cut is the part the caller was reaching for.
     /// </para>
     /// </remarks>
     public BarRange ValidateWindow(DateTimeOffset fromUtc, DateTimeOffset toUtc, int resolutionMinutes)
@@ -581,7 +581,7 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
         long buckets = (toUtc - fromUtc).Ticks / TimeSpan.FromMinutes(resolutionMinutes).Ticks;
         if (buckets > MaxRows)
         {
-            throw new McpException(RowCapRefusal(buckets, resolutionMinutes, MaxRows));
+            throw new McpException(RowCapRefusal(fromUtc, toUtc, buckets, resolutionMinutes, MaxRows));
         }
 
         // The row cap is checked FIRST, and that order is the message. Both caps bound the same quantity, so
@@ -595,42 +595,85 @@ public sealed class ToolGuards(IOptions<MarketDataOptions> options)
     }
 
     /// <summary>
-    /// The row-cap refusal: bars needed, the cap, and a page the caller can send.
+    /// The row-cap refusal: bars needed, the cap, and a page built from this request.
     /// </summary>
+    /// <param name="fromUtc">The start the caller asked for.</param>
+    /// <param name="toUtc">The end the caller asked for.</param>
     /// <param name="buckets">The bars the window would have needed.</param>
     /// <param name="resolutionMinutes">The bar size the count was measured at.</param>
     /// <param name="cap">The cap the window is over. <see cref="MaxRows"/>, not a literal.</param>
     /// <returns>The message.</returns>
     /// <remarks>
-    /// The example is one-minute bars from a fixed instant through <paramref name="cap"/> minutes later,
-    /// which is exactly <paramref name="cap"/> bars and therefore inside the check above it. The same
-    /// clock span at resolutionMinutes 5 is the coarser unit. Both ends are computed from
-    /// <paramref name="cap"/> so the sentence cannot name a different limit from the one it enforced.
+    /// The shorter window keeps <paramref name="fromUtc"/> and runs <paramref name="cap"/> bars at the
+    /// requested unit, which the check above accepts. The other page is the smallest minute size at which
+    /// the whole requested span is within the cap, and only when that size is one this server serves.
     /// </remarks>
-    private static string RowCapRefusal(long buckets, int resolutionMinutes, int cap)
+    private static string RowCapRefusal(
+        DateTimeOffset fromUtc,
+        DateTimeOffset toUtc,
+        long buckets,
+        int resolutionMinutes,
+        int cap)
     {
-        DateTimeOffset exampleStart = new(2026, 10, 27, 0, 0, 0, TimeSpan.Zero);
-        DateTimeOffset exampleEnd = exampleStart.AddMinutes(cap);
-        string start = exampleStart.ToString(
-            "yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
-        string end = exampleEnd.ToString(
-            "yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
+        string resolution = resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string needed = buckets.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        string limit = cap.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
         return "That window needs "
-            + buckets.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + needed
             + " bars at "
-            + resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + resolution
             + "-minute resolution, over this server's cap of "
-            + cap.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            + " bars. Page with narrower start and end windows, or a coarser unit. For example, "
-            + "one-minute bars from "
-            + start
-            + " to "
-            + end
-            + " stay within the cap; the same span at resolutionMinutes 5 is a coarser unit. "
+            + limit
+            + " bars. Page with narrower start and end windows, or a coarser unit. "
+            + NarrowerWindow(fromUtc, resolutionMinutes, cap)
+            + CoarserUnit(fromUtc, toUtc, cap)
             + "The read is refused rather than truncated, because a shortened series is "
             + "indistinguishable from a complete one.";
     }
+
+    /// <summary>A same-unit window from the request's start that is exactly the cap.</summary>
+    private static string NarrowerWindow(DateTimeOffset fromUtc, int resolutionMinutes, int cap)
+    {
+        DateTimeOffset start = fromUtc.ToUniversalTime();
+        string resolution = resolutionMinutes.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        long add = (long)cap * resolutionMinutes * TimeSpan.TicksPerMinute;
+        if (add <= 0 || start.Ticks > DateTimeOffset.MaxValue.Ticks - add)
+        {
+            return "The first " + cap.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " " + resolution + "-minute bars from " + Stamp(start) + " stay within the cap. ";
+        }
+
+        DateTimeOffset end = new(start.Ticks + add, TimeSpan.Zero);
+        return resolution
+            + "-minute bars from "
+            + Stamp(start)
+            + " to "
+            + Stamp(end)
+            + " stay within the cap. ";
+    }
+
+    /// <summary>
+    /// The smallest served bar unit that holds the whole requested span, when there is one.
+    /// </summary>
+    private static string CoarserUnit(DateTimeOffset fromUtc, DateTimeOffset toUtc, int cap)
+    {
+        // buckets(r) = duration / (r * one minute) <= cap iff duration < (cap + 1) * r * one minute,
+        // so the smallest such r is one more than the integer quotient.
+        long duration = (toUtc - fromUtc).Ticks;
+        long smallest = duration / ((cap + 1L) * TimeSpan.TicksPerMinute) + 1L;
+        if (smallest < 1 || smallest > MaxResolutionMinutes)
+        {
+            return "No bar unit this server serves covers that whole window, so narrow the start and end. ";
+        }
+
+        return "The smallest bar unit that fits the whole window is resolutionMinutes "
+            + smallest.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ". ";
+    }
+
+    private static string Stamp(DateTimeOffset instant) =>
+        instant.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>
     /// Validates a requested bar count.

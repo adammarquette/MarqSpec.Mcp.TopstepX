@@ -286,10 +286,11 @@ the boundary (gh#110).
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
 
-A window may span at most `MaxRows` bars — **5000** unless an operator set it, the number the tool
-description and `resolutionMinutes`, `fromUtc` and `toUtc` state. Over that the read refuses, naming the
-bars the window would have needed, the cap, and how to page: narrower start and end windows, or a coarser
-unit, with a concrete example (gh#868). It does not truncate.
+A window may span at most `MaxRows` bars. The shipped default is 5000, and that is the number the
+`get_bars` description and `resolutionMinutes`, `fromUtc` and `toUtc` state. An operator can set a
+different cap; the refusal names the cap in force. Over it the read refuses, naming the bars the window
+would have needed and how to page: narrower start and end windows, or a coarser unit, with a concrete
+example (gh#868). It does not truncate.
 
 Returns `{ symbol, resolutionMinutes, bars: [{ t, o, h, l, c, v }], fetchedBuckets, venueRequests,
 contracts: { span, segments: [{ contractId, firstBucket, lastBucket, barCount }] },

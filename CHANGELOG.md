@@ -13,6 +13,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-31
+
+### Added
+
+- **A required store exits, and one lock covers the migration apply** (gh#843). `Store__Required`
+  defaults to false. When it is true, an unreachable store or a dropped migration connection (a
+  socket reset, or Postgres `57P01` or `57P03`, including the `InvalidOperationException` EF wraps
+  around that SQLSTATE) logs an error and the process exits.
+  `reselect-bars`, `export-tape` and `import-tape` return their store exit codes. The apply holds
+  one session advisory lock. A second process waits up to `Migrations__LockWaitSeconds`
+  (default 300), separate from the per-command timeout. A wait that times out is the store
+  unavailable. The recorder makes no lease or tape attempt while the store is
+  unavailable at startup.
+- **`get_recorder_health` reports hub reconnects and last-tick age** (gh#793).
+  `hubReconnects` counts a successful market-hub connect after a previous connection was
+  lost or a connect attempt failed. A clean first connect is zero, and zero is reported.
+  `lastTickAgeSeconds` is the report's `asOfUtc` minus `lastTickUtc`, in seconds, on the
+  wall clock, clamped at zero, and omitted when there is no print. A print later than
+  `asOfUtc` is outside the report window and is omitted. A reply reused from the
+  five-second memo keeps the age relative to that reply's `asOfUtc`.
+
 ### Changed
 
 - **`get_bars` names its bar-window cap** (gh#868). The tool description states the shipped
@@ -44,30 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MINVER_VERSION` (`MinVerVersionOverride`) from CI and from the release tag, so an image no longer
   answers `0.0.0.0`. A `Deployment__Version` that is set and differs from that stamp is one startup
   warning; a match or an unset key is silent.
-
-### Added
-
-- **`get_recorder_health` reports hub reconnects and last-tick age** (gh#793).
-  `hubReconnects` counts a successful market-hub connect after a previous connection was
-  lost or a connect attempt failed. A clean first connect is zero, and zero is reported.
-  `lastTickAgeSeconds` is the report's `asOfUtc` minus `lastTickUtc`, in seconds, on the
-  wall clock, clamped at zero, and omitted when there is no print. A print later than
-  `asOfUtc` is outside the report window and is omitted. A reply reused from the
-  five-second memo keeps the age relative to that reply's `asOfUtc`.
-
-## [0.7.1] - 2026-10-30
-
-### Added
-
-- **A required store exits, and one lock covers the migration apply** (gh#843). `Store__Required`
-  defaults to false. When it is true, an unreachable store or a dropped migration connection (a
-  socket reset, or Postgres `57P01` or `57P03`, including the `InvalidOperationException` EF wraps
-  around that SQLSTATE) logs an error and the process exits.
-  `reselect-bars`, `export-tape` and `import-tape` return their store exit codes. The apply holds
-  one session advisory lock. A second process waits up to `Migrations__LockWaitSeconds`
-  (default 300), separate from the per-command timeout. A wait that times out is the store
-  unavailable. The recorder makes no lease or tape attempt while the store is
-  unavailable at startup.
 
 ## [0.7.0] - 2026-10-30
 

@@ -555,6 +555,56 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AFailedFirstConnect_RetriesWhenStopOnSessionConflictIsOff()
+    {
+        // The switch off used to leave the process at Reconnecting with nothing queued.
+        // The same one-second backoff must connect, and must not turn AutoReconnect on.
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = false,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                stopOnSessionConflict: false,
+                webSocketOptions: sockets);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            sockets.AutoReconnect.Should().BeFalse();
+            hub.MarketConnects.Should().Be(0);
+            hub.TradeSubscriptions.Should().BeEmpty();
+
+            hub.ConnectThrows = null;
+            clock.Advance(SessionReprobe.MinimumInterval);
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening
+                && hub.MarketConnects == 1);
+
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task AForcedDisconnectAndReconnect_ResumesPrints_OnlyWhenSubscribeRunsAgain()
     {
         CollectingLogger logger = new();

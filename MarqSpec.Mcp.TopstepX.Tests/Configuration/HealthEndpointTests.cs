@@ -1,4 +1,6 @@
 using System.Net;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
@@ -185,6 +187,40 @@ public sealed class HealthEndpointTests
     }
 
     [Fact]
+    public async Task InitializeReportsTheSameVersionHealthDoes_AndNotTheUnstampedAssembly()
+    {
+        // gh#867. A production initialize answered serverInfo.version 0.0.0.0 while /health
+        // answered the release. The SDK fills serverInfo from AssemblyVersion when nothing
+        // sets it, and an image built without git history stamps that 0.0.0.0. The two
+        // answers are one number, and that number is not the unstamped assembly.
+        await using Probe probe = await StartAsync();
+
+        string? healthVersion = (await ReadJsonAsync(await probe.Client.GetAsync("/health")))
+            .GetProperty("version").GetString();
+
+        using HttpRequestMessage initialize = new(HttpMethod.Post, "/mcp")
+        {
+            Content = new StringContent(
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{"
+                + "\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},"
+                + "\"clientInfo\":{\"name\":\"version-test\",\"version\":\"1.0\"}}}",
+                Encoding.UTF8,
+                "application/json"),
+        };
+        initialize.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        initialize.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        initialize.Headers.Authorization = new AuthenticationHeaderValue("Bearer", TokenSentinel);
+
+        using HttpResponseMessage response = await probe.Client.SendAsync(initialize);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        string? serverVersion = ServerInfoVersion(await response.Content.ReadAsStringAsync());
+
+        serverVersion.Should().Be(healthVersion);
+        serverVersion.Should().NotBe("0.0.0.0");
+    }
+
+    [Fact]
     public async Task TheProbeCarriesNothingWorthStealing()
     {
         // THIS REPOSITORY IS PUBLIC and the endpoint is the one thing on it reachable with no credential.
@@ -272,5 +308,46 @@ public sealed class HealthEndpointTests
 
         HealthEndpoint.IsProbePath(context.Request.Path).Should().BeFalse();
         Program.IsTraced(context).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The <c>serverInfo.version</c> from an initialize body, whether the transport wrote JSON or an SSE
+    /// <c>data:</c> frame.
+    /// </summary>
+    private static string? ServerInfoVersion(string body)
+    {
+        foreach (string candidate in JsonCandidates(body))
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(candidate);
+                if (document.RootElement.TryGetProperty("result", out JsonElement result)
+                    && result.TryGetProperty("serverInfo", out JsonElement serverInfo)
+                    && serverInfo.TryGetProperty("version", out JsonElement version))
+                {
+                    return version.GetString();
+                }
+            }
+            catch (JsonException)
+            {
+                // A leading SSE event line is not the frame.
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> JsonCandidates(string body)
+    {
+        yield return body.Trim();
+
+        foreach (string line in body.Split('\n'))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.StartsWith("data:", StringComparison.Ordinal))
+            {
+                yield return trimmed["data:".Length..].Trim();
+            }
+        }
     }
 }

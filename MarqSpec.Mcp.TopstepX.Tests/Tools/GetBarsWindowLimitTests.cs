@@ -38,6 +38,9 @@ public sealed class GetBarsWindowLimitTests
         tool.Should().MatchRegex(
             limitPattern,
             "the tool description is what an agent reads before it asks, and the cap has to be in it");
+        tool.Should().Contain("at any resolution");
+        tool.Should().Contain("every unit");
+        tool.Should().NotContain("One-minute windows longer");
 
         foreach (string parameter in new[] { "resolutionMinutes", "fromUtc", "toUtc" })
         {

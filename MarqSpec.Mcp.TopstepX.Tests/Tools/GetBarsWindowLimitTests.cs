@@ -21,7 +21,7 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 /// </remarks>
 public sealed class GetBarsWindowLimitTests
 {
-    private static readonly DateTimeOffset _exampleStart = new(2026, 10, 27, 0, 0, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset _requestStart = new(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
 
     [Fact]
     public void GetBarsDescriptions_StateTheShippedBarLimit()
@@ -67,17 +67,21 @@ public sealed class GetBarsWindowLimitTests
         }
     }
 
-    [Fact]
-    public void AnOverCapOneMinuteWindow_NamesTheBarsNeededTheLimitAndHowToPage()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(60)]
+    public void AnOverCapWindow_PagesFromThatRequest(int resolutionMinutes)
     {
         int limit = MarketDataOptions.DefaultMaxRows;
         long needed = limit + 1L;
+        int smallest = resolutionMinutes + 1;
         ToolGuards guards = Guards(limit);
-        DateTimeOffset start = new(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
+        DateTimeOffset end = _requestStart.AddMinutes(needed * resolutionMinutes);
+        DateTimeOffset fittingEnd = _requestStart.AddMinutes((double)limit * resolutionMinutes);
 
-        Action validate = () => guards.ValidateWindow(start, start.AddMinutes(needed), 1);
+        string message = ((Action)(() => guards.ValidateWindow(_requestStart, end, resolutionMinutes)))
+            .Should().Throw<McpException>().Which.Message;
 
-        string message = validate.Should().Throw<McpException>().Which.Message;
         message.Should().Contain(
             needed.ToString(CultureInfo.InvariantCulture),
             "the refusal names the bars the window would have needed");
@@ -86,42 +90,52 @@ public sealed class GetBarsWindowLimitTests
             "and the cap it is over");
         message.Should().Contain("narrower start and end");
         message.Should().Contain("coarser unit");
-        message.Should().Contain(Stamp(_exampleStart));
-        message.Should().Contain(Stamp(_exampleStart.AddMinutes(limit)));
-        message.Should().Contain("resolutionMinutes 5");
+        message.Should().Contain(
+            resolutionMinutes.ToString(CultureInfo.InvariantCulture)
+            + "-minute bars from "
+            + Stamp(_requestStart));
+        message.Should().Contain(Stamp(fittingEnd));
+        message.Should().Contain(
+            "resolutionMinutes " + smallest.ToString(CultureInfo.InvariantCulture),
+            "the coarser unit is the smallest one that fits this window, not a fixed five minutes");
+        message.Should().NotContain("resolutionMinutes 5");
+        message.Should().NotContain("one-minute");
         message.Should().NotContain(
             "gap-detection pass",
             "this refusal is the row cap's, not the fixed detection cap");
+
+        BarRange fitting = guards.ValidateWindow(_requestStart, fittingEnd, resolutionMinutes);
+        fitting.Start.Should().Be(_requestStart);
+        fitting.End.Should().Be(fittingEnd);
+
+        Action oneMore = () => guards.ValidateWindow(
+            _requestStart, fittingEnd.AddMinutes(resolutionMinutes), resolutionMinutes);
+        oneMore.Should().Throw<McpException>();
+
+        BarRange whole = guards.ValidateWindow(_requestStart, end, smallest);
+        whole.Duration.Should().Be(end - _requestStart);
+
+        Action stillTooFine = () => guards.ValidateWindow(_requestStart, end, smallest - 1);
+        stillTooFine.Should().Throw<McpException>(
+            "one minute finer than the suggested unit is still over the cap");
     }
 
     [Fact]
-    public void TheExampleWindow_FitsAndTheNextMinuteDoesNot()
+    public void TheSuggestedUnit_IsTheSmallestThatFitsTheWholeWindow()
     {
-        int limit = MarketDataOptions.DefaultMaxRows;
-        ToolGuards guards = Guards(limit);
-        DateTimeOffset exampleEnd = _exampleStart.AddMinutes(limit);
+        // Eleven minutes at a cap of five: two-minute bars are 5 buckets and fit, three-minute bars
+        // also fit, and the message has to name the smaller of those.
+        const int cap = 5;
+        ToolGuards guards = Guards(cap);
+        DateTimeOffset end = _requestStart.AddMinutes(11);
 
-        BarRange window = guards.ValidateWindow(_exampleStart, exampleEnd, 1);
-        window.Start.Should().Be(_exampleStart);
-        window.End.Should().Be(exampleEnd);
+        string message = ((Action)(() => guards.ValidateWindow(_requestStart, end, 1)))
+            .Should().Throw<McpException>().Which.Message;
 
-        Action oneMore = () => guards.ValidateWindow(_exampleStart, exampleEnd.AddMinutes(1), 1);
-        oneMore.Should().Throw<McpException>()
-            .WithMessage("*" + (limit + 1).ToString(CultureInfo.InvariantCulture) + "*");
-    }
+        message.Should().Contain("resolutionMinutes 2");
+        message.Should().NotContain("resolutionMinutes 3");
 
-    [Fact]
-    public void TheSameClockSpanAtFiveMinutes_FitsInsideTheCap()
-    {
-        // The coarser-unit advice has to be true of the window the refusal just rejected.
-        int limit = MarketDataOptions.DefaultMaxRows;
-        long needed = limit + 1L;
-        ToolGuards guards = Guards(limit);
-        DateTimeOffset start = new(2026, 10, 1, 0, 0, 0, TimeSpan.Zero);
-
-        BarRange window = guards.ValidateWindow(start, start.AddMinutes(needed), 5);
-
-        window.Duration.Should().Be(TimeSpan.FromMinutes(needed));
+        guards.ValidateWindow(_requestStart, end, 2).Duration.Should().Be(TimeSpan.FromMinutes(11));
     }
 
     private static ToolGuards Guards(int maxRows) =>

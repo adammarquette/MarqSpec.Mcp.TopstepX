@@ -470,6 +470,91 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task ASuccessfulConnect_ResetsTheProbeBackoff_ToOneSecond()
+    {
+        // The wait grows while the hub stays down, then a connect that lands starts the
+        // next outage at one second again. Resetting before that connect lands keeps the
+        // loop at one second forever (gh#869).
+        ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
+        MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new()
+        {
+            AutoReconnect = true,
+        };
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                leaseTimeToLive: TimeSpan.FromHours(1),
+                sessionProbe: probe,
+                webSocketOptions: sockets);
+
+        hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+            await WaitUntil(() =>
+                tape.For("ES").Reason == TapeUnavailableReason.Reconnecting
+                && clock.DelayCalls >= 2
+                && recorder.ExecuteTask is { IsCompleted: false });
+
+            int armed = clock.DelayCalls;
+            foreach (int second in new[] { 1, 2 })
+            {
+                int calls = probe.Calls;
+                clock.Advance(TimeSpan.FromSeconds(second) - TimeSpan.FromMilliseconds(1));
+                probe.Calls.Should().Be(calls, "a failed connect must not collapse the next wait");
+                clock.Advance(TimeSpan.FromMilliseconds(1));
+                await WaitUntil(() => probe.Calls == calls + 1);
+                await WaitUntil(() => clock.DelayCalls > armed);
+                armed = clock.DelayCalls;
+            }
+
+            hub.ConnectThrows = null;
+            int callsBeforeSuccess = probe.Calls;
+            clock.Advance(TimeSpan.FromSeconds(4) - TimeSpan.FromMilliseconds(1));
+            probe.Calls.Should().Be(
+                callsBeforeSuccess,
+                "the connect that lands is the four second wait, not an early one");
+            clock.Advance(TimeSpan.FromMilliseconds(1));
+            await WaitUntil(() =>
+                hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId)
+                && tape.For("ES").IsListening);
+
+            hub.MarketConnects.Should().Be(1);
+            sockets.AutoReconnect.Should().BeFalse();
+
+            hub.ConnectThrows = new InvalidOperationException("the market hub refused the handshake");
+            int connects = hub.MarketConnects;
+            int callsBeforeDrop = probe.Calls;
+            hub.SimulateMarketDisconnect();
+            await WaitUntil(() =>
+                probe.Calls > callsBeforeDrop
+                && clock.DelayCalls > armed
+                && hub.MarketConnects == connects
+                && !tape.For("ES").IsListening);
+
+            int callsAfterTheThrow = probe.Calls;
+            clock.Advance(TimeSpan.FromSeconds(1) - TimeSpan.FromMilliseconds(1));
+            probe.Calls.Should().Be(
+                callsAfterTheThrow,
+                "the outage after a successful connect starts again at one second");
+            clock.Advance(TimeSpan.FromMilliseconds(1));
+            await WaitUntil(() => probe.Calls > callsAfterTheThrow);
+
+            sockets.AutoReconnect.Should().BeFalse();
+            recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task AForcedDisconnectAndReconnect_ResumesPrints_OnlyWhenSubscribeRunsAgain()
     {
         CollectingLogger logger = new();

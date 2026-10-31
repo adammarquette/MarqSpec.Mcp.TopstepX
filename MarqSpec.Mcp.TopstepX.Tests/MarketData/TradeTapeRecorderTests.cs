@@ -365,7 +365,11 @@ public sealed class TradeTapeRecorderTests
         // and ExecuteTask must still be running. Automatic reconnect stays off.
         ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
         MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
             Build(
                 McpTransport.Http,
                 recordTape: true,
@@ -2975,7 +2979,11 @@ public sealed class TradeTapeRecorderTests
         // connect, and the subscriptions must come back. Automatic reconnect stays off.
         ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Valid };
         MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
             Build(
                 McpTransport.Http,
                 recordTape: true,
@@ -3036,7 +3044,11 @@ public sealed class TradeTapeRecorderTests
         };
         HeldSession? held = noToken ? new HeldSession() : null;
         MarqSpec.Client.ProjectX.Configuration.WebSocketOptions sockets = new() { AutoReconnect = true };
-        (TradeTapeRecorder recorder, FakeMarketHub hubClient, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hubClient,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
             Build(
                 McpTransport.Http,
                 recordTape: true,
@@ -3098,7 +3110,11 @@ public sealed class TradeTapeRecorderTests
         DateTimeOffset fridayEvening = MarketClock
             .FromMarket(new DateOnly(2026, 8, 28), new TimeOnly(20, 40))
             .ToUniversalTime();
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
             Build(McpTransport.Http, recordTape: true, leaseTimeToLive: TimeSpan.FromHours(1));
 
         await using (services)
@@ -3127,7 +3143,11 @@ public sealed class TradeTapeRecorderTests
         // claim and invite a second writer.
         ScriptedSessionProbe probe = new() { Verdict = SessionProbeVerdict.Inconclusive };
         TimeSpan timeToLive = TimeSpan.FromSeconds(3);
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
             Build(
                 McpTransport.Http,
                 recordTape: true,
@@ -3231,7 +3251,11 @@ public sealed class TradeTapeRecorderTests
     [Fact]
     public async Task GetRecorderHealth_ReportsHubReconnects_AndOmitsLastTickAgeWhenThereIsNoPrint()
     {
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
+        (TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            RecordingClock clock) =
             Build(McpTransport.Http, recordTape: true, leaseTimeToLive: TimeSpan.FromHours(1));
 
         await using (services)

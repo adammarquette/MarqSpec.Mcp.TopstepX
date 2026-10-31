@@ -283,7 +283,7 @@ public sealed class RecorderHealthService(
     }
 
     private static double? TickAgeSeconds(DateTimeOffset asOf, DateTimeOffset? lastTick) =>
-        lastTick is { } tick ? (asOf - tick).TotalSeconds : null;
+        lastTick is { } tick ? Math.Max(0, (asOf - tick).TotalSeconds) : null;
 
     private static bool TryContractsFor(
         Dictionary<string, Dictionary<string, DateTimeOffset?>> bySymbol,

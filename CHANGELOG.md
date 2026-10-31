@@ -13,6 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed tape connect retries on the probe backoff** (gh#869). A handshake that throws,
+  including the first one and a throw after a valid probe, no longer ends the recorder.
+  `AutoReconnect` stays off. The wait is one second, doubling to 30 seconds, and it resets
+  only after a connect lands, so a hub that stays down does not validate every second. A
+  session conflict, `InvalidSession`, HTTP 401, or no fresh token still stops the loop.
+  With `MarketData__StopOnSessionConflict` off, or with no session probe, the same wait
+  connects without a validate call. The tape claim keeps being renewed during the wait.
+
+### Added
+
+- **`get_recorder_health` reports hub reconnects and last-tick age** (gh#793).
+  `hubReconnects` counts a successful market-hub connect after a previous connection was
+  lost or a connect attempt failed. A clean first connect is zero, and zero is reported.
+  `lastTickAgeSeconds` is the report's `asOfUtc` minus `lastTickUtc`, in seconds, on the
+  wall clock, clamped at zero, and omitted when there is no print. A reply reused from
+  the five-second memo keeps the age relative to that reply's `asOfUtc`.
+
 ## [0.7.1] - 2026-10-30
 
 ### Added

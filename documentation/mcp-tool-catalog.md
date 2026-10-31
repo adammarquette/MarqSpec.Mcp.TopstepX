@@ -1047,10 +1047,12 @@ covered inside the elapsed session. A rolled-off contract, and a symbol that is 
 neither becomes a row, so neither shows up as a session-long gap or keeps the report degraded. `listening`
 and `tape` are that symbol's tape health. `contractId` is omitted when the symbol has no contract active in
 the session. `lastTickUtc` is omitted when that contract has no print inside the session — a missing print
-time is not filled in. `lastTickAgeSeconds` is `asOfUtc` minus that `lastTickUtc`, in seconds, and is
-omitted with the print time. Zero is a real age. `hubReconnects` is how many market-hub connection
-transitions this process has counted since it started. Zero is a real count: this process has not
-connected. It is not the export-only `mcp.tape.reconnects` series.
+time is not filled in. `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus that `lastTickUtc`,
+in seconds, clamped at zero, and is omitted with the print time. Zero is a real age. A reply
+reused from the five-second memo keeps that age against the cached `asOfUtc`. `hubReconnects`
+counts a successful market-hub connect after a connection was lost or a connect attempt failed.
+A clean first connect is zero, and zero is a real count. It is not the export-only
+`mcp.tape.reconnects` series.
 
 `session` is the product session in progress, or the one that most recently closed when the market is shut.
 It is omitted when the calendar cannot name one. A declared early close (`MarketData__EarlyCloses`) applies

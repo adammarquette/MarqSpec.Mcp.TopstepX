@@ -1181,6 +1181,8 @@ public static class Program
             logger.LogWarning("{Explanation}", unavailable.Explanation);
             return unavailable;
         }
+        // A socket reset, Postgres 57P01 or 57P03, and the one InvalidOperationException EF
+        // wraps around them. A different exception that only nests one of those still fails.
         catch (Exception ex) when (IsDroppedStoreConnection(ex))
         {
             // The database was there a moment ago and went away mid-migration -- still an environment fact,

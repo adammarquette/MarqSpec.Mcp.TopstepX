@@ -126,7 +126,8 @@ public sealed class MigrationOptionsTests
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
 
-        // Same strip as StoreOptionsTests: a shell exporting Migrations__* would leak into the absent-key case.
+        // Same strip as StoreOptionsTests: a shell exporting Migrations__* would leak into the
+        // absent-key case.
         IConfigurationBuilder sources = builder.Configuration;
         foreach (EnvironmentVariablesConfigurationSource ambient in sources.Sources
             .OfType<EnvironmentVariablesConfigurationSource>()

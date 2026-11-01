@@ -4,7 +4,8 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// Hook when a write is refused because the account stage parsed as unknown (ADR-0024 §2).
 /// </summary>
 /// <remarks>
-/// OpenTelemetry metric and alert wiring lands in gh#732 (ADR-0024 §2; gh#733 was a duplicate).
+/// The alert series is <c>mcp.execution.writes</c> with <c>refusal=unknown_account_stage</c> (gh#732).
+/// Production leaves this hook unused.
 /// </remarks>
 public interface ITradingUnknownStageRefusalSignal
 {

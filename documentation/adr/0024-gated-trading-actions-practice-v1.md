@@ -421,3 +421,17 @@ not start until v1 is shipped and a separate ADR amendment is accepted.
 | gh#722 | **Epic: v2 trading on evaluation/funded accounts** (out of v1 scope) |
 
 *Assisted-by: Cursor Cloud Agent*
+
+## Update (2026-11-01) — the unknown-stage alert (gh#732)
+
+gh#733 in the follow-up table was a duplicate of gh#732. The parser-gap series is the existing counter
+`mcp.execution.writes` with `refusal=unknown_account_stage`. It increments by one when
+`RefuseIfStageBlocksWrite` sees `AccountStage.Unknown`, including a `dryRun` preview, and not when the
+stage is practice or a known non-practice family. No account id and no account name are tags. The
+refusal itself is unchanged.
+
+The alert rule is the sum of that tagged count at least 1 over 5 minutes. Missing data does not
+breach. It is defined and unwired: Railway sets `Otel__ServiceName` and no endpoint, and no endpoint
+means the server emits no telemetry (ADR-0019). Choosing a Railway telemetry backend is a later
+decision. This record does not set an endpoint. The same words are in
+[deployment.md](../deployment.md#unknown-account-stage-gh732).

@@ -1,6 +1,8 @@
 namespace MarqSpec.Mcp.TopstepX.Configuration;
 
-/// <summary>No-op until gh#732 wires metrics and alerts (gh#733 was a duplicate).</summary>
+/// <summary>
+/// No-op. The writes counter already records an unknown-stage refusal (gh#732).
+/// </summary>
 public sealed class NullTradingUnknownStageRefusalSignal : ITradingUnknownStageRefusalSignal
 {
     /// <inheritdoc />

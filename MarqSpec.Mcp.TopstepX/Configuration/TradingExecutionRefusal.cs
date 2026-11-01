@@ -199,7 +199,31 @@ public readonly record struct TradingExecutionRefusal(string Code, string Messag
             + open.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ".");
 
+    /// <summary>Another session already holds the trading writer lock for this account (gh#772).</summary>
+    /// <param name="accountId">The account the write would have touched.</param>
+    /// <returns>The refusal. Reads and the recorder are not affected.</returns>
+    public static TradingExecutionRefusal AccountWriterHeld(int accountId) =>
+        new(
+            ExecutionWriteRefusal.AccountWriterHeld,
+            "Account "
+            + accountId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " already has a trading writer. Only one replica may trade an account.");
+
+    /// <summary>
+    /// The writer lock could not be confirmed. The write was not sent (gh#772).
+    /// </summary>
+    /// <param name="accountId">The account the write would have touched.</param>
+    /// <returns>The refusal. A stall is this, not <see cref="AccountWriterHeld"/>.</returns>
+    public static TradingExecutionRefusal AccountWriterUnavailable(int accountId) =>
+        new(
+            ExecutionWriteRefusal.AccountWriterUnavailable,
+            "The trading writer lock for account "
+            + accountId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + " could not be confirmed. The write was not sent.");
+
     /// <summary>The modify target order was not returned by a fresh order fetch.</summary>
+    /// <param name="orderId">The order id the caller asked to modify.</param>
+    /// <returns>The refusal.</returns>
     public static TradingExecutionRefusal OrderNotFound(long orderId) =>
         new(
             "order_not_found",

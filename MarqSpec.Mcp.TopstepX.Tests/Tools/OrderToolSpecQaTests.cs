@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
@@ -9,6 +10,7 @@ using MarqSpec.Mcp.TopstepX.Tests.Configuration;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
@@ -26,6 +28,8 @@ public sealed class OrderToolSpecQaTests
     private const int Practice = 100;
     private const int OtherPractice = 101;
     private const int Funded = 102;
+
+    private const int UnknownAccount = 103;
     private const string Mes = "CON.F.US.MES.Z26";
     private const long OpenOrderId = 7;
 
@@ -34,6 +38,7 @@ public sealed class OrderToolSpecQaTests
         new(Practice, AccountStage.Practice, CanTrade: true, IsVisible: true, Balance: 50_000m),
         new(OtherPractice, AccountStage.Practice, CanTrade: true, IsVisible: true, Balance: 50_000m),
         new(Funded, AccountStage.Funded, CanTrade: true, IsVisible: true, Balance: 50_000m),
+        new(UnknownAccount, AccountStage.Unknown, CanTrade: true, IsVisible: true, Balance: 50_000m),
     ];
 
     private static readonly InstrumentRegistry _registry =
@@ -67,7 +72,8 @@ public sealed class OrderToolSpecQaTests
 
     /// <summary>
     /// Every tool crossed with each outcome whose telemetry and side effects are not pinned per tool elsewhere.
-    /// trading_disabled and kill_switch are left out: #769's gate tests already pin both for all five tools.
+    /// trading_disabled is left out: #769 pins it for all five tools. The kill switch blocks place and
+    /// modify only (gh#770); cancel and close under a halt are pinned below.
     /// </summary>
     public static TheoryData<string, string> ToolByScenario()
     {
@@ -355,25 +361,357 @@ public sealed class OrderToolSpecQaTests
         _daily.HeldNow.Should().Be(0, "the lease is released even when its dispose faults");
     }
 
-    // ---------------- Spec gaps ----------------
-    [Fact(Skip = "SpecGap #770: v1 refuses cancel_order and close_position under the kill switch (ADR-0024 s5.1-5.2, pinned by #769); a carve-out letting a halt still flatten positions is pending Adam.")]
-    public void TradingOrderTools_KillSwitch_CancelAndClose_SpecUnconfirmed()
+    // ---------------- gh#770: the kill switch blocks new orders and modifies only ----------------
+    [Fact]
+    public async Task TradingOrderTools_KillSwitch_CancelAndClose_StillSend()
     {
-        // If the carve-out is rejected: drop this skip, since TradingOrderToolGateTests already pins v1. If it is
-        // adopted: engage the kill switch, call cancel_order and close_position, and assert one send each plus
-        // the Live audit row and telemetry.
+        _kill.IsEngaged = true;
+        using HostTelemetry telemetry = new();
+
+        ToolPayloads.TradingWriteResult cancel =
+            await Call(Tools(telemetry, On()), TradingMcpTools.CancelOrderOperation, "halt-cancel");
+        ToolPayloads.TradingWriteResult close =
+            await Call(Tools(telemetry, On()), TradingMcpTools.ClosePositionOperation, "halt-close");
+        ToolPayloads.TradingWriteResult partial =
+            await Call(Tools(telemetry, On()), TradingMcpTools.PartialClosePositionOperation, "halt-partial");
+        ToolPayloads.TradingWriteResult place =
+            await Call(Tools(telemetry, On()), TradingMcpTools.PlaceOrderOperation, "halt-place");
+        ToolPayloads.TradingWriteResult modify =
+            await Call(Tools(telemetry, On()), TradingMcpTools.ModifyOrderOperation, "halt-modify");
+
+        cancel.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        close.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        partial.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        _gateway.LastClose.Should().Be(new ExecutionClosePositionCommand(Practice, Mes));
+        _gateway.LastPartialClose.Should().Be(new ExecutionPartialClosePositionCommand(Practice, Mes, 1));
+        place.RefusalCode.Should().Be(ExecutionWriteRefusal.KillSwitch);
+        modify.RefusalCode.Should().Be(ExecutionWriteRefusal.KillSwitch);
+        _gateway.Place.Should().Be(0);
+        _gateway.Total.Should().Be(3);
     }
 
-    [Fact(Skip = "SpecGap #771: no venue-side client order id; customTag is not exposed (ADR-0008), so a lost ack plus a fresh key relies on OutcomeUnknown and reconcile only.")]
-    public void TradingOrderTools_VenueSideClientOrderId_Unspecified()
+    // ---------------- gh#771: no client order id. OutcomeUnknown plus reconcile is v1. ----------------
+    [Fact]
+    public void TradingOrderTools_HasNoClientOrderId()
     {
-        // Once specified: a lost ack retried with a fresh key must be found by its client order id, not resent.
+        string[] forbidden = ["clientOrderId", "clientId", "customTag"];
+        int inspected = 0;
+        foreach (MethodInfo method in typeof(TradingOrderTools).GetMethods(
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly))
+        {
+            if (method.GetCustomAttribute<ModelContextProtocol.Server.McpServerToolAttribute>() is null)
+            {
+                continue;
+            }
+
+            inspected++;
+            System.Text.Json.JsonElement schema = ModelContextProtocol.Server.McpServerTool.Create(
+                method,
+                static _ => throw new InvalidOperationException("schema only"),
+                new ModelContextProtocol.Server.McpServerToolCreateOptions()).ProtocolTool.InputSchema;
+            schema.GetProperty("properties").EnumerateObject()
+                .Select(property => property.Name)
+                .Should()
+                .NotContain(forbidden);
+        }
+
+        inspected.Should().Be(5, "place, modify, cancel, close and partial close are the order tools");
     }
 
-    [Fact(Skip = "SpecGap #772: session conflicts (two MCP sessions or replicas on one account, or an order into a closed session) are not specified beyond the per-key claim and the account-day cap lock.")]
-    public void TradingOrderTools_SessionConflicts_Unspecified()
+    // ---------------- gh#772: one trading writer per account ----------------
+    [Fact]
+    public async Task TradingOrderTools_SessionConflicts_SecondReplicaRefusesUntilTheLockIsReleased()
     {
-        // Once specified: two gates on one account with different keys, and an order outside the session.
+        AccountWriters writers = new();
+        using HostTelemetry telemetry = new();
+
+        ToolPayloads.TradingWriteResult held = await Call(
+            Tools(telemetry, On(), writers.For(replica: 1)),
+            TradingMcpTools.PlaceOrderOperation,
+            "writer-a");
+        ToolPayloads.TradingWriteResult blocked = await Call(
+            Tools(telemetry, On(), writers.For(replica: 2)),
+            TradingMcpTools.PlaceOrderOperation,
+            "writer-b");
+        ToolPayloads.TradingWriteResult otherAccount = await Tools(telemetry, On(), writers.For(replica: 2))
+            .SubmitPlace(
+            OtherPractice,
+            Mes,
+            ExecutionOrderType.Limit,
+            VenueSide.Buy,
+            size: 1,
+            "writer-c",
+            limitPrice: 6800m);
+
+        held.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        blocked.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        blocked.RefusalCode.Should().Be(ExecutionWriteRefusal.AccountWriterHeld);
+        blocked.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        otherAccount.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        _gateway.Place.Should().Be(2);
+
+        writers.Release(replica: 1);
+        TradingOrderTools after = Tools(telemetry, On(), writers.For(replica: 2));
+        ToolPayloads.TradingWriteResult freed =
+            await Call(after, TradingMcpTools.CancelOrderOperation, "writer-d");
+
+        freed.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        _gateway.Total.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task TradingOrderTools_DryRunAndNonAllowlistedAndUnknownStage_DoNotTakeTheWriterLock()
+    {
+        AccountWriters writers = new();
+        using HostTelemetry telemetry = new();
+        ITradingAccountWriterLock replicaB = writers.For(replica: 2);
+
+        ToolPayloads.TradingWriteResult preview = await Tools(telemetry, On(), replicaB).SubmitPlace(
+            Practice,
+            Mes,
+            ExecutionOrderType.Limit,
+            VenueSide.Buy,
+            size: 1,
+            "preview",
+            limitPrice: 6800m,
+            dryRun: true);
+        ToolPayloads.TradingWriteResult notListed = await Tools(telemetry, On(allow: "100"), replicaB)
+            .SubmitPlace(
+            OtherPractice,
+            Mes,
+            ExecutionOrderType.Limit,
+            VenueSide.Buy,
+            size: 1,
+            "not-listed",
+            limitPrice: 6800m);
+        ToolPayloads.TradingWriteResult unknown = await Tools(telemetry, On(), replicaB).SubmitPlace(
+            UnknownAccount,
+            Mes,
+            ExecutionOrderType.Limit,
+            VenueSide.Buy,
+            size: 1,
+            "unknown-stage",
+            limitPrice: 6800m);
+
+        preview.Status.Should().Be(nameof(TradingAttemptOutcome.Preview));
+        notListed.RefusalCode.Should().Be(ExecutionWriteRefusal.AccountNotAllowlisted);
+        unknown.RefusalCode.Should().Be(ExecutionWriteRefusal.UnknownAccountStage);
+        writers.AttemptsFor(2).Should().Be(0);
+
+        ToolPayloads.TradingWriteResult live = await Call(
+            Tools(telemetry, On(), writers.For(replica: 1)),
+            TradingMcpTools.PlaceOrderOperation,
+            "still-free");
+        live.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+    }
+
+    [Fact]
+    public async Task TradingOrderTools_AccountWriterHeld_TagsOnlyOperationRefusalAndReplay()
+    {
+        AccountWriters writers = new();
+        using HostTelemetry taken = new();
+        await Call(
+            Tools(taken, On(), writers.For(replica: 1)),
+            TradingMcpTools.PlaceOrderOperation,
+            "held");
+
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.ExecutionWritesInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(telemetry, spans);
+
+        ToolPayloads.TradingWriteResult blocked = await Call(
+            Tools(telemetry, On(), writers.For(replica: 2)),
+            TradingMcpTools.PlaceOrderOperation,
+            "blocked");
+
+        blocked.RefusalCode.Should().Be(ExecutionWriteRefusal.AccountWriterHeld);
+        _gateway.Place.Should().Be(1);
+        IReadOnlyList<CollectedMeasurement<long>> measured = writes.GetMeasurementSnapshot();
+        measured.Should().ContainSingle();
+        measured[0].Tags.Select(tag => tag.Key).Should().BeEquivalentTo(
+            HostTelemetry.OperationTag,
+            HostTelemetry.RefusalTag,
+            HostTelemetry.ReplayTag);
+        measured[0].Tags[HostTelemetry.OperationTag].Should().Be(TradingMcpTools.PlaceOrderOperation);
+        measured[0].Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.AccountWriterHeld);
+        measured[0].Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.TagObjects.Select(tag => tag.Key).Should().BeEquivalentTo(
+            HostTelemetry.OperationTag,
+            HostTelemetry.RefusalTag,
+            HostTelemetry.ReplayTag);
+        span.GetTagItem(HostTelemetry.RefusalTag).Should().Be(ExecutionWriteRefusal.AccountWriterHeld);
+    }
+
+    [Fact]
+    public async Task TradingOrderTools_WriterLockDroppedBeforeTheSend_DoesNotSend()
+    {
+        using HostTelemetry telemetry = new();
+        ToolPayloads.TradingWriteResult result = await Call(
+            Tools(telemetry, On(), new DropBeforeSend()),
+            TradingMcpTools.PlaceOrderOperation,
+            "dropped");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.AccountWriterUnavailable);
+        _gateway.Place.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(TradingMcpTools.PlaceOrderOperation)]
+    [InlineData(TradingMcpTools.ModifyOrderOperation)]
+    [InlineData(TradingMcpTools.PartialClosePositionOperation)]
+    public async Task TradingOrderTools_DailyCapRefusal_DoesNotTakeTheWriterLock(string op)
+    {
+        AccountWriters writers = new();
+        _daily.ContractsToday = 50;
+        using HostTelemetry telemetry = new();
+
+        ToolPayloads.TradingWriteResult result = await Call(
+            Tools(telemetry, On(), writers.For(replica: 1)),
+            op,
+            "over-cap");
+
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.DailyContractLimitExceeded);
+        writers.AttemptsFor(1).Should().Be(0);
+        _gateway.Total.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(RecheckFault.CallerCancelled)]
+    [InlineData(RecheckFault.ProbeThrows)]
+    [InlineData(RecheckFault.AuditWriteThrows)]
+    public async Task TradingOrderTools_WriterLockRecheckFault_ReversesTheCap_AndReplaysRefused(
+        RecheckFault fault)
+    {
+        using CancellationTokenSource caller = new();
+        RecheckLock probe = new(fault, caller, _audit);
+        FaultTypeLog log = new();
+        using HostTelemetry telemetry = new();
+        const string key = "recheck-fault";
+
+        ToolPayloads.TradingWriteResult result = await Place(
+            Tools(telemetry, On(), probe, log),
+            key,
+            caller.Token);
+
+        string code = fault == RecheckFault.AuditWriteThrows
+            ? ExecutionWriteRefusal.AccountWriterHeld
+            : ExecutionWriteRefusal.AccountWriterUnavailable;
+        AssertRecheckFinalised(result, code);
+        probe.EntryToken.CanBeCanceled.Should().BeTrue();
+        probe.RecheckToken.Should().Be(CancellationToken.None);
+        _audit.TokensFor(TradingAuditOutcomes.Refused).Should().AllBeEquivalentTo(CancellationToken.None);
+        _audit.TokensFor(TradingAuditOutcomes.Attempted)
+            .Should()
+            .Contain(CancellationToken.None);
+
+        using HostTelemetry replayTelemetry = new();
+        ToolPayloads.TradingWriteResult replay = await Place(
+            Tools(replayTelemetry, On(), new DropBeforeSend()),
+            key,
+            CancellationToken.None);
+
+        replay.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        replay.RefusalCode.Should().Be(code);
+        replay.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        _gateway.Place.Should().Be(0);
+        log.Lines.Should().NotBeEmpty();
+        log.Lines.Should().OnlyContain(line =>
+            !line.Contains("100", StringComparison.Ordinal)
+            && !line.Contains("probe failed", StringComparison.Ordinal)
+            && !line.Contains("audit write failed", StringComparison.Ordinal));
+        log.SawException.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task TradingOrderTools_WriterLockRecheck_BothAuditWritesFail_LeavesTheClaimUnknown()
+    {
+        using CancellationTokenSource caller = new();
+        RecheckLock probe = new(RecheckFault.BothAuditWritesFail, caller, _audit);
+        using HostTelemetry telemetry = new();
+        const string key = "both-saves-fail";
+
+        ToolPayloads.TradingWriteResult result = await Place(
+            Tools(telemetry, On(), probe),
+            key,
+            CancellationToken.None);
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RefusalCode.Should().Be(ExecutionWriteRefusal.AccountWriterHeld);
+        _gateway.Place.Should().Be(0);
+        IReadOnlyList<TradingAuditWriteRequest> rows = _audit.Snapshot();
+        rows.Should().Contain(row => row.Outcome == TradingAuditOutcomes.Unknown);
+        rows.Should().NotContain(row => row.Outcome == TradingAuditOutcomes.Refused);
+        rows.Where(row => row.Outcome == TradingAuditOutcomes.Attempted)
+            .Sum(row => row.ContractCount)
+            .Should()
+            .Be(1, "the charge committed and both reversal attempts failed");
+
+        using HostTelemetry replayTelemetry = new();
+        ToolPayloads.TradingWriteResult replay = await Place(
+            Tools(replayTelemetry, On(), new RecheckTake(TradingWriterLockTake.Held)),
+            key,
+            CancellationToken.None);
+
+        replay.Status.Should().Be(nameof(TradingAttemptOutcome.Unknown));
+        replay.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        _gateway.Place.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData(TradingWriterLockTake.HeldByOther, ExecutionWriteRefusal.AccountWriterHeld)]
+    [InlineData(TradingWriterLockTake.Unavailable, ExecutionWriteRefusal.AccountWriterUnavailable)]
+    public async Task TradingOrderTools_WriterLockRecheckRefusal_TagsOnlyOperationRefusalAndReplay(
+        TradingWriterLockTake recheck,
+        string code)
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.ExecutionWritesInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(telemetry, spans);
+        const string key = "recheck-tags";
+
+        ToolPayloads.TradingWriteResult result = await Place(
+            Tools(telemetry, On(), new RecheckTake(recheck)),
+            key,
+            CancellationToken.None);
+
+        AssertRecheckFinalised(result, code);
+        IReadOnlyList<CollectedMeasurement<long>> measured = writes.GetMeasurementSnapshot();
+        measured.Should().ContainSingle();
+        measured[0].Tags.Select(tag => tag.Key).Should().BeEquivalentTo(
+            HostTelemetry.OperationTag,
+            HostTelemetry.RefusalTag,
+            HostTelemetry.ReplayTag);
+        measured[0].Tags[HostTelemetry.OperationTag].Should().Be(TradingMcpTools.PlaceOrderOperation);
+        measured[0].Tags[HostTelemetry.RefusalTag].Should().Be(code);
+        measured[0].Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.TagObjects.Select(tag => tag.Key).Should().BeEquivalentTo(
+            HostTelemetry.OperationTag,
+            HostTelemetry.RefusalTag,
+            HostTelemetry.ReplayTag);
+        span.GetTagItem(HostTelemetry.OperationTag).Should().Be(TradingMcpTools.PlaceOrderOperation);
+        span.GetTagItem(HostTelemetry.RefusalTag).Should().Be(code);
+        span.GetTagItem(HostTelemetry.ReplayTag).Should().Be(ExecutionWriteReplay.False);
+
+        listener.Dispose();
+        using HostTelemetry replayTelemetry = new();
+        ToolPayloads.TradingWriteResult replay = await Place(
+            Tools(replayTelemetry, On(), new RecheckTake(TradingWriterLockTake.Held)),
+            key,
+            CancellationToken.None);
+
+        replay.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        replay.RefusalCode.Should().Be(code);
+        replay.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        _gateway.Place.Should().Be(0);
     }
 
     // ===================== helpers =====================
@@ -464,7 +802,11 @@ public sealed class OrderToolSpecQaTests
     }
 
     /// <summary>The gate serves one operation, so each call needs a new gate; the doubles behind it are shared.</summary>
-    private TradingOrderTools Tools(HostTelemetry telemetry, TradingExecutionOptions options) =>
+    private TradingOrderTools Tools(
+        HostTelemetry telemetry,
+        TradingExecutionOptions options,
+        ITradingAccountWriterLock? writer = null,
+        ILogger<TradingRiskGate>? logger = null) =>
         new(new TradingRiskGate(
             new TradingExecutionGate(TradingOptionsMonitors.Fixed(options), _kill, _stage),
             _gateway,
@@ -474,7 +816,43 @@ public sealed class OrderToolSpecQaTests
             _audit,
             new TradingContractDenylist(Options.Create(options), _registry),
             new TradingWriteVenueAccountCache(),
-            telemetry));
+            telemetry,
+            writer,
+            logger));
+
+    private void AssertRecheckFinalised(ToolPayloads.TradingWriteResult result, string code)
+    {
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        result.RefusalCode.Should().Be(code);
+        result.RetrySafety.Should().NotBe(ToolPayloads.TradingRetrySafety.OutcomeUnknown);
+        _gateway.Place.Should().Be(0);
+        IReadOnlyList<TradingAuditWriteRequest> rows = _audit.Snapshot();
+        rows.Where(row => row.Outcome == TradingAuditOutcomes.Attempted)
+            .Sum(row => row.ContractCount)
+            .Should()
+            .Be(0);
+        rows.Count(row => row.Outcome == TradingAuditOutcomes.Attempted && row.ContractCount < 0)
+            .Should()
+            .Be(1);
+        rows.Should().Contain(row =>
+            row.Outcome == TradingAuditOutcomes.Refused && row.VenueErrorCode == code);
+        rows.Should().Contain(row => row.Outcome == TradingAuditOutcomes.Unknown);
+        _audit.TokenForNegativeAttempt().Should().Be(CancellationToken.None);
+    }
+
+    private static Task<ToolPayloads.TradingWriteResult> Place(
+        TradingOrderTools tools,
+        string key,
+        CancellationToken cancellationToken) =>
+        tools.SubmitPlace(
+            Practice,
+            Mes,
+            ExecutionOrderType.Limit,
+            VenueSide.Buy,
+            size: 1,
+            key,
+            limitPrice: 6800m,
+            cancellationToken: cancellationToken);
 
     private static Task<ToolPayloads.TradingWriteResult> Call(
         TradingOrderTools tools,
@@ -491,6 +869,156 @@ public sealed class OrderToolSpecQaTests
             TradingMcpTools.PartialClosePositionOperation => tools.SubmitPartialClose(account, Mes, size, key),
             _ => throw new ArgumentOutOfRangeException(nameof(op)),
         };
+
+    private sealed class FaultTypeLog : ILogger<TradingRiskGate>
+    {
+        public List<string> Lines { get; } = [];
+
+        public bool SawException { get; private set; }
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (exception is not null)
+            {
+                SawException = true;
+            }
+
+            Lines.Add(formatter(state, exception));
+        }
+    }
+
+    public enum RecheckFault
+    {
+        CallerCancelled,
+        ProbeThrows,
+        AuditWriteThrows,
+        BothAuditWritesFail,
+    }
+
+    /// <summary>
+    /// First take is held. The second is the pre-send re-check: cancel, throw, or fail the next audit write.
+    /// </summary>
+    private sealed class RecheckLock : ITradingAccountWriterLock
+    {
+        private readonly RecheckFault _fault;
+        private readonly CancellationTokenSource _caller;
+        private readonly QaAudit _audit;
+        private int _calls;
+
+        public RecheckLock(RecheckFault fault, CancellationTokenSource caller, QaAudit audit)
+        {
+            _fault = fault;
+            _caller = caller;
+            _audit = audit;
+        }
+
+        public CancellationToken EntryToken { get; private set; }
+
+        public CancellationToken RecheckToken { get; private set; }
+
+        public Task<TradingWriterLockTake> TryHoldAsync(int accountId, CancellationToken cancellationToken)
+        {
+            _calls++;
+            if (_calls == 1)
+            {
+                EntryToken = cancellationToken;
+                return Task.FromResult(TradingWriterLockTake.Held);
+            }
+
+            RecheckToken = cancellationToken;
+            if (_fault == RecheckFault.CallerCancelled)
+            {
+                _caller.Cancel();
+                throw new OperationCanceledException(cancellationToken);
+            }
+
+            if (_fault == RecheckFault.ProbeThrows)
+            {
+                throw new InvalidOperationException("writer lock probe failed");
+            }
+
+            _audit.FailNextWrites(_fault == RecheckFault.BothAuditWritesFail ? 2 : 1);
+            return Task.FromResult(TradingWriterLockTake.HeldByOther);
+        }
+    }
+
+    /// <summary>First take is held. Later takes return <paramref name="recheck"/>.</summary>
+    private sealed class RecheckTake(TradingWriterLockTake recheck) : ITradingAccountWriterLock
+    {
+        private int _calls;
+
+        public Task<TradingWriterLockTake> TryHoldAsync(int accountId, CancellationToken cancellationToken)
+        {
+            _calls++;
+            TradingWriterLockTake take = _calls == 1 ? TradingWriterLockTake.Held : recheck;
+            return Task.FromResult(take);
+        }
+    }
+
+    private sealed class DropBeforeSend : ITradingAccountWriterLock
+    {
+        private int _calls;
+
+        public Task<TradingWriterLockTake> TryHoldAsync(int accountId, CancellationToken cancellationToken)
+        {
+            _calls++;
+            return Task.FromResult(_calls == 1
+                ? TradingWriterLockTake.Held
+                : TradingWriterLockTake.Unavailable);
+        }
+    }
+
+    private sealed class AccountWriters
+    {
+        private readonly Dictionary<int, int> _owner = [];
+
+        public ITradingAccountWriterLock For(int replica) => new Replica(this, replica);
+
+        public void Release(int replica)
+        {
+            int[] held = [.. _owner.Where(pair => pair.Value == replica).Select(pair => pair.Key)];
+            foreach (int accountId in held)
+            {
+                _owner.Remove(accountId);
+            }
+        }
+
+        private readonly Dictionary<int, int> _attempts = [];
+
+        public int AttemptsFor(int replica) => _attempts.GetValueOrDefault(replica);
+
+        private TradingWriterLockTake Try(int replica, int accountId)
+        {
+            _attempts[replica] = _attempts.GetValueOrDefault(replica) + 1;
+            if (_owner.TryGetValue(accountId, out int owner))
+            {
+                return owner == replica
+                    ? TradingWriterLockTake.Held
+                    : TradingWriterLockTake.HeldByOther;
+            }
+
+            _owner[accountId] = replica;
+            return TradingWriterLockTake.Held;
+        }
+
+        private sealed class Replica(AccountWriters owners, int replica) : ITradingAccountWriterLock
+        {
+            public Task<TradingWriterLockTake> TryHoldAsync(
+                int accountId,
+                CancellationToken cancellationToken) =>
+                Task.FromResult(owners.Try(replica, accountId));
+        }
+    }
 
     private sealed class QaKill : ITradingKillSwitch
     {
@@ -583,6 +1111,9 @@ public sealed class OrderToolSpecQaTests
     private sealed class QaAudit : ITradingAuditLogWriter
     {
         private readonly List<TradingAuditWriteRequest> _rows = [];
+        private readonly List<TradingAuditWriteRequest> _written = [];
+        private readonly List<CancellationToken> _tokens = [];
+        private int _faultsLeft;
 
         public IReadOnlyList<TradingAuditWriteRequest> Snapshot()
         {
@@ -592,11 +1123,51 @@ public sealed class OrderToolSpecQaTests
             }
         }
 
+        public void FailNextWrite() => FailNextWrites(1);
+
+        public void FailNextWrites(int count)
+        {
+            lock (_rows)
+            {
+                _faultsLeft += count;
+            }
+        }
+
+        public IEnumerable<CancellationToken> TokensFor(string outcome)
+        {
+            lock (_rows)
+            {
+                return _written
+                    .Select((row, index) => (row.Outcome, _tokens[index]))
+                    .Where(write => write.Outcome == outcome)
+                    .Select(write => write.Item2)
+                    .ToArray();
+            }
+        }
+
+        public CancellationToken TokenForNegativeAttempt()
+        {
+            lock (_rows)
+            {
+                int index = _written.FindIndex(row =>
+                    row.Outcome == TradingAuditOutcomes.Attempted && row.ContractCount < 0);
+                return _tokens[index];
+            }
+        }
+
         public Task WriteAsync(TradingAuditWriteRequest request, CancellationToken cancellationToken)
         {
             lock (_rows)
             {
+                if (_faultsLeft > 0)
+                {
+                    _faultsLeft--;
+                    throw new InvalidOperationException("audit write failed during the writer-lock re-check");
+                }
+
                 _rows.Add(request);
+                _written.Add(request);
+                _tokens.Add(cancellationToken);
             }
 
             return Task.CompletedTask;

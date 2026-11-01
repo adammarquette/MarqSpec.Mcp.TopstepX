@@ -12,8 +12,76 @@ public sealed class TradingAuditLogWriter(TopstepXDbContext database, TimeProvid
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        database.TradingAuditLog.Add(ToRecord(request));
-        await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        TradingAuditLogRecord row = ToRecord(request);
+        database.TradingAuditLog.Add(row);
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            // A failed insert stays Added. Leaving it tracked makes the next save insert it twice.
+            DetachIfAdded(row);
+            throw;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<TradingWriterRefusalStored> FindStoredWriterRefusalAsync(
+        int accountId,
+        string tool,
+        string idempotencyKey,
+        string requestHash,
+        string refusalCode,
+        int reversalCount,
+        CancellationToken cancellationToken)
+    {
+        List<TradingAuditLogRecord> rows = await database.TradingAuditLog
+            .AsNoTracking()
+            .Where(row => row.AccountId == accountId
+                && row.Tool == tool
+                && row.IdempotencyKey == idempotencyKey)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        bool reversed = reversalCount == 0 || rows.Exists(row =>
+            row.Outcome == TradingAuditOutcomes.Attempted
+            && row.ContractCount == -reversalCount
+            && row.VenueErrorCode == refusalCode
+            && row.RequestHash == requestHash);
+        bool refused = rows.Exists(row =>
+            row.Outcome == TradingAuditOutcomes.Refused
+            && row.VenueErrorCode == refusalCode
+            && row.RequestHash == requestHash);
+        return new TradingWriterRefusalStored(reversed, refused);
+    }
+
+    /// <inheritdoc />
+    public async Task AppendReversalAndRefusalAsync(
+        TradingAuditWriteRequest reversal,
+        TradingAuditWriteRequest refusal,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(reversal);
+        ArgumentNullException.ThrowIfNull(refusal);
+
+        TradingAuditLogRecord reversalRow = ToRecord(reversal);
+        TradingAuditLogRecord refusalRow = ToRecord(refusal);
+        database.TradingAuditLog.Add(reversalRow);
+        database.TradingAuditLog.Add(refusalRow);
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
+            await database.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            DetachIfAdded(reversalRow);
+            DetachIfAdded(refusalRow);
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -113,5 +181,13 @@ public sealed class TradingAuditLogWriter(TopstepXDbContext database, TimeProvid
         }
 
         return false;
+    }
+
+    private void DetachIfAdded(TradingAuditLogRecord row)
+    {
+        if (database.Entry(row).State == EntityState.Added)
+        {
+            database.Entry(row).State = EntityState.Detached;
+        }
     }
 }

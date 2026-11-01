@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **90-day tape retention (gh#763).** The recorder deletes `Trades` rows older than
+  `TapeRetention__Days` (default 90; accepted 7 through 3650). Zero and a negative number are
+  refused and do not turn pruning off. The worker runs only on HTTP with
+  `MarketData__RecordTape=true`, and only while this process holds a recorder lease. It runs
+  once the lease is held, then every 24 hours. Whole chunks that end before the cutoff are
+  dropped; the rest go in batches of 1000 on `IX_Trades_Instrument_TradeTimeUtc`, each batch its
+  own commit. A row at the cutoff stays. A second run deletes nothing further. Timescale
+  `policy_retention` stays empty. `mcp.tape.pruned` counts the rows when the count is positive.
+  The Railway template does not set the key. `Retention__*` is not read.
+
 ### Fixed
 
 - **Expected tape-volume prepare logs are not Errors** (gh#894).

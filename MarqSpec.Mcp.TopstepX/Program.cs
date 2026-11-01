@@ -645,6 +645,13 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // How long Trades rows stay (gh#763). The default is 90 days. Zero and a negative number
+        // are refused rather than read as "keep forever". The worker below deletes; this only binds.
+        services.AddOptions<TapeRetentionOptions>()
+            .Bind(builder.Configuration.GetSection(TapeRetentionOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<IndicatorOptions>()
             .Bind(builder.Configuration.GetSection(IndicatorOptions.SectionName))
             .ValidateDataAnnotations()
@@ -983,6 +990,13 @@ public static class Program
         services.AddScoped<TapeExportPass>();
         services.AddScoped<ITapeExportPass>(sp => sp.GetRequiredService<TapeExportPass>());
         services.AddHostedService<TapeExportWorker>();
+
+        // Tape retention (gh#763). Always registered, same as the recorder: ExecuteAsync returns
+        // immediately unless the transport is HTTP and MarketData__RecordTape is on, and it deletes
+        // only while this process holds a recorder lease. The pass is scoped because it takes the
+        // DbContext, so the worker opens a scope.
+        services.AddScoped<TapeRetentionPass>();
+        services.AddHostedService<TapeRetentionWorker>();
 
         // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which
         // series it has already found complete, and the scope is one request. A singleton would remember the

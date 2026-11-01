@@ -150,6 +150,11 @@ services:
       TapeExport__Drive__FolderId: "${TapeExport__Drive__FolderId:-}"
       TapeExport__Drive__ServiceAccountJson: "${TapeExport__Drive__ServiceAccountJson:-}"
       TapeExport__Drive__ServiceAccountJsonPath: "${TapeExport__Drive__ServiceAccountJsonPath:-}"
+      # Days of Trades the recorder keeps (gh#763). Default 90. 7 through 3650. Zero and a
+      # negative number are refused. This stack leaves MarketData__RecordTape off, so the
+      # worker returns without deleting. The key is still forwarded: a copied .env that sets
+      # RecordTape must not silently keep a different window than the one beside it.
+      TapeRetention__Days: "${TapeRetention__Days:-90}"
 
       Indicators__AtrPeriod: "${Indicators__AtrPeriod:-14}"
       Indicators__RsiPeriod: "${Indicators__RsiPeriod:-14}"

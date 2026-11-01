@@ -403,16 +403,18 @@ store refuses that rewrite; a missing number stays missing.
 prints that cannot be refetched — the same fact §8 states for the listening ledger, and the correction
 [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)'s 2026-08-28 update records.
 
-**Deliberately no retention policy** — same reason as §1. This is the store's **first compression policy**:
-chunks older than seven days compress in place. Compression is a different Timescale job from retention;
-`SchemaTests` asserts both (`policy_compression` present on `Trades`, `policy_retention` still empty).
+**Compression, and a recorder prune (gh#763).** Chunks older than seven days still compress in place.
+Timescale `policy_retention` stays empty. `SchemaTests` still asserts `policy_compression` on `Trades`
+and that `policy_retention` is empty. The recorder deletes `Trades` rows older than
+`TapeRetention__Days` (default 90). A row at the cutoff stays. The delete batches on
+`IX_Trades_Instrument_TradeTimeUtc`. Coverage, footprint cells, and bars are not pruned.
 
 **The export copies a finished UTC day and does not delete rows** (`R-10`, gh#755). A day of
 `TradeTimeUtc` is written once that day has ended, as gzip CSV and Parquet, one pair of files per
 contract: `trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.vN.csv.gz` and `.parquet`, on the mounted
 volume at `TapeExport__Path` (default `/data/tape-exports`). The volume is not created by a migration.
-`Retention__*` is not read; dropping raw tape needs its own ADR. Whether each file was copied, and
-whether a Drive upload of it finished, is §14.
+`Retention__*` is not read. The recorder's prune is `TapeRetention__Days` (gh#763), not this export.
+Whether each file was copied, and whether a Drive upload of it finished, is §14.
 
 The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md): probe
 `pg_available_extensions`, create it when Timescale is present, warn and leave a plain table when it is not.
@@ -794,7 +796,9 @@ the same file updates this row (`ON CONFLICT DO UPDATE`). It does not insert ano
 delete tape.
 
 **This is not a retention policy** (`R-10.7`, gh#755). It records that a file was written and whether
-the Drive upload finished, so a later decision can check. `Retention__*` is not read.
+the Drive upload finished. The recorder's prune (gh#763) does not read this row. `Retention__*` is
+not a key this build binds.
+
 `UploadState = failed` means the local file and the local rows are still there, and `DriveFileId` is
 the last id that landed. `drive_disabled` means Drive was not configured. While Drive stays off that
 state counts as finished. Once Drive is on, those days are exported. `pending` is committed in its

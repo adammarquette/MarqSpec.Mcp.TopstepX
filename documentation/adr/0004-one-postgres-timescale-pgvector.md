@@ -91,3 +91,11 @@ and a fresh postgres task, then `timescaledb_pre_restore()` / `pg_restore -Fc` /
 `timescaledb_post_restore()`, or the hypertable catalogue comes back wrong. The procedure is in
 [`deployment.md`](../deployment.md); the staging drill and the two consecutive dump days are still
 outstanding. Point-in-time recovery and WAL archiving stay out of scope.
+
+## Update (2026-11-01) — the recorder prunes tape older than 90 days
+
+gh#763. The operator decided to keep 90 days of tape and prune older. Timescale
+`policy_retention` stays empty: `SchemaTests` still asserts no retention job. The recorder
+process deletes `Trades` rows with `TradeTimeUtc` strictly before now minus `TapeRetention__Days`
+(default 90). A row at the cutoff stays. Bars, indicator values, coverage, footprint cells, and
+export receipts are not pruned. The export remains additive.

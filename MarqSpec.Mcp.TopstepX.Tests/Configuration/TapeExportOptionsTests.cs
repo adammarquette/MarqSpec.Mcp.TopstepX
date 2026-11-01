@@ -47,7 +47,8 @@ public sealed class TapeExportOptionsTests
         envExample.Should().NotContain("TapeExport__Retention");
         envExample.Should().NotContain("TapeExport__Prune");
         envExample.Should().NotContain("TapeExport__SafeAge");
-        // gh#758 lists proposed Retention__ names as comments. They are not read. A live key is still refused.
+        // gh#763 reads TapeRetention__Days. The names proposed before that decision are not a
+        // second switch: a live Retention__ key binds nothing.
         foreach (string line in envExample.Split('\n'))
         {
             string trimmed = line.Trim();
@@ -56,13 +57,14 @@ public sealed class TapeExportOptionsTests
                 continue;
             }
 
-            trimmed.Should().NotContain("Retention__");
+            trimmed.Should().NotStartWith("Retention__");
         }
 
-        envExample.Should().Contain("# Retention__Enabled=false");
-        envExample.Should().Contain("# Retention__RawTapeDays=30");
-        envExample.Should().Contain("# Retention__DailySummaryDays=0");
-        envExample.Should().Contain("# Retention__RequireExportBeforeDrop=true");
+        envExample.Should().Contain("TapeRetention__Days=90");
+        envExample.Should().NotContain("Retention__Enabled");
+        envExample.Should().NotContain("Retention__RawTapeDays");
+        envExample.Should().NotContain("Retention__DailySummaryDays");
+        envExample.Should().NotContain("Retention__RequireExportBeforeDrop");
 
         compose.Should().Contain("${TapeExport__Enabled:-false}");
         compose.Should().Contain("${TapeExport__Schedule:-" + TapeExportOptions.DefaultSchedule + "}");
@@ -74,7 +76,9 @@ public sealed class TapeExportOptionsTests
         compose.Should().NotContain("private_key");
         compose.Should().NotContain("TapeExport__Retention");
         compose.Should().NotContain("TapeExport__Prune");
-        compose.Should().NotContain("Retention__");
+        compose.Should().Contain("${TapeRetention__Days:-90}");
+        compose.Should().NotContain("Retention__Enabled");
+        compose.Should().NotContain("Retention__RawTapeDays");
 
         program.Should().Contain("TapeExportCommands.ExportVerb");
         program.Should().Contain("TapeExportCommands.ImportVerb");

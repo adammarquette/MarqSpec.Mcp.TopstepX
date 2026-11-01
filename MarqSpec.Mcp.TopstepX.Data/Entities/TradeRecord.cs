@@ -18,10 +18,10 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// <c>(instrument, contract)</c> — not a venue value.
 /// </para>
 /// <para>
-/// This table is a record rather than a pipeline: it carries <b>no retention policy</b>, and it is
-/// the store's first compression policy. It is also <b>original data, not a cache</b> — there is no
-/// market-tape REST backfill, so losing the store loses prints that cannot be refetched (ADR-0004,
-/// ADR-0016). Compression shrinks the chunks without deleting them.
+/// This table is <b>original data, not a cache</b> — there is no market-tape REST backfill, so
+/// losing the store loses prints that cannot be refetched (ADR-0004, ADR-0016). Chunks older than
+/// seven days compress in place. Timescale <c>policy_retention</c> stays empty. The recorder
+/// deletes rows older than <c>TapeRetention__Days</c> (gh#763).
 /// </para>
 /// </remarks>
 public sealed class TradeRecord

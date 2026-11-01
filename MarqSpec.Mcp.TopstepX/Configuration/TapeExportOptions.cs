@@ -25,8 +25,8 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// </para>
 /// <para>
 /// <b>The export is additive.</b> A finished UTC day is copied out. Local rows stay. Timescale
-/// <c>policy_retention</c> on <c>Trades</c> stays empty, and this process has no retention or prune
-/// switch. Deleting raw tape is a separate product decision and needs its own ADR (gh#758).
+/// <c>policy_retention</c> on <c>Trades</c> stays empty. Deleting raw tape older than
+/// <c>TapeRetention__Days</c> is the recorder's job (gh#763), not this export.
 /// </para>
 /// </remarks>
 public sealed class TapeExportOptions : IValidatableObject

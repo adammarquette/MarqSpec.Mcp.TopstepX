@@ -75,8 +75,14 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 | Service | Image | Role |
 |---|---|---|
 | `postgres` | `timescale/timescaledb-ha:pg17@sha256:cae37881…` (ADR-0004), digest-pinned | `PGDATA=/home/postgres/pgdata/data`; no domain, no TCP proxy. **Volume in production only** (below) |
-| `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **StaticToken** on `MCP_HTTP_BEARER_TOKEN` in every environment (ADR-0021 exception, temporary), `RecordTape=false` |
-| `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
+| `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **StaticToken** on `MCP_HTTP_BEARER_TOKEN` in every environment (ADR-0021 exception, temporary), `RecordTape=false`, `RecordLatestQuotes=false`, `GetQuoteEnabled=true` |
+| `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, `RecordLatestQuotes=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
+
+The recorder writes latest quotes (`MarketData__RecordLatestQuotes=true`). The server lists
+`get_quote` (`MarketData__GetQuoteEnabled=true`) and keeps `RecordLatestQuotes=false`, so
+it does not open a hub. The template check rejects a server that records quotes, and
+rejects either of those two switches on without the other. Both off is allowed. Staging
+and production share this file (gh#351, ADR-0016).
 
 `Deployment__ImageDigest` is derived from `SERVER_IMAGE`, never typed separately, and `/health` reports
 it as `digest`. `version` is the informational version stamped into that image at build

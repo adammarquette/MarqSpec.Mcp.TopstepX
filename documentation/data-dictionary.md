@@ -830,14 +830,16 @@ Index: `(Day, UploadState)` — the read that decision would make.
 
 The recorder upserts this row from the market hub it already holds, at most once per
 `MarketData__LatestQuoteFlush`, and only when that process is also recording tape.
-`MarketData__RecordLatestQuotes` defaults off. Railway does not turn the switch on, so the
-feature is inert in production until the deployment slice. A server that is not the recorder
-does not open a hub to fill the table. `ReceivedAt` is `clock_timestamp()`, so the reader
-in the next slice can age on that clock. A flush delay makes the stamp up to one flush gap
-later than the hub event. `get_quote` reads the newest row for the instrument, the contract
-the recorder subscribed, and reports that age. It does not search the venue. A row older than
-`MarketData__LatestQuoteStaleAfter` is marked stale and still returned. The tool is registered
-only when `MarketData__GetQuoteEnabled` is on, which defaults off.
+`MarketData__RecordLatestQuotes` defaults off. The Railway recorder sets it on. The Railway
+server sets it false and sets `MarketData__GetQuoteEnabled` on, so the server lists
+`get_quote` and does not open a hub to fill the table. A server that is not the recorder
+does not open a hub to fill the table. `ReceivedAt` is `clock_timestamp()`. A flush delay
+makes the stamp up to one flush gap later than the hub event. `get_quote` reads the newest
+row for the instrument, the contract the recorder subscribed, and reports that age. It does
+not search the venue. Until the new front ticks, that row is the old contract: the answer
+names it and goes stale (gh#922, ADR-0016). A row older than
+`MarketData__LatestQuoteStaleAfter` is marked stale and still returned. The tool is
+registered only when `MarketData__GetQuoteEnabled` is on. The code default is off.
 A failure counter names the CLR type on `exception.type`, not the message.
 An older receipt cannot replace a newer one. This table is not subject to retention
 (gh#763, ADR-0027). The prune pass does not delete it. A rolled contract's row stays

@@ -231,7 +231,8 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// <remarks>
     /// <b>Off by default.</b> The public server cannot see the recorder's
     /// <see cref="RecordLatestQuotes"/> switch. Leaving the tool listed while that switch is off
-    /// makes every call look like a market with no quote. PR 3 turns this on with the recorder.
+    /// makes every call look like a market with no quote. The Railway template turns this on
+    /// for the server and leaves <see cref="RecordLatestQuotes"/> false there. Compose does not.
     /// </remarks>
     public bool GetQuoteEnabled { get; init; }
 

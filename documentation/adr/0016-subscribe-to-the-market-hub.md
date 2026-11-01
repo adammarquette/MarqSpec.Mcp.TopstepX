@@ -79,6 +79,7 @@ decides that one host speaks stdio and streamable HTTP; grep it for `signalr`, `
 | [2026-08-30](#update-2026-08-30--a-failed-open-persist-drops-the-subscribe) | A store fault after a confirmed subscribe drops the venue subscription (gh#376) |
 | [2026-08-31](#update-2026-08-31--one-recorder-per-instrument-is-a-claim-not-a-convention) | "Two subscribers on one tape" becomes a store-backed claim the second recorder is refused (gh#404) |
 | [2026-10-24](#update-2026-10-24--a-process-that-is-not-the-recorder-still-serves-closed-coverage) | A process that is not the recorder serves closed coverage and flags it not-live (gh#728) |
+| [2026-11-01](#update-2026-11-01--the-recorder-writes-the-latest-quote) | The recorder writes the latest quote; the server reads it and opens no hub (gh#351) |
 
 ## Update (2026-08-28) — the standing choice is reversed
 
@@ -631,6 +632,56 @@ was lost or a connect attempt failed. A clean first connect is zero, and zero is
 when there is no print. A print later than `asOfUtc` is outside the report window and is omitted.
 A reply reused from the five-second memo keeps that age against the cached `asOfUtc` (gh#793).
 
+## Update (2026-11-01) — the recorder writes the latest quote (gh#351)
+
+The recorder writes the latest quote for each contract to Postgres. The server reads
+that row. The server does not open a market hub to answer `get_quote`.
+
+The writer runs only when the transport is HTTP, `MarketData__RecordTape` is on, and
+`MarketData__RecordLatestQuotes` is on. It uses the hub the tape recorder already
+connected. It does not call `ConnectMarketHubAsync` and it does not touch the
+session-login gate. The Railway template sets `MarketData__RecordLatestQuotes` to
+`"true"` on the recorder and to the literal `"false"` on the server.
+`evaluate-template.mjs` rejects any other value on the server (`server-records-quotes`).
+
+`get_quote` is registered only when `MarketData__GetQuoteEnabled` is true. The template
+sets that true on the server and does not set it on the recorder, so only the public
+server lists the tool. The check rejects the tool on without the recorder writing, and
+the recorder writing without the tool (`get-quote-without-recorder`,
+`quotes-recorded-unread`). Both off stays valid. The code default of both switches
+stays false, so compose and any process outside this template leave the feature off.
+
+### What a read is
+
+Quotes coalesce and flush at most once per `MarketData__LatestQuoteFlush` (one second).
+`ReceivedAt` is the database `clock_timestamp()` at the upsert. `ageSeconds` is that
+same clock minus `ReceivedAt`, and it is at least zero. A row older than
+`MarketData__LatestQuoteStaleAfter` (fifteen seconds) is stale and is still returned.
+
+The front is the newest `LatestQuotes` row for the instrument, ordered by `ReceivedAt`.
+The read does not search the venue. The table is one row per contract, so that scan
+has no extra index.
+
+### A roll (gh#922)
+
+Fronts are resolved again on `MarketData__LatestQuoteFrontRefresh` (fifteen minutes),
+so a roll can be that late. On a normal roll the writer drops the old front. Until the
+new contract ticks, `get_quote` returns the old contract. The payload names that
+`contractId`, and the row goes stale once its age passes the window. That is the last
+quote the recorder stored, labelled as such.
+
+If unsubscribing the old contract fails, both can keep ticking, and successive reads
+can name different contracts. That case stays open on gh#922.
+
+### Unknown symbol (`R-5.3`)
+
+`R-5.3` says an unknown instrument is an error, never an empty series. `get_quote`
+returns status `unknown_symbol` and does not throw. A quote probe is a result the
+caller branches on. A served symbol with no row is status `missing`, also a result.
+A store fault is status `failed`, not a miss, and the caller does not receive the
+database error (`R-5.7`). Prices stay numbers (`R-5.2`). The read span and counter
+go out with the rest of the host telemetry (`R-5.10`).
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.
@@ -653,3 +704,5 @@ A reply reused from the five-second memo keeps that age against the cached `asOf
 - gh#869 — a failed connect re-enters the inconclusive-probe backoff. Landed in the update above.
 - gh#793 — `hubReconnects` (a reconnect after a loss or a failed attempt; a clean start is
   zero) and `lastTickAgeSeconds` on the recorder-health report. Landed in the update above.
+- gh#351 — the recorder writes the latest quote and the server reads it. Landed in the
+  update above. A roll that keeps both contracts ticking stays open on gh#922.

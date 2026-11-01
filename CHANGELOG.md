@@ -83,6 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A database outage on the trading gate refuses instead of throwing** (gh#958, ADR-0024).
+  A connection failure, a command timeout, or a store exception before the send returns the
+  fail-closed refusal. The writer-lock re-check still refuses on any non-fatal finalise fault,
+  and both save attempts plus the `FinaliseId` lookup run with or without a cap charge. When
+  both saves fail and the lookup fails too, the caller still gets `account_writer_unavailable`
+  or `account_writer_held`. A failed cap reversal leaves the cap over-charged. A failed claim
+  writes `error` under the caller's key. Schema and constraint errors are not outages. Caller
+  cancellation still throws. Nothing is sent.
 - **Expected tape-volume prepare logs are not Errors** (gh#894).
 - **Required-store review follow-ups** (gh#843, #864). The cold-start termination test
   waits until the applying command has started, without polling pg_stat_activity.

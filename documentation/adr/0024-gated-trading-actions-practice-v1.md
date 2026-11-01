@@ -259,10 +259,30 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    reversal or a second `Refused` row. The partial unique index
    `IX_TradingAuditLog_FinaliseId_Outcome` on `(FinaliseId, Outcome)`, where `FinaliseId` is not
    null, is what keeps that to one reversal and one `Refused` row per attempt
-   (`20261101114605_AddTradingAuditFinaliseId`). If both attempts fail,
-   nothing new is written. The pre-send claim stays `Unknown`, a cap
+   (`20261101114605_AddTradingAuditFinaliseId`). The re-check's `TryHoldAsync` and both finalise
+   catches treat every exception except `OutOfMemoryException` as a failed attempt, including an
+   `InvalidOperationException` from the audit writer, so that fault still returns the writer refusal
+   and does not escape as a retryable pre-send exception (gh#958). The first attempt always writes.
+   Finalise does not swallow its own save: a cap reversal plus its `Refused` row when a charge was
+   taken, and the `Refused` row alone when no charge was taken or the reversal is already stored.
+   A failure of either save is retried once, and that retry reads the store for the `FinaliseId`
+   before it writes again. If both attempts fail, the gate reads the store for that `FinaliseId`
+   again. A `Refused` row there is that refusal. When that lookup fails with a store outage, the
+   caller still gets `account_writer_unavailable` or `account_writer_held` and no exception.
+   Nothing new is written. The pre-send claim stays `Unknown`, a cap
    charge that already committed stays charged, a same-key retry replays `OutcomeUnknown`, and the
-   caller needs a fresh idempotency key. Nothing was sent. A drop during that call is the
+   caller needs a fresh idempotency key. Nothing was sent. A failed reversal on the disabled check
+   after the charge, or on a writer refusal that is reversing a charge, is swallowed. The cap stays
+   over-charged. That is fail-safe: a later order hits the cap instead of being allowed. The same
+   store faults on an earlier read or write (the daily-cap lock, the cap total, the claim, a preview
+   row, or a refusal audit) return `error` when the outage is why the call cannot continue, or the
+   refusal already decided when only its audit row failed. A claim whose store call fails writes
+   `error` under the caller's key when the store can take the row, so a same-key retry replays
+   `error` and the caller needs a fresh key. Schema and constraint failures (`SqlState` class 42 or
+   23) are not that outage. The fault is logged by type. Caller cancellation still propagates where
+   the caller's token is the one that fired. A store fault after the send has started stays
+   `OutcomeUnknown`. An outage never becomes an allow.
+   A drop during that call is the
    window that remains: the send may already be in flight, and the next write must take the lock
    again. Reads and the recorder do not take the lock. The lock is released on shutdown. A dropped
    connection drops the lock; the next write looks up `pg_locks` for this backend (`objsubid` 2)
@@ -283,6 +303,8 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    as that refusal (`SafeToRetry`), not as `OutcomeUnknown`. An earlier refusal, such as an allowlist miss
    that was later fixed, must not turn a later unknown transmit into `SafeToRetry`. A later refusal with a
    different request hash, such as an idempotency conflict, does not either. Previews are not claims. A
+   claim whose store call fails writes `error` under the caller's key when that row can be stored, so
+   a same-key retry replays `error` and a fresh key is required (gh#958). A
    disabled refusal taken before the
    claim is not stored, so enabling trading does not replay it into a send. A key longer than 256 characters
    is `idempotency_key_too_long` and writes no row. A blank key is `idempotency_key_required` and is audited.
@@ -295,7 +317,8 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    none. The kill switch, stage, allowlist, denylist, caps, a blank key, an idempotency conflict,
    `account_writer_held`, `account_writer_unavailable`, a gateway
    refusal, and a `trading_disabled` that lands after the claim write a `Refused` row. A preview writes
-   `Preview`. The pre-send `Unknown` claim is the only `Unknown` row for a keyed send.
+   `Preview`. The pre-send `Unknown` claim is the only `Unknown` row for a keyed send. A store outage
+   before the send still refuses when that audit row cannot be written (gh#958).
 10. **HTTP OAuth** — when `Mcp__Auth__Mode=OAuth`, trading tools require a **write scope**
    distinct from read (gh#719). Stdio/local deployments rely on process boundary + enable flag.
 

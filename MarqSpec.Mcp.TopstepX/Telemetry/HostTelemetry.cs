@@ -75,6 +75,12 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A print stored from the market hub.</summary>
     public const string TapeTicksInstrument = "mcp.tape.ticks";
 
+    /// <summary>Latest-quote rows a flush wrote, or a write that failed.</summary>
+    public const string QuoteWritesInstrument = "mcp.quote.writes";
+
+    /// <summary>A latest-quote flush, subscribe, or front lookup that did not succeed.</summary>
+    public const string QuoteFailuresInstrument = "mcp.quote.failures";
+
     /// <summary>A market-hub connection transition.</summary>
     public const string TapeReconnectsInstrument = "mcp.tape.reconnects";
 
@@ -164,6 +170,9 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Why a range was outstanding. Values: <see cref="GapReason"/>.</summary>
     public const string ReasonTag = "reason";
 
+    /// <summary>The CLR type name on a latest-quote failure. OTel <c>exception.type</c>.</summary>
+    public const string ExceptionTag = "exception.type";
+
     /// <summary>Which way the hub moved. Values: <see cref="TapeTransition"/>.</summary>
     public const string TransitionTag = "transition";
 
@@ -182,6 +191,8 @@ public sealed class HostTelemetry : IDisposable
     private readonly Histogram<double> _venueCallDuration;
     private readonly Counter<long> _gapFills;
     private readonly Counter<long> _tapeTicks;
+    private readonly Counter<long> _quoteWrites;
+    private readonly Counter<long> _quoteFailures;
     private readonly Counter<long> _tapeReconnects;
     private readonly Counter<long> _tapeLeaseChanges;
     private readonly Counter<long> _recorderHealthReads;
@@ -236,6 +247,16 @@ public sealed class HostTelemetry : IDisposable
             TapeTicksInstrument,
             unit: "{print}",
             description: "Prints stored from the market hub, by instrument.");
+
+        _quoteWrites = _meter.CreateCounter<long>(
+            QuoteWritesInstrument,
+            unit: "{row}",
+            description: "Latest-quote rows written, or a failed flush, by outcome.");
+
+        _quoteFailures = _meter.CreateCounter<long>(
+            QuoteFailuresInstrument,
+            unit: "{failure}",
+            description: "Latest-quote flushes, subscribes, or front lookups that did not succeed.");
 
         _tapeReconnects = _meter.CreateCounter<long>(
             TapeReconnectsInstrument,
@@ -492,6 +513,51 @@ public sealed class HostTelemetry : IDisposable
     /// </remarks>
     public void TapeTick(string symbol) =>
         _tapeTicks.Add(1, new KeyValuePair<string, object?>(SymbolTag, symbol));
+
+    /// <summary>Counts a latest-quote write outcome.</summary>
+    /// <param name="outcome">What happened, from <see cref="QuoteWriteOutcome"/>.</param>
+    /// <param name="count">Rows, or one for a subscribe or front failure. Zero records nothing.</param>
+    public void QuoteWrite(string outcome, int count)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outcome);
+        if (count <= 0)
+        {
+            return;
+        }
+
+        _quoteWrites.Add(count, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+    }
+
+    /// <summary>Counts one latest-quote failure.</summary>
+    /// <param name="reason">Why, from <see cref="QuoteWriteOutcome"/> other than written.</param>
+    public void QuoteFailure(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        _quoteFailures.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+
+    /// <summary>Counts one latest-quote failure and names the exception type.</summary>
+    /// <param name="reason">Why, from <see cref="QuoteWriteOutcome"/> other than written.</param>
+    /// <param name="exceptionType">The CLR type name. Not the message.</param>
+    public void QuoteFailure(string reason, string exceptionType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        ArgumentException.ThrowIfNullOrWhiteSpace(exceptionType);
+        _quoteFailures.Add(
+            1,
+            new KeyValuePair<string, object?>(ReasonTag, reason),
+            new KeyValuePair<string, object?>(ExceptionTag, exceptionType));
+    }
+
+    /// <summary>A span for one latest-quote flush.</summary>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    public Activity? StartQuoteFlush() =>
+        Activities.StartActivity("quote.flush", ActivityKind.Internal);
+
+    /// <summary>A span for one pass that subscribes the current fronts.</summary>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    public Activity? StartQuoteSubscribe() =>
+        Activities.StartActivity("quote.subscribe", ActivityKind.Internal);
 
     /// <summary>Counts one market-hub connection transition.</summary>
     /// <param name="transition">Which way it moved, from <see cref="TapeTransition"/>.</param>
@@ -1160,6 +1226,49 @@ public static class RecorderHealthOutcome
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Ok, Degraded, Unavailable, Timeout];
+}
+
+/// <summary>
+/// Latest-quote write outcomes. Used as <c>outcome</c> on writes and <c>reason</c> on failures.
+/// </summary>
+public static class QuoteWriteOutcome
+{
+    /// <summary>A flush wrote or revised rows.</summary>
+    public const string Written = "quote_written";
+
+    /// <summary>A flush threw. The batch is kept and retried.</summary>
+    public const string Failed = "quote_failed";
+
+    /// <summary>The hub refused the price subscription.</summary>
+    public const string SubscribeRefused = "quote_subscribe_refused";
+
+    /// <summary>The venue named no front contract for an instrument.</summary>
+    public const string FrontUnresolved = "quote_front_unresolved";
+
+    /// <summary>A subscribe pass attached every current front.</summary>
+    public const string Subscribed = "quote_subscribed";
+
+    /// <summary>The quote volume was not a contract count, so the quote was skipped.</summary>
+    public const string VolumeRejected = "quote_volume_rejected";
+
+    /// <summary>A price unsubscribe did not finish. Not a store failure.</summary>
+    public const string UnsubscribeFailed = "quote_unsubscribe_failed";
+
+    /// <summary>The shutdown flush did not finish. Not a store failure during the loop.</summary>
+    public const string ShutdownFailed = "quote_shutdown_failed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+    [
+        Written,
+        Failed,
+        SubscribeRefused,
+        FrontUnresolved,
+        Subscribed,
+        VolumeRejected,
+        UnsubscribeFailed,
+        ShutdownFailed,
+    ];
 }
 
 /// <summary>Where a session conflict was seen — the <c>source</c> tag's closed vocabulary (gh#757).</summary>

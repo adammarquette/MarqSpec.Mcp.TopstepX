@@ -422,14 +422,16 @@ not start until v1 is shipped and a separate ADR amendment is accepted.
 
 *Assisted-by: Cursor Cloud Agent*
 
-## Update (2026-11-01) — the unknown-stage counter (gh#732)
+## Update (2026-11-01) — the unknown-stage alert (gh#732)
 
-gh#733 in the follow-up table was a duplicate of gh#732. The parser-gap signal is the untagged counter
-`mcp.execution.unknown_stage` on the host meter `MarqSpec.Mcp.TopstepX`. It increments by one when
+gh#733 in the follow-up table was a duplicate of gh#732. The parser-gap series is the existing counter
+`mcp.execution.writes` with `refusal=unknown_account_stage`. It increments by one when
 `RefuseIfStageBlocksWrite` sees `AccountStage.Unknown`, including a `dryRun` preview, and not when the
 stage is practice or a known non-practice family. No account id and no account name are tags. The
 refusal itself is unchanged.
 
-This repository does not define an alarm resource. Paging stays the CloudWatch path (ADR-0019, ADR-0023,
-gh#526). The rule an operator attaches to the existing per-environment topic is in
-[deployment.md](../deployment.md#unknown-account-stage-gh732). Grafana alerting is not added.
+The alert rule is the sum of that tagged count at least 1 over 5 minutes. Missing data does not
+breach. It is defined and unwired: Railway sets `Otel__ServiceName` and no endpoint, and no endpoint
+means the server emits no telemetry (ADR-0019). Choosing a Railway telemetry backend is a later
+decision. This record does not set an endpoint. The same words are in
+[deployment.md](../deployment.md#unknown-account-stage-gh732).

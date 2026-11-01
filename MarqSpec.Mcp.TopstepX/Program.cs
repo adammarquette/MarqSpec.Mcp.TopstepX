@@ -717,7 +717,7 @@ public static class Program
             sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>(),
             sp.GetRequiredService<ITradingKillSwitch>(),
             sp.GetRequiredService<IAccountStageResolver>()));
-        services.AddSingleton<ITradingUnknownStageRefusalSignal, TradingUnknownStageRefusalSignal>();
+        services.AddSingleton<ITradingUnknownStageRefusalSignal, NullTradingUnknownStageRefusalSignal>();
         services.AddSingleton<IAccountStageResolver, ProjectXAccountStageResolver>();
         services.AddScoped<ITradingAuditLogWriter, TradingAuditLogWriter>();
         services.AddScoped<ITradingDailyCapCoordinator, TradingDailyCapCoordinator>();

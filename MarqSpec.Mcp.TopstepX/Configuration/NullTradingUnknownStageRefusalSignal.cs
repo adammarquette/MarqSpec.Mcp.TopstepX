@@ -1,6 +1,8 @@
 namespace MarqSpec.Mcp.TopstepX.Configuration;
 
-/// <summary>No-op. Production registers <see cref="TradingUnknownStageRefusalSignal"/> (gh#732).</summary>
+/// <summary>
+/// No-op. The writes counter already records an unknown-stage refusal (gh#732).
+/// </summary>
 public sealed class NullTradingUnknownStageRefusalSignal : ITradingUnknownStageRefusalSignal
 {
     /// <inheritdoc />

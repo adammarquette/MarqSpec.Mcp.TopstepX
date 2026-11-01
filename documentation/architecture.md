@@ -833,7 +833,6 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.quote.writes` | counter | `outcome` = quote_written \| quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_subscribed \| quote_volume_rejected | `LatestQuoteWriter` (gh#351). Spans `quote.flush` and `quote.subscribe` carry the same `outcome` |
 | `mcp.quote.reads` | counter | `outcome` = quote_fresh \| quote_stale \| quote_miss \| quote_unknown \| quote_read_failed · `reason` = front_lookup_failed \| store_failed · `exception.type` = the CLR type name, not the message | `LatestQuoteReader` (gh#351). Span `quote.read` carries the same `outcome`. `quote_read_failed` sets Error and is not a miss. `reason` and `exception.type` are set only then. `quote_stale` is still a row |
 | `mcp.quote.failures` | counter | `reason` = quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_volume_rejected \| quote_unsubscribe_failed \| quote_shutdown_failed · `exception.type` = the CLR type name, not the message | `LatestQuoteWriter`. `quote_failed` is a store flush. Unsubscribe and shutdown are their own reasons |
-| `mcp.execution.unknown_stage` | counter, refusals | (none) | `TradingUnknownStageRefusalSignal`, once per `unknown_account_stage` refusal, including a dry-run preview (gh#732). Not a known non-practice refusal |
 
 `mcp.recorder.health.reads` reuses the `outcome` tag key. Its values are `ok`, `degraded`, `unavailable` and
 `timeout`, not the cache `hit` / `miss` / `partial` set. `ok` means the hub is up, every reported contract is

@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **An expected tape-volume prepare skip is Information** (gh#894). The entrypoint wrote
+  `tape volume prepare skipped` to stderr, which Railway shows as Error, including on the server
+  where recording is off. On HTTP with `MarketData__RecordTape` not true, that skip goes to stdout.
+  A skip while recording is on, a symlink refusal, and the stdio skip stay on stderr. Stdio stdout
+  is the protocol frame.
+
 ## [0.7.1] - 2026-10-31
 
 ### Added

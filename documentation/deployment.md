@@ -459,7 +459,10 @@ and skips. Rows stay in Postgres. That skip is the fail-safe for the **applicati
 [`scripts/prepare-tape-volume.sh`](../scripts/prepare-tape-volume.sh) followed by
 `dotnet MarqSpec.Mcp.TopstepX.dll`. `USER` stays 64198, so by default the script is not root: it logs
 `tape volume prepare skipped: running as uid 64198` and execs `dotnet` unchanged. That is every service
-today (server, recorder, compose, `docker run`). Only a service started as root with `RAILWAY_RUN_UID=0`,
+today (server, recorder, compose, `docker run`). On HTTP, with `MarketData__RecordTape` not true, that
+skip is written to stdout. Railway shows stdout as Information and stderr as Error, and the server is
+that case (gh#894). A skip while recording is on, and a symlink refusal, stay on stderr. Stdio keeps
+the skip on stderr as well: stdout is the protocol. Only a service started as root with `RAILWAY_RUN_UID=0`,
 which the template allows on the production recorder alone once the export is enabled, prepares the volume:
 
 - With no directory at `TAPE_VOLUME_ROOT` (default `/data`) it logs `skipped: no volume` and changes nothing.

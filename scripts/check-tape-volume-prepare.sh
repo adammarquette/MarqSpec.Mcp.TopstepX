@@ -75,8 +75,9 @@ if [ "$owner" != "64198" ] || [ "$keys_owner" != "64198" ] || [ "$keys_mode" != 
 fi
 
 # Without uid 0 the entrypoint behaves as before gh#767: it logs one line, prepares nothing and runs its
-# arguments as the caller. The checkout is not traversable by nobody (the runner work directory is mode 700),
-# so the script is copied onto this temp dir first. /usr/sbin/runuser does not depend on sudo's PATH.
+# arguments as the caller. Transport is unset here, so this is stdio and the line stays on stderr: stdout
+# is the protocol (gh#894). The checkout is not traversable by nobody (the runner work directory is mode
+# 700), so the script is copied onto this temp dir first. /usr/sbin/runuser does not depend on sudo's PATH.
 cp "$prepare" "$work/prepare-tape-volume.sh"
 chmod 755 "$work" "$work/prepare-tape-volume.sh"
 if ! /usr/sbin/runuser -u nobody -- env TAPE_VOLUME_ROOT="$work/unprepared" "$work/prepare-tape-volume.sh" \
@@ -113,6 +114,82 @@ TAPE_VOLUME_ROOT="$work/drop" "$prepare" /bin/sh -c \
 if [ "$(sed -n 1p "$work/out")" != "64198" ] || [ "$(sed -n 2p "$work/out")" != "64198" ] \
   || [ "$(stat -c %u "$work/drop/tape-exports")" != "64198" ]; then
   echo "root with a volume did not chown and drop to 64198:" >&2
+  cat "$work/out" "$work/err" >&2
+  exit 1
+fi
+
+# gh#894. The server is HTTP with recording off, so the skip is expected. Railway shows stderr as Error
+# and stdout as Information. Recording on, and a symlink refusal, stay on stderr.
+if ! /usr/sbin/runuser -u nobody -- env Mcp__Transport=Http MarketData__RecordTape=false \
+  TAPE_VOLUME_ROOT="$work/http-off" "$work/prepare-tape-volume.sh" \
+  /bin/sh -c 'id -u' >"$work/out" 2>"$work/err"; then
+  echo "http with recording off did not run its command:" >&2
+  cat "$work/err" >&2
+  exit 1
+fi
+if ! grep -q 'skipped: running as uid' "$work/out" \
+  || grep -q 'tape volume prepare skipped' "$work/err" \
+  || [ "$(tail -n 1 "$work/out")" = "0" ]; then
+  echo "http with recording off did not log the skip on stdout:" >&2
+  cat "$work/out" "$work/err" >&2
+  exit 1
+fi
+if [ -e "$work/http-off" ]; then
+  echo "http with recording off prepared a tree" >&2
+  exit 1
+fi
+
+if ! /usr/sbin/runuser -u nobody -- env Mcp__Transport=Http MarketData__RecordTape=true \
+  TAPE_VOLUME_ROOT="$work/http-on" "$work/prepare-tape-volume.sh" \
+  /bin/sh -c 'id -u' >"$work/out" 2>"$work/err"; then
+  echo "http with recording on did not run its command:" >&2
+  cat "$work/err" >&2
+  exit 1
+fi
+if ! grep -q 'skipped: running as uid' "$work/err" \
+  || grep -q 'tape volume prepare skipped' "$work/out" \
+  || [ "$(cat "$work/out")" = "0" ]; then
+  echo "http with recording on did not keep the skip on stderr:" >&2
+  cat "$work/out" "$work/err" >&2
+  exit 1
+fi
+if [ -e "$work/http-on" ]; then
+  echo "http with recording on prepared a tree" >&2
+  exit 1
+fi
+
+# A refusal is a failure even when recording is off and the transport is HTTP. It stays on stderr.
+mkdir -p "$work/real-http"
+ln -s "$work/real-http" "$work/linked-http"
+if Mcp__Transport=Http MarketData__RecordTape=false TAPE_VOLUME_ROOT="$work/linked-http" \
+  PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" >"$work/out" 2>"$work/err"; then
+  echo "http with recording off accepted a symlink at the volume root" >&2
+  exit 1
+fi
+if ! grep -q 'refusing a symlink' "$work/err" || grep -q 'refusing a symlink' "$work/out"; then
+  echo "a symlink refusal was not logged on stderr while recording was off:" >&2
+  cat "$work/out" "$work/err" >&2
+  exit 1
+fi
+
+# Root, HTTP, recording off, no volume: the skip is on stdout, and the command still drops to 64198.
+Mcp__Transport=Http MarketData__RecordTape=false TAPE_VOLUME_ROOT="$work/absent-http" \
+  "$prepare" /bin/sh -c 'id -u; id -g' >"$work/out" 2>"$work/err"
+if [ -e "$work/absent-http" ] || ! grep -q 'skipped: no volume' "$work/out" \
+  || grep -q 'skipped: no volume' "$work/err" \
+  || [ "$(tail -n 2 "$work/out" | tr '\n' ' ')" != "64198 64198 " ]; then
+  echo "http, recording off, root without a volume did not skip on stdout:" >&2
+  cat "$work/out" "$work/err" >&2
+  exit 1
+fi
+
+# Root, HTTP, recording on, no volume: the skip stays on stderr.
+Mcp__Transport=Http MarketData__RecordTape=true TAPE_VOLUME_ROOT="$work/absent-http-on" \
+  "$prepare" /bin/sh -c 'id -u; id -g' >"$work/out" 2>"$work/err"
+if [ -e "$work/absent-http-on" ] || ! grep -q 'skipped: no volume' "$work/err" \
+  || grep -q 'skipped: no volume' "$work/out" \
+  || [ "$(tr '\n' ' ' <"$work/out")" != "64198 64198 " ]; then
+  echo "http, recording on, root without a volume did not keep the skip on stderr:" >&2
   cat "$work/out" "$work/err" >&2
   exit 1
 fi

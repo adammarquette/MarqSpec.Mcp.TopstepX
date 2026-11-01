@@ -13,12 +13,33 @@
 # are touched (deployment.md, "Preparing /data as root"), never following a link. A symlink is refused.
 # PREPARE_TAPE_VOLUME_ONLY=1 stops before exec, which is how the shell test exercises the ownership.
 set -eu
+
+# Railway shows stderr as Error and stdout as Information. The server is HTTP with recording off, so
+# that skip is expected and goes to stdout (gh#894). Stdio keeps it on stderr: stdout is the protocol
+# frame. A skip while recording is on, and every refusal, stays on stderr.
+log_skip() {
+  case "${MarketData__RecordTape:-}" in
+    [tT][rR][uU][eE])
+      echo "$1" >&2
+      return
+      ;;
+  esac
+  case "${Mcp__Transport:-}" in
+    [hH][tT][tT][pP])
+      echo "$1"
+      ;;
+    *)
+      echo "$1" >&2
+      ;;
+  esac
+}
+
 root="${TAPE_VOLUME_ROOT:-/data}"
 if [ "$#" -eq 0 ]; then
   set -- dotnet MarqSpec.Mcp.TopstepX.dll
 fi
 if [ "$(id -u)" -ne 0 ]; then
-  echo "tape volume prepare skipped: running as uid $(id -u)" >&2
+  log_skip "tape volume prepare skipped: running as uid $(id -u)"
   if [ "${PREPARE_TAPE_VOLUME_ONLY:-}" = "1" ]; then
     exit 0
   fi
@@ -39,7 +60,7 @@ if [ -L "$root" ] || [ -d "$root" ]; then
   find "$root/keys" -maxdepth 1 -name drive-sa.json -type f -exec chmod 0400 {} +
   echo "tape volume prepared: $root owned by 64198" >&2
 else
-  echo "tape volume prepare skipped: no volume at $root" >&2
+  log_skip "tape volume prepare skipped: no volume at $root"
 fi
 if [ "${PREPARE_TAPE_VOLUME_ONLY:-}" = "1" ]; then
   exit 0

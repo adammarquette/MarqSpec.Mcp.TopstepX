@@ -219,15 +219,29 @@ public sealed class VenueRequestPacer
 
             if (plan.Yielded)
             {
-                Task delay = Task.Delay(wait, _clock, cancellationToken);
-                Task finished = await Task.WhenAny(delay, liveReleased).ConfigureAwait(false);
-                if (finished == delay)
+                // Cancel the delay when the live release wins, including when both complete on
+                // the same clock advance. Leaving it armed lets a later advance fire it (gh#948).
+                using CancellationTokenSource yieldWait =
+                    CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                Task delay = Task.Delay(wait, _clock, yieldWait.Token);
+                await Task.WhenAny(delay, liveReleased).ConfigureAwait(false);
+                if (liveReleased.IsCompleted)
+                {
+                    // Do not await the delay here. This continuation can be the delay's own
+                    // callback, and awaiting it would wait for that callback to return.
+                    if (!delay.IsCompleted)
+                    {
+                        yieldWait.Cancel();
+                    }
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        throw new OperationCanceledException(cancellationToken);
+                    }
+                }
+                else
                 {
                     await delay.ConfigureAwait(false);
-                }
-                else if (cancellationToken.IsCancellationRequested)
-                {
-                    throw new OperationCanceledException(cancellationToken);
                 }
 
                 continue;

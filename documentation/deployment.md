@@ -93,7 +93,9 @@ one warning when that value is set and differs from the stamp, and logs nothing 
   ([pricing](https://docs.railway.com/reference/pricing/plans)), so a full 10 GiB costs about $1.50 a month.
 - `dev` and PR sandboxes have **no volume, no backups and no tape export**; every redeploy starts empty.
 - `[pg-volume]` enforces all three directions: production has exactly one, staging has exactly one, and
-  every other environment has none. `Retention__*` stays unset everywhere (gh#763).
+  every other environment has none. The template does not set `TapeRetention__Days`. The
+  reserved-name check matches keys that start with `Retention__` and does not match this key.
+  The code default of 90 applies where the key is absent (gh#763, ADR-0027).
 - An apply redeploys postgres only when postgres's own config changes (gh#844). Until gh#844 the template
   stated Railway's default restart policy, which Railway stores as null, so every plan re-applied it and
   every apply redeployed (and, before the volume, emptied) staging's Postgres; `[no-default-drift]` now
@@ -276,12 +278,12 @@ produce a second **writer**. ADR-0016 wants one recorder.
   lock does not cover the gap between migrations (gh#843). No option exists to limit migrations to one
   service; the lock is what makes the overlap safe.
 
-**Data retention — proposed, pending an ADR.** Not in the template: the schema keeps the trade tape forever on
-purpose (`AddTradeTape` migration, `SchemaTests`). Proposed names are commented in
-[`.env.example`](../.env.example): `Retention__Enabled=false`, `Retention__RawTapeDays=30`,
-`Retention__DailySummaryDays=0` (forever) and `Retention__RequireExportBeforeDrop=true`. There is no pruning
-until that ADR (gh#763) is accepted, and export keys belong to gh#755. Until both exist, size the production volume
-for unbounded tape and keep its backups on.
+**Tape retention (gh#763, ADR-0027).** The recorder deletes a UTC day of `Trades` only after an
+`uploaded` trades receipt for that day and contract. No receipt means no delete. The window is
+`TapeRetention__Days` (default 90). The template leaves the key unset on purpose: this change does
+not edit Railway variables, and the `Retention__` reserved-name check does not apply to
+`TapeRetention__Days`. Absent, the code default is what runs. Export keys belong to gh#755. Keep
+backups on. Unexported prints cannot be refetched.
 
 **Done in the Railway dashboard, not the file:**
 
@@ -506,6 +508,7 @@ the opposite: empty means the upload is off.
 | `TapeExport__Schedule` | `06:00` | UTC time of day, exact `HH:mm`. The worker waits for this time. A process that starts later waits until the next day. It also skips the pass unless this process holds a recorder lease. |
 | `TapeExport__Path` | `/data/tape-exports` | Absolute directory on the recorder volume. Railway mounts that one volume at `/data`. Not object storage. |
 | `TapeExport__Format` | `csv.gz+parquet` | The only accepted value. Both gzip CSV and Parquet are written. `csv.gz` alone, `parquet` alone, and an empty string are refused. |
+| `TapeRetention__Days` | `90` | Days an uploaded `Trades` day may stay (gh#763, ADR-0027). Accepted values are 7 through 3650. Zero and a negative number are refused and do not turn pruning off. A day is deleted only when an `uploaded` trades receipt exists. The recorder process runs the pass, 15 minutes after start and then every 24 hours, and only while it holds the lease. |
 | `TapeExport__Drive__FolderId` | empty | Drive folder id. **Empty disables Drive.** No client is constructed and no network call is made. |
 | `TapeExport__Drive__ServiceAccountJson` | empty | Inline service-account JSON. **Empty is off** unless the path below is set. Never commit a value. A path wins when both are set. **Anyone who can inspect the container can read this value.** Prefer the path. |
 | `TapeExport__Drive__ServiceAccountJsonPath` | empty | Absolute path of a mounted service-account JSON file. **This is the credential to use** once export is unblocked. On Railway that path is `/data/keys/drive-sa.json` (mode `0400`, directory mode `0700`, owned by uid 64198). Do not set it until export is unblocked. Empty is off unless the inline JSON above is set. A relative path is refused. |
@@ -531,13 +534,18 @@ records `IdentityBusy` and continues. Turning Drive on later uploads days that w
 id and may leave one empty extra folder.
 Reading the files back is [tape-export-reload.md](tape-export-reload.md).
 
-**Retention is out of scope.** `Retention__Enabled`, `Retention__RawTapeDays`,
-`Retention__DailySummaryDays` and `Retention__RequireExportBeforeDrop` are not read. The tape is
-permanent by schema: Timescale `policy_retention` on `Trades` stays empty
-([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)), and this process never deletes local rows.
-Changing that is a product decision that is still pending. It needs its own ADR before any template
-key is honoured. Do not set `Retention__*` expecting this build to drop tape, and do not treat a
-verified export as permission to prune.
+**The recorder prunes an exported day (gh#763, ADR-0027).** A UTC day of `Trades` whose end is at
+or before now minus `TapeRetention__Days` is deleted only when `TapeExportReceipts` has `Kind=trades`,
+`Format=csv.gz`, `UploadState=uploaded` and a non-empty `Sha256` for that day, venue, instrument and
+contract. `drive_disabled`, `pending` and `failed` do not qualify. No such row means the prints stay,
+and the pass logs and counts the skipped day. While Drive export is not live, nothing is `uploaded`,
+so nothing is deleted. The export itself still does not delete rows.
+Timescale `policy_retention` on `Trades` stays empty
+([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)). A chunk is dropped only when it ends at or
+before the cutoff and every row in it has that receipt. A compressed chunk that is only partly
+exported is left. `LatestQuotes` is not tape and is not touched. `Retention__Enabled`,
+`Retention__RawTapeDays`, `Retention__DailySummaryDays` and `Retention__RequireExportBeforeDrop`
+are not keys. The template does not set `TapeRetention__Days`; the code default of 90 applies.
 
 A UTC day is copied once its exclusive end has passed (00:00 UTC the next day). The current day stays
 only in Postgres until then. A mismatch between the manifest and the files refuses that day and still

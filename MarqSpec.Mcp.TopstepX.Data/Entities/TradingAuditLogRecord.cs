@@ -62,4 +62,10 @@ public sealed class TradingAuditLogRecord
     /// every row the venue did not assign an id to.
     /// </summary>
     public long? OrderId { get; set; }
+
+    /// <summary>
+    /// Shared by the cap reversal and the <c>Refused</c> row of one pre-send lock failure.
+    /// Null on every other row. A retry of that failure matches this id and no other attempt.
+    /// </summary>
+    public Guid? FinaliseId { get; set; }
 }

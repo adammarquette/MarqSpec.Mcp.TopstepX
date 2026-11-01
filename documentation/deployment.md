@@ -187,9 +187,13 @@ until #765 merges.
   JsonPath; Schedule HH:mm; Drive JSON a shared reference only; at most one exporter or export volume, and it is the
   recorder; in production, export on means the whole shape at once; outside production, off with no Drive keys.
 
-**One server replica, one region (gh#772).** Until two sessions or replicas trading one account is decided, the
-check (`[single-server]`) requires `server` to state exactly one replica (`numReplicas: 1`), in every environment,
-with no multi-region config. SDK 3.16.0 expresses scale only as `replicas` / `regions`, which compile to
+**One server replica, one region (gh#772, gh#774).** Adam ruled out two replicas trading one account.
+The gate holds a session advisory lock per account. During a Railway redeploy the new container
+refuses trading writes until the old one exits. That overlap is safe: the new process does not send.
+The template check (`[single-server]`, gh#774) still
+requires `server` to state exactly one replica (`numReplicas: 1`), in every environment, with no
+multi-region config. That check is defence in depth beside the lock. SDK 3.16.0 expresses scale only as
+`replicas` / `regions`, which compile to
 `deploy.numReplicas` / `deploy.multiRegionConfig`. It has no autoscaling field, so there is none to pin. A replica
 count or region changed in the dashboard after a deploy is invisible to CI.
 

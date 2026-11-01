@@ -67,13 +67,17 @@ public sealed class TradingExecutionGate(
         TradingExecutionRefusal.InvalidConfiguration(
             "Trading configuration failed validation. The last good values are not kept.");
 
-    /// <summary>Refuses when master enable is off or the kill switch is engaged.</summary>
+    /// <summary>Refuses when master enable is off, or when the kill switch blocks this operation.</summary>
+    /// <param name="killSwitchBlocks">
+    /// True for a new order or a modify. False for cancel and close: Adam decided the halt does not
+    /// block those (gh#770). Invalid configuration still refuses either way.
+    /// </param>
     /// <returns>A refusal, or <see langword="null"/> when trading may proceed past this layer.</returns>
     /// <remarks>
     /// A reload into options that fail validation refuses with
     /// <see cref="TradingExecutionRefusal.InvalidConfiguration"/>. The last good values are not kept.
     /// </remarks>
-    public TradingExecutionRefusal? RefuseIfDisabledOrHalted()
+    public TradingExecutionRefusal? RefuseIfDisabledOrHalted(bool killSwitchBlocks = true)
     {
         if (!TryCurrent(out TradingExecutionOptions current, out TradingExecutionRefusal? invalid))
         {
@@ -85,7 +89,7 @@ public sealed class TradingExecutionGate(
             return TradingExecutionRefusal.TradingDisabled;
         }
 
-        if (_killSwitch.IsEngaged)
+        if (killSwitchBlocks && _killSwitch.IsEngaged)
         {
             return TradingExecutionRefusal.KillSwitchEngaged;
         }
@@ -218,16 +222,20 @@ public sealed class TradingExecutionGate(
     /// <param name="marketData">Read seam used to re-fetch account rows (ADR-0024 §2).</param>
     /// <param name="cancellationToken">Cancellation.</param>
     /// <param name="resolvedAccount">When the risk gate already fetched this account, pass it to skip a second list call.</param>
+    /// <param name="killSwitchBlocks">
+    /// True for a new order or a modify. Cancel and close pass false (gh#770).
+    /// </param>
     /// <returns>A refusal, or <see langword="null"/> when a venue write may proceed to the adapter.</returns>
     public async Task<TradingExecutionRefusal?> RefuseWriteUnlessPermittedAsync(
         int accountId,
         IMarketDataGateway marketData,
         CancellationToken cancellationToken,
-        VenueAccount? resolvedAccount = null)
+        VenueAccount? resolvedAccount = null,
+        bool killSwitchBlocks = true)
     {
         ArgumentNullException.ThrowIfNull(marketData);
 
-        TradingExecutionRefusal? disabled = RefuseIfDisabledOrHalted();
+        TradingExecutionRefusal? disabled = RefuseIfDisabledOrHalted(killSwitchBlocks);
         if (disabled is not null)
         {
             return disabled;

@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   20. Backfill yields while a live read is waiting. HTTP 429 stops the pass. An empty answer within
   2 days of now expires after 15 minutes. An older empty answer is permanent until its
   `BarCoverage` rows are deleted. The last pass is on `get_recorder_health`.
+- **One trading writer per account** (gh#772, ADR-0024). A session advisory lock is taken
+  before a trading write. A second replica refuses with `account_writer_held`. Reads and the
+  recorder are not locked. The template's one-replica check (gh#774) stays as defence in depth.
 - **Unknown account stage is visible on the writes counter** (gh#732, ADR-0024).
   The tag and the unwired alert are specified in
   [deployment.md](documentation/deployment.md#unknown-account-stage-gh732).
@@ -58,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The kill switch blocks new orders and modifies only** (gh#770, ADR-0024). Cancel and close
+  stay allowed. A full close sends no side and no size. A partial close that would exceed the
+  open position is still refused. A lost acknowledgment stays `OutcomeUnknown` plus
+  reconciliation. v1 adds no client order id (gh#771).
 - **A tape day whose source count no longer matches is exported again** (gh#795).
   The export checks gzip row counts before it records a receipt. A fresh day is written
   at most twice in one pass. A generation already on disk counts as the first write, so

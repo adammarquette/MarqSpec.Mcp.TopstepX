@@ -578,6 +578,9 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<bool>("DryRun")
                         .HasColumnType("boolean");
 
+                    b.Property<Guid?>("FinaliseId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("IdempotencyKey")
                         .IsRequired()
                         .HasMaxLength(256)
@@ -615,6 +618,11 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.HasIndex("IdempotencyKey");
 
                     b.HasIndex("AccountId", "AttemptedAt");
+
+                    b.HasIndex("FinaliseId", "Outcome")
+                        .IsUnique()
+                        .HasDatabaseName("IX_TradingAuditLog_FinaliseId_Outcome")
+                        .HasFilter("\"FinaliseId\" IS NOT NULL");
 
                     b.HasIndex("AccountId", "Tool", "IdempotencyKey")
                         .IsUnique()

@@ -72,9 +72,9 @@ public sealed class TradingOrderToolGateTests
     }
 
     [Theory]
-    [MemberData(nameof(EveryOrderTool))]
-    public async Task TradingRiskGate_OrderTool_KillSwitchRefusesWithTelemetry_IncludingCancelAndClose(
-        string operation)
+    [InlineData(TradingMcpTools.PlaceOrderOperation)]
+    [InlineData(TradingMcpTools.ModifyOrderOperation)]
+    public async Task TradingRiskGate_OrderTool_KillSwitchRefusesPlaceAndModify(string operation)
     {
         _killSwitch.IsEngaged = true;
         using HostTelemetry telemetry = new();
@@ -91,6 +91,23 @@ public sealed class TradingOrderToolGateTests
         result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
         CallsFor(operation).Should().Be(0);
         AssertWrite(writes, spans, operation, ExecutionWriteRefusal.KillSwitch);
+    }
+
+    [Theory]
+    [InlineData(TradingMcpTools.CancelOrderOperation)]
+    [InlineData(TradingMcpTools.ClosePositionOperation)]
+    [InlineData(TradingMcpTools.PartialClosePositionOperation)]
+    public async Task TradingRiskGate_OrderTool_KillSwitchAllowsCancelAndClose(string operation)
+    {
+        _killSwitch.IsEngaged = true;
+        using HostTelemetry telemetry = new();
+        TradingOrderTools tools = Tools(telemetry, new TradingExecutionOptions { Enabled = true });
+
+        ToolPayloads.TradingWriteResult result = await Call(tools, operation, "halt-flatten");
+
+        result.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        result.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.NotSafeToRetry);
+        CallsFor(operation).Should().Be(1);
     }
 
     [Theory]

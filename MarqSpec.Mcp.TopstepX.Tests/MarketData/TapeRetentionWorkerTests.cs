@@ -107,10 +107,20 @@ public sealed class TapeRetentionWorkerTests
         await WaitUntilArmed(worker, 1);
         clock.Advance(TapeRetentionWorker.StartupDelay);
         await pass.Called.WaitAsync(TimeSpan.FromSeconds(5));
+        // Called is signalled before the throw, so the worker's catch can log after this wait.
+        using (CancellationTokenSource logged = new(TimeSpan.FromSeconds(5)))
+        {
+            while (!logs.Messages.ToArray().Any(
+                message => message.Contains("disk full", StringComparison.Ordinal)))
+            {
+                await Task.Delay(1, logged.Token);
+            }
+        }
 
         pass.Calls.Should().Be(1);
         worker.ExecuteTask!.IsFaulted.Should().BeFalse();
-        logs.Messages.Should().Contain(message => message.Contains("disk full", StringComparison.Ordinal));
+        logs.Messages.ToArray().Should().Contain(
+            message => message.Contains("disk full", StringComparison.Ordinal));
         failures.LastMeasurement!.Value.Should().Be(1);
         failures.LastMeasurement.Tags[HostTelemetry.ReasonTag]
             .Should().Be(TapePruneReason.PruneError);

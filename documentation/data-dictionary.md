@@ -803,8 +803,9 @@ delete tape.
 
 **This is the confirmation ADR-0027 reads** (`R-10.7`, gh#755). It records that a file was written
 and whether the Drive upload finished. The prune deletes a `Trades` day only when `UploadState` is
-`uploaded` on the trades `csv.gz` row. `drive_disabled` is not that confirmation. `Retention__*`
-is not a key.
+`uploaded` on the trades `csv.gz` row, and that row's `Sha256` is not empty. A receipt is not marked
+`uploaded` unless its row count matches the source rows and `Sha256` is present (gh#795).
+`drive_disabled` is not that confirmation. `Retention__*` is not a key.
 `UploadState = failed` means the local file and the local rows are still there, and `DriveFileId` is
 the last id that landed. `drive_disabled` means Drive was not configured. While Drive stays off that
 state counts as finished. Once Drive is on, those days are exported. `pending` is committed in its

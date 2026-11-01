@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -101,6 +102,64 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         receipt.ContractId.Should().Be(Contract);
         receipt.RowCount.Should().Be(1);
         receipt.DriveFileId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Export_WritesAManifestWithRowCountsAndChecksums()
+    {
+        await SeedTradeAsync(On(_keptDay, 14), 1, 5123.25m);
+
+        await Pass(new HostTelemetry()).ExportAsync(null, CancellationToken.None);
+
+        string json = await File.ReadAllTextAsync(TapeExportArchive.ManifestPath(_destination, _keptDay));
+        using JsonDocument manifest = JsonDocument.Parse(json);
+        JsonElement files = manifest.RootElement.GetProperty("files");
+        files.GetArrayLength().Should().BeGreaterThan(0);
+        string? tradesSha = null;
+        int? tradesRows = null;
+        foreach (JsonElement file in files.EnumerateArray())
+        {
+            string sha = file.GetProperty("sha256").GetString()!;
+            sha.Should().MatchRegex("^[0-9a-f]{64}$");
+            file.GetProperty("rows").GetInt32().Should().BeGreaterThan(0);
+            if (file.GetProperty("kind").GetString() == "trades"
+                && file.GetProperty("format").GetString() == TapeExportArchive.CsvGzFormat)
+            {
+                tradesSha = sha;
+                tradesRows = file.GetProperty("rows").GetInt32();
+            }
+        }
+
+        tradesRows.Should().Be(1);
+        TapeExportReceipt receipt = await _database.TapeExportReceipts.SingleAsync(row =>
+            row.Format == TapeExportArchive.CsvGzFormat && row.Kind == "trades");
+        receipt.Sha256.Should().Be(tradesSha);
+        receipt.RowCount.Should().Be(1);
+        receipt.UploadState.Should().NotBe(TapeExportReceipt.StateUploaded);
+    }
+
+    [Fact]
+    public async Task Export_WhenTheSourceCountDoesNotMatch_RefusesTheReceipt()
+    {
+        await SeedTradeAsync(On(_keptDay, 14), 1, 10m);
+        ExtraTradeOnSourceCount extra = new(_fixture.ConnectionString);
+        await using TopstepXDbContext database = _fixture.CreateContext(extra);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> exports =
+            new(telemetry, HostTelemetry.Name, HostTelemetry.TapeExportsInstrument);
+
+        TapeExportReport report = await Pass(telemetry, database: database)
+            .ExportAsync(null, CancellationToken.None);
+
+        report.DaysExported.Should().Be(0);
+        report.DaysRefused.Should().Be(1);
+        extra.Inserted.Should().BeTrue();
+        (await database.TapeExportReceipts.CountAsync(row =>
+            row.UploadState == TapeExportReceipt.StateUploaded)).Should().Be(0);
+        (await database.TapeExportReceipts.CountAsync()).Should().Be(0);
+        exports.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.OutcomeTag], TapeExportOutcome.VerificationFailed));
+        File.Exists(TapeExportArchive.ManifestPath(_destination, _keptDay)).Should().BeTrue();
     }
 
     [Fact]
@@ -1077,6 +1136,44 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
         using GZipStream decompress = new(stream, CompressionMode.Decompress);
         using StreamReader reader = new(decompress, Encoding.UTF8);
         return reader.ReadToEnd();
+    }
+
+    /// <summary>
+    /// Commits one extra trade when the pass counts source rows, after the file was written.
+    /// </summary>
+    private sealed class ExtraTradeOnSourceCount(string connectionString) : DbCommandInterceptor
+    {
+        private int _inserted;
+
+        public bool Inserted => Volatile.Read(ref _inserted) == 1;
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken)
+        {
+            if (command.CommandText.Contains(TapeExportPass.SourceCountSqlMarker, StringComparison.Ordinal)
+                && command.CommandText.Contains("\"Trades\"", StringComparison.Ordinal)
+                && Interlocked.Exchange(ref _inserted, 1) == 0)
+            {
+                using NpgsqlConnection connection = new(connectionString);
+                connection.Open();
+                using NpgsqlCommand insert = new(
+                    """
+                    INSERT INTO "Trades"
+                        ("Venue", "Instrument", "ContractId", "TradeTimeUtc", "Sequence",
+                         "Price", "Size", "Direction", "RecordedAt")
+                    VALUES
+                        ('test', 'ES', 'CON.F.US.EP.Z26', TIMESTAMPTZ '2026-10-10 14:00:00+00',
+                         99, 10, 1, 1, TIMESTAMPTZ '2026-10-10 14:00:00+00')
+                    """,
+                    connection);
+                insert.ExecuteNonQuery();
+            }
+
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
     }
 
     private sealed class PriceScanInterceptor(Action onScan) : DbCommandInterceptor

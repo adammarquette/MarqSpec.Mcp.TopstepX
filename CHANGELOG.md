@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The tape export manifest is checked against the source before a receipt is uploaded**
+  (gh#795). `manifests/yyyy-MM-dd.json` already names each file's row count and sha256.
+  A count that does not match the source rows refuses the receipt, so it is not `uploaded`.
+  Stopping the host does not export.
 - **The recorder can store the latest quote per contract** (gh#351). `LatestQuotes` is one row
   per contract, upserted from the hub the tape recorder already holds. Volume is `bigint`.
   `ReceivedAt` is the database clock. `MarketData__RecordLatestQuotes` defaults off and does

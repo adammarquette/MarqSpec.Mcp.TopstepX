@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Expected tape-volume prepare logs are not Errors** (gh#894).
+
 ## [0.7.1] - 2026-10-31
 
 ### Added

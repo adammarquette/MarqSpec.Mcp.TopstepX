@@ -13,12 +13,30 @@
 # are touched (deployment.md, "Preparing /data as root"), never following a link. A symlink is refused.
 # PREPARE_TAPE_VOLUME_ONLY=1 stops before exec, which is how the shell test exercises the ownership.
 set -eu
+
+# Reads only the environment (gh#894). Railway shows stderr as Error and stdout as Information.
+# Recording on stays on stderr; otherwise HTTP goes to stdout and stdio stays on stderr, because
+# stdout is the protocol. A CLI --Mcp:Transport=Stdio override with Mcp__Transport=Http still
+# writes stdout. Leading or trailing space on the recording flag is ignored, as in the app.
+log_prepare() {
+  record=${MarketData__RecordTape:-}
+  record=${record#"${record%%[![:space:]]*}"}
+  record=${record%"${record##*[![:space:]]}"}
+  case "$record" in
+    [tT][rR][uU][eE]) echo "$1" >&2; return ;;
+  esac
+  case "${Mcp__Transport:-}" in
+    [hH][tT][tT][pP]) echo "$1" ;;
+    *) echo "$1" >&2 ;;
+  esac
+}
+
 root="${TAPE_VOLUME_ROOT:-/data}"
 if [ "$#" -eq 0 ]; then
   set -- dotnet MarqSpec.Mcp.TopstepX.dll
 fi
 if [ "$(id -u)" -ne 0 ]; then
-  echo "tape volume prepare skipped: running as uid $(id -u)" >&2
+  log_prepare "tape volume prepare skipped: running as uid $(id -u)"
   if [ "${PREPARE_TAPE_VOLUME_ONLY:-}" = "1" ]; then
     exit 0
   fi
@@ -37,9 +55,9 @@ if [ -L "$root" ] || [ -d "$root" ]; then
   find "$root" -maxdepth 1 -name keys -type d -exec chmod 0700 {} +
   find "$root/keys" -maxdepth 1 -name drive-sa.json -type f ! -user 64198 -exec chown -h 64198:64198 {} +
   find "$root/keys" -maxdepth 1 -name drive-sa.json -type f -exec chmod 0400 {} +
-  echo "tape volume prepared: $root owned by 64198" >&2
+  log_prepare "tape volume prepared: $root owned by 64198"
 else
-  echo "tape volume prepare skipped: no volume at $root" >&2
+  log_prepare "tape volume prepare skipped: no volume at $root"
 fi
 if [ "${PREPARE_TAPE_VOLUME_ONLY:-}" = "1" ]; then
   exit 0

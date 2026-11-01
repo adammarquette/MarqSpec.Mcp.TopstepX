@@ -42,6 +42,48 @@ public static class ToolPayloads
     /// <param name="V">Volume.</param>
     public sealed record BarPoint(DateTimeOffset T, decimal O, decimal H, decimal L, decimal C, long V);
 
+    /// <summary>
+    /// The latest live quote from the market hub.
+    /// </summary>
+    /// <param name="Symbol">The configured instrument, normalised. Not the vendor product root.</param>
+    /// <param name="ContractId">The contract this process subscribed. Not a vendor display name.</param>
+    /// <param name="Bid">Best bid, as the quote named it.</param>
+    /// <param name="Ask">Best ask, as the quote named it.</param>
+    /// <param name="Last">Last trade, as the quote named it.</param>
+    /// <param name="BidSize">
+    /// Absent. <c>GatewayQuote</c> carries no bid size, and a missing size is not zero.
+    /// A property, so the key is omitted rather than serialised as null.
+    /// </param>
+    /// <param name="AskSize">Absent, on the same terms as <paramref name="BidSize"/>.</param>
+    /// <param name="Volume">Session volume from the quote. Zero is what the venue sent.</param>
+    /// <param name="Timestamp">
+    /// The venue quote time, UTC, when the payload carried one. Absent when it did not.
+    /// A property, so the key is omitted rather than serialised as null.
+    /// </param>
+    /// <param name="AgeSeconds">
+    /// How old the quote is, in seconds, clamped at zero. Measured from
+    /// <paramref name="Timestamp"/> when that key is present, otherwise from when this
+    /// process received the event.
+    /// </param>
+    /// <param name="Stale">
+    /// True when the hub is down or <paramref name="AgeSeconds"/> is past
+    /// <c>MarketData__QuoteStaleAfter</c>. A stale quote is still the quote.
+    /// </param>
+    /// <param name="HubConnected">Whether the market hub is connected now.</param>
+    public sealed record Quote(
+        string Symbol,
+        string ContractId,
+        decimal Bid,
+        decimal Ask,
+        decimal Last,
+        decimal? BidSize,
+        decimal? AskSize,
+        decimal Volume,
+        DateTimeOffset? Timestamp,
+        double AgeSeconds,
+        bool Stale,
+        bool HubConnected);
+
     /// <summary>One indicator value.</summary>
     /// <param name="T">The bucket the value belongs to, UTC.</param>
     /// <param name="V">The value.</param>

@@ -915,6 +915,29 @@ Whether a lookback is *satisfiable* is not one of those: it depends on what the 
 argument, so a refusal on that axis would be an error naming knobs its caller does not have. That is an
 outage, not a refusal.
 
+### `get_quote(symbol)`
+The latest bid, ask and last from the SignalR market hub (`GatewayQuote`). There is no REST quote.
+A missing quote **refuses**. It does not answer from a bar close (gh#351).
+
+Returns `{ symbol, contractId, bid, ask, last, volume, timestamp?, ageSeconds, stale, hubConnected }`.
+`bidSize` and `askSize` are absent: the quote event carries no size, and a missing size is not zero.
+`timestamp` is the venue time, UTC, and is absent when the payload carried none. `ageSeconds` is how
+old the quote is, clamped at zero, measured from `timestamp` when that key is present and otherwise
+from when this process received the event. `stale` is true when the hub is down or the age is past
+`MarketData__QuoteStaleAfter` (shipped fifteen seconds). A stale quote is still returned.
+
+`MarketData__ServeQuotes` defaults off. HTTP is not consent, and stdio does not subscribe. The tool
+uses the hub the tape recorder already holds. When `MarketData__RecordTape` is on it does not open a
+second connection. When that switch is off, this process connects only while a fresh token is already
+held, and it does not call `loginKey`. Configured instruments stay subscribed. A contract that is not
+one of those fronts is subscribed for the read and then unsubscribed. A hub drop clears the live set;
+the last quote stays, with `hubConnected` false and `stale` true. No quote before
+`MarketData__QuoteWait` (shipped two seconds) refuses. Quotes are not stored. Depth is out of scope.
+
+The symbol on the wire is the configured instrument, not the vendor product root. The client stamps
+`PriceUpdate.ContractId` from the hub argument (the contract that was subscribed). Filtering on the
+payload's product root would drop the quote.
+
 ### `get_footprint(symbol, resolutionMinutes, fromUtc, toUtc)`
 Buy and sell volume by price by bar, from **stored** footprint cells. There is no vendor backfill — the tape
 only goes forward from when recording began.

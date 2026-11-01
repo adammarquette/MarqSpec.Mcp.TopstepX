@@ -635,7 +635,7 @@ signatures: [the tool catalogue](documentation/mcp-tool-catalog.md).
 | Group | Tools |
 |---|---|
 | Reference & session | `list_instruments` · `search_contracts` · `get_market_session` |
-| Market data | `get_bars` · `get_latest_bars` · `get_session_bars` · `get_latest_session_bars` · `get_indicators` · `get_indicator_at` · `get_session_indicators` · `get_session_indicator_at` · `get_key_levels` · `get_footprint` · `get_volume_profile` · `get_contract_roll` |
+| Market data | `get_bars` · `get_latest_bars` · `get_session_bars` · `get_latest_session_bars` · `get_indicators` · `get_indicator_at` · `get_session_indicators` · `get_session_indicator_at` · `get_key_levels` · `get_quote` · `get_footprint` · `get_volume_profile` · `get_contract_roll` |
 | Account (read) | `list_accounts` · `get_positions` · `get_orders` · `get_trades` |
 | Composed | `get_market_snapshot` — bars, indicators, levels and session state in one call |
 | Observations | `record_observation` · `search_observations` — writes to *this* database, never the venue |
@@ -648,7 +648,10 @@ process start, so listing them needs a restart. A reload does change, without a 
 `Trading__MaxContractsPerDay`. A reload into a configuration that fails validation refuses the call and does
 not keep the last good values.
 
-**There is no `get_quote`.** ProjectX publishes no REST quote endpoint; live bid/ask is SignalR-only. The HTTP
+**`get_quote` is the live bid and ask**, from the SignalR market hub, not from a bar close. ProjectX
+publishes no REST quote. `MarketData__ServeQuotes` defaults off. Stdio does not subscribe. When
+`MarketData__RecordTape` is on, quotes share that hub and do not open a second connection. Quotes are
+not stored. The HTTP
 transport can opt in to recording the trade tape (`MarketData__RecordTape`), which is prints and volume, not
 quotes. Whenever the venue client is configured, the process keeps the held TopstepX session fresh with
 `POST /api/Auth/validate` and does not call `loginKey` on a timer. That renewal is not tied to the recorder.

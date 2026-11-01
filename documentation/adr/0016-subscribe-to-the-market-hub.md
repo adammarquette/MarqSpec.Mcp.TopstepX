@@ -631,6 +631,22 @@ was lost or a connect attempt failed. A clean first connect is zero, and zero is
 when there is no print. A print later than `asOfUtc` is outside the report window and is omitted.
 A reply reused from the five-second memo keeps that age against the cached `asOfUtc` (gh#793).
 
+## Update (2026-11-01) — live quotes, not quote recording (gh#351)
+
+`get_quote` reads a cache of the latest `GatewayQuote` on the hub this record already subscribes
+for trades. It does not write a quote table, and it does not answer from a bar close. That is the
+folded gh#698 behaviour. Replayable stored quotes, the original recording half of gh#351, stay out:
+this update does not authorise quote recording, and it does not move the ADR-0016 decision that
+left recording out of gh#213.
+
+`MarketData__ServeQuotes` defaults off. HTTP is not consent. Stdio does not subscribe. When
+`RecordTape` is on, the quote service does not call `ConnectMarketHubAsync`. When it is off, this
+process connects only while a fresh token is already held, and it does not call `loginKey`. A
+named session conflict stops that reconnect. Configured fronts stay subscribed. Any other contract
+is subscribed for the read and then unsubscribed. A hub drop clears the live set. The last quote
+is returned with its age and `stale` true. No quote before `QuoteWait` refuses.
+`bidSize` and `askSize` are absent because the quote event carries no size. Depth stays out.
+
 ## Follow-ups
 
 - gh#215 — tape, coverage and footprint tables. Schema-only; landed.
@@ -653,3 +669,5 @@ A reply reused from the five-second memo keeps that age against the cached `asOf
 - gh#869 — a failed connect re-enters the inconclusive-probe backoff. Landed in the update above.
 - gh#793 — `hubReconnects` (a reconnect after a loss or a failed attempt; a clean start is
   zero) and `lastTickAgeSeconds` on the recorder-health report. Landed in the update above.
+- gh#351 — `get_quote` from the live hub cache. Landed in the update above. Stored quote
+  recording is still out.

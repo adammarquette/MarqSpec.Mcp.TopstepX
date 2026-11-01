@@ -343,8 +343,9 @@ the tables on gh#494 must not be read as UTC.
 The market hub carries quotes, trades and depth over SignalR. **This repository has decided to subscribe and
 record the trade tape** — see [ADR-0016](../../adr/0016-subscribe-to-the-market-hub.md) and the architecture
 doc's *What is deliberately absent*. ADR-0007 is the stdio/HTTP transport record and says nothing about this
-hub. There is still no REST quote endpoint, so live bid/ask remains stream-only; quote and depth recording are
-out of Phase 5. The recorder (gh#216) writes prints to `Trades` under HTTP when
+hub. There is still no REST quote endpoint, so live bid/ask remains stream-only. `get_quote`
+(gh#351) caches that stream in the process that holds the hub. It does not record quotes, and
+depth recording stays out. The recorder (gh#216) writes prints to `Trades` under HTTP when
 `MarketData__RecordTape` is on; Client#86/#87 landed in 3.0.0. It stops itself when the hub names a
 documented validate error, or `POST /api/Auth/validate` reports `InvalidSession`, `SessionNotFound`,
 or HTTP 401, and it does not call `loginKey` to reconnect
@@ -360,9 +361,10 @@ is fresh, and a token that expires during the wait stops the loop and does not c
 With the switch off, that wait connects without a validate call while the held token is fresh,
 and it does not call `loginKey`. `AutoReconnect` stays off while the stand-down switch is on.
 
-> One gotcha for whoever adds it: **you subscribe by full contract id, but quotes come back tagged by product
-> root.** Subscribing to `CON.F.US.MES.U26` succeeds, and every quote then reports `F.US.MES`. A stream
-> filtered on the full id drops **100%** of ticks silently — a confirmed subscription with zero data.
+> One gotcha for whoever adds it: **you subscribe by full contract id, but the quote payload's
+> `symbol` is the product root.** Subscribing to `CON.F.US.MES.U26` succeeds, and `symbol` is
+> `F.US.MES`. Filtering on that field drops the ticks. The client stamps `PriceUpdate.ContractId`
+> from the hub argument (client gh#86). `get_quote` keys on that argument, not on `symbol`.
 
 ## Accounts
 

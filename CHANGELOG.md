@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`get_quote` returns the live bid and ask** (gh#351). The tool reads the latest `GatewayQuote`
+  on the market hub the tape recorder already uses. It does not store quotes and it does not answer
+  from a bar close. `MarketData__ServeQuotes` defaults off. Stdio does not subscribe. When
+  `RecordTape` is on, quotes do not open a second connection. When it is off, this process connects
+  only while a fresh token is already held, and it does not call `loginKey`. No quote before
+  `MarketData__QuoteWait` (two seconds) refuses. A cached quote includes `ageSeconds` and `stale`
+  (threshold `MarketData__QuoteStaleAfter`, fifteen seconds). `bidSize` and `askSize` are absent.
+  A contract that is not a configured front is subscribed for the read and then unsubscribed. A hub
+  drop clears the live set and marks a cached quote stale.
+
 ### Fixed
 - **Expected tape-volume prepare logs are not Errors** (gh#894).
 

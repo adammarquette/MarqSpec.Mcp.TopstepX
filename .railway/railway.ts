@@ -208,6 +208,7 @@ export default defineRailway((ctx) => {
       // Railway's edge is the only path to this service and overwrites X-Forwarded-For.
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true",
       MarketData__RecordTape: "false",
+      MarketData__ServeQuotes: "false",
       Otel__ServiceName: "marqspec-mcp-topstepx-server",
     },
   });
@@ -236,6 +237,7 @@ export default defineRailway((ctx) => {
       // No edge in front, so nothing trustworthy sets X-Forwarded-*.
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "false",
       MarketData__RecordTape: "true",
+      MarketData__ServeQuotes: "false",
       Otel__ServiceName: "marqspec-mcp-topstepx-recorder",
       // gh#755 tape export (contract from PR #765): OFF in every environment, deferred (r3). Production's
       // recorder gets ONE volume at /data (exports in /data/tape-exports, Drive key at /data/keys/drive-sa.json)

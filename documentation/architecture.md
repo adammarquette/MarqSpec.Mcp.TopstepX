@@ -1317,9 +1317,17 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   recorder. A recorder that is reconnecting, not
   subscribed, or stopped still refuses, closed cells included, as do a claim taken over and a claim
   lapsed — those are not "another recorder holds the claim". A still-open sentinel is coverage only while that
-  instrument is listening. A read that is actually returned with `live` false is counted. A refusal is not. The recorder resolves the
-  scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
-  stay out of this phase, and there is still no `get_quote`.
+  instrument is listening. A read that is actually returned with `live` false is counted. A refusal is not.   The recorder resolves the
+  scoped venue client per operation; it does not extend `IMarketDataGateway`. Depth recording stays
+  out. `get_quote` (gh#351) reads a live `GatewayQuote` cache on that same hub. It does not store
+  quotes and it does not answer from a bar close. `MarketData__ServeQuotes` defaults off. Stdio
+  does not subscribe. When `RecordTape` is on, quotes do not open a second connection. When it is
+  off, this process connects only while a fresh token is already held, and it does not call
+  `loginKey`. A contract that is not a configured front is subscribed for the read and then
+  unsubscribed. No quote before `MarketData__QuoteWait` (shipped two seconds) refuses. A cached
+  quote is returned with `timestamp` when the payload had one, `ageSeconds`, and `stale` when the
+  hub is down or the age is past `MarketData__QuoteStaleAfter` (shipped fifteen seconds).
+  `bidSize` and `askSize` are absent: the quote event carries no size.
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
   in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).

@@ -166,6 +166,56 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </remarks>
     public bool RecordTape { get; init; }
 
+    /// <summary>How long <c>get_quote</c> waits for a first quote. Shipped as two seconds.</summary>
+    public static readonly TimeSpan DefaultQuoteWait = TimeSpan.FromSeconds(2);
+
+    /// <summary>The longest <see cref="QuoteWait"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxQuoteWait = TimeSpan.FromSeconds(30);
+
+    /// <summary>A quote older than this is reported stale. Shipped as fifteen seconds.</summary>
+    public static readonly TimeSpan DefaultQuoteStaleAfter = TimeSpan.FromSeconds(15);
+
+    /// <summary>The longest <see cref="QuoteStaleAfter"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxQuoteStaleAfter = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Whether this process may subscribe to live quotes on the market hub.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off by default, and HTTP is not consent.</b> Stdio never subscribes. Quotes are a cache
+    /// of the latest <c>GatewayQuote</c> on the hub the tape already uses. They are not stored,
+    /// and <c>get_quote</c> does not answer from a bar close.
+    /// </para>
+    /// <para>
+    /// When <see cref="RecordTape"/> is on, quotes share that connection and do not open a second
+    /// one. When it is off, this process connects the hub only while a fresh token is already held,
+    /// and it does not call <c>loginKey</c>. One process holds the hub. A second subscriber kicks
+    /// the session (ADR-0016).
+    /// </para>
+    /// </remarks>
+    public bool ServeQuotes { get; init; }
+
+    /// <summary>
+    /// How long <c>get_quote</c> waits for the first quote for a contract that has none cached.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="TimeSpan.Zero"/> through <see cref="MaxQuoteWait"/>. Zero refuses at once
+    /// when nothing is cached. A value outside that range fails startup, naming
+    /// <c>MarketData:QuoteWait</c>.
+    /// </remarks>
+    public TimeSpan QuoteWait { get; init; } = DefaultQuoteWait;
+
+    /// <summary>
+    /// A cached quote older than this is returned with <c>stale</c> true.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="TimeSpan.Zero"/> through <see cref="MaxQuoteStaleAfter"/>. The quote is still
+    /// returned. Age is not a reason to substitute a bar close. A value outside that range fails
+    /// startup, naming <c>MarketData:QuoteStaleAfter</c>.
+    /// </remarks>
+    public TimeSpan QuoteStaleAfter { get; init; } = DefaultQuoteStaleAfter;
+
     /// <summary>
     /// Whether a session conflict stops the recorder instead of reconnecting.
     /// </summary>
@@ -339,6 +389,22 @@ public sealed partial class MarketDataOptions : IValidatableObject
                 SectionName + ":SessionConflictBackoff must be from 00:00:00 through 00:02:00 inclusive. "
                 + "It was '" + SessionConflictBackoff.ToString("c", CultureInfo.InvariantCulture) + "'.",
                 [nameof(SessionConflictBackoff)]));
+        }
+
+        if (QuoteWait < TimeSpan.Zero || QuoteWait > MaxQuoteWait)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":QuoteWait must be from 00:00:00 through 00:00:30 inclusive. "
+                + "It was '" + QuoteWait.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(QuoteWait)]));
+        }
+
+        if (QuoteStaleAfter < TimeSpan.Zero || QuoteStaleAfter > MaxQuoteStaleAfter)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":QuoteStaleAfter must be from 00:00:00 through 00:10:00 inclusive. "
+                + "It was '" + QuoteStaleAfter.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(QuoteStaleAfter)]));
         }
 
         BarSessionCalendar calendar;

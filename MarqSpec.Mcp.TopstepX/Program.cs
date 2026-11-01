@@ -950,6 +950,14 @@ public static class Program
         services.AddSingleton<TradeTapeRecorder>();
         services.AddHostedService(sp => sp.GetRequiredService<TradeTapeRecorder>());
 
+        // Live quotes. Always registered so the container shape does not depend on the switch.
+        // ExecuteAsync returns immediately unless the transport is HTTP and
+        // MarketData__ServeQuotes is on. The hub client is scoped-resolved per start, the same
+        // captive-dependency shape as the recorder, and when RecordTape is on this service does
+        // not connect that hub itself (gh#351).
+        services.AddSingleton<LiveQuoteService>();
+        services.AddHostedService(sp => sp.GetRequiredService<LiveQuoteService>());
+
         // Indicator warmup. Same shape: HTTP and an explicit switch, both. Always registered
         // so the container does not change with MarketData__WarmIndicators; ExecuteAsync
         // returns immediately unless the transport is HTTP and the switch is on. The
@@ -1016,6 +1024,7 @@ public static class Program
         services.AddScoped<IndicatorTools>();
         services.AddScoped<KeyLevelTools>();
         services.AddScoped<TapeTools>();
+        services.AddScoped<QuoteTools>();
         services.AddScoped<ContractRollTools>();
         services.AddScoped<AccountTools>();
         services.AddScoped<TradingOrderTools>();

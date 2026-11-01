@@ -219,8 +219,39 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
 
         List<ExportedDay> confirmed = await ConfirmedDaysAsync(eligibleEnd, cancellationToken)
             .ConfigureAwait(false);
-        HashSet<TapeKey> confirmedKeys = confirmed.Select(day => day.Key).ToHashSet();
-        List<SkippedDay> skipped = await SkippedDaysAsync(eligibleEnd, confirmedKeys, cancellationToken)
+        List<ExportedDay> stable = [];
+        int countChanged = 0;
+        foreach (ExportedDay day in confirmed)
+        {
+            int source = await CountSourceTradesAsync(day, cancellationToken).ConfigureAwait(false);
+            if (source == day.RowCount)
+            {
+                stable.Add(day);
+                continue;
+            }
+
+            countChanged++;
+            _logger.LogWarning(
+                "Tape retention kept {Day:yyyy-MM-dd} {Venue} {Instrument} {Contract}: "
+                + "source has {SourceRows} rows and the receipt says {ReceiptRows}.",
+                day.Day,
+                day.Venue,
+                day.Instrument,
+                day.ContractId,
+                source,
+                day.RowCount);
+        }
+
+        if (countChanged > 0)
+        {
+            _telemetry.TapePruneSkipped(countChanged, TapePruneReason.SourceCountChanged);
+        }
+
+        // A mismatched receipt still exists, so that key is not "no receipt". Only a matching
+        // count is deletable, and only those keys make a chunk fully exported.
+        HashSet<TapeKey> receiptKeys = confirmed.Select(day => day.Key).ToHashSet();
+        HashSet<TapeKey> stableKeys = stable.Select(day => day.Key).ToHashSet();
+        List<SkippedDay> skipped = await SkippedDaysAsync(eligibleEnd, receiptKeys, cancellationToken)
             .ConfigureAwait(false);
         foreach (SkippedDay day in skipped)
         {
@@ -236,7 +267,7 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
         _telemetry.TapePruneSkipped(skipped.Count, TapePruneReason.NoReceipt);
         bool hypertable = await TradesIsHypertableAsync(cancellationToken).ConfigureAwait(false);
         (DateTimeOffset? droppedUntil, int chunksDropped) = await DropExportedPrefixAsync(
-            holdsLease, eligibleEnd, hypertable, confirmedKeys, cancellationToken).ConfigureAwait(false);
+            holdsLease, eligibleEnd, hypertable, stableKeys, cancellationToken).ConfigureAwait(false);
         if (droppedUntil is null && hypertable && !holdsLease())
         {
             return LeaseLost(0, 0, skipped.Count, cutoff, chunksDropped, droppedUntil);
@@ -244,7 +275,7 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
 
         long rows = 0;
         int batches = 0;
-        foreach (ExportedDay day in confirmed)
+        foreach (ExportedDay day in stable)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!holdsLease())
@@ -467,6 +498,21 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
             new("batch", _batchSize),
         ];
         return await _database.Database.ExecuteSqlRawAsync(DeleteBatchSql, parameters, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<int> CountSourceTradesAsync(ExportedDay day, CancellationToken cancellationToken)
+    {
+        DateTimeOffset start = DayStart(day.Day);
+        DateTimeOffset end = start.AddDays(1);
+        return await _database.Trades.AsNoTracking()
+            .CountAsync(
+                row => row.Venue == day.Venue
+                    && row.Instrument == day.Instrument
+                    && row.ContractId == day.ContractId
+                    && row.TradeTimeUtc >= start
+                    && row.TradeTimeUtc < end,
+                cancellationToken)
             .ConfigureAwait(false);
     }
 

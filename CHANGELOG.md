@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A tape day is kept when its source count no longer matches the receipt** (gh#795).
+  The export checks gzip row counts before it records a receipt, and writes a disagreed
+  day at most once more in the same pass. Retention deletes an uploaded day only when the
+  current source count equals the receipt `RowCount`. A difference logs a warning and
+  counts `reason=source_count_changed`. The next export does not rediscover that day.
 - **The recorder can store the latest quote per contract** (gh#351). `LatestQuotes` is one row
   per contract, upserted from the hub the tape recorder already holds. Volume is `bigint`.
   `ReceivedAt` is the database clock. `MarketData__RecordLatestQuotes` defaults off and does
@@ -36,7 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instrument and contract. `TapeRetention__Days` defaults to 90 (accepted 7 through 3650).
   Zero and a negative number are refused. No receipt, including `drive_disabled`, means the
   rows stay, and the pass logs and counts the skipped days. A chunk is dropped only when it
-  ends before the cutoff and every row in it has that receipt. A partly exported compressed
+  ends before the cutoff and every key in it has that receipt with a matching source count.
+  A partly exported compressed
   chunk is left. `LatestQuotes` is not pruned. Timescale `policy_retention` stays empty.
   The Railway template is not edited; the code default applies where the key is absent.
 

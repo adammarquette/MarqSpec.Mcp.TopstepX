@@ -102,6 +102,38 @@ public sealed class TapeRetentionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Prune_WhenTheSourceCountChanged_KeepsThatDayAndDeletesTheMatch()
+    {
+        DateOnly oldDay = new(2026, 7, 2);
+        await InsertTradeAsync(DayStart(oldDay).AddHours(1), sequence: 1, contract: "late");
+        await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 2, contract: "late");
+        await InsertTradeAsync(DayStart(oldDay).AddHours(1), sequence: 3, contract: "match");
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "late", rowCount: 1);
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "match", rowCount: 1);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> skipped = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.TapePruneSkippedInstrument);
+        CapturingLogger<TapeRetentionPass> logs = new();
+
+        TapeRetentionRun run = await PruneAsync(telemetry, logs, batchSize: 10);
+
+        run.Rows.Should().Be(1);
+        run.DaysSkipped.Should().Be(0);
+        (await SequencesAsync()).Should().Equal(1L, 2L);
+        skipped.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], TapePruneReason.SourceCountChanged)
+            && measurement.Value == 1);
+        skipped.GetMeasurementSnapshot().Should().NotContain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], TapePruneReason.NoReceipt));
+        logs.Warnings.Should().Contain(message =>
+            message.Contains("late", StringComparison.Ordinal)
+            && message.Contains("source has 2", StringComparison.Ordinal));
+        logs.Messages.Should().NotContain(message =>
+            message.Contains("no uploaded trades receipt", StringComparison.Ordinal)
+            && message.Contains("late", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Prune_WhenOnlySomeDaysHaveReceipts_DeletesThoseDays()
     {
         DateOnly exported = new(2026, 6, 1);
@@ -143,7 +175,7 @@ public sealed class TapeRetentionTests : IAsyncLifetime
         await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 2, contract: "A");
         await InsertTradeAsync(DayStart(oldDay).AddHours(3), sequence: 3, contract: "A");
         await InsertTradeAsync(DayStart(oldDay).AddHours(4), sequence: 4, contract: "B");
-        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "A");
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "A", rowCount: 3);
 
         TapeRetentionPass pass = CreatePass(
             new HostTelemetry(), new CapturingLogger<TapeRetentionPass>(), 1);
@@ -271,7 +303,7 @@ public sealed class TapeRetentionTests : IAsyncLifetime
         await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 2, contract: "A");
         await InsertTradeAsync(DayStart(oldDay).AddHours(3), sequence: 3, contract: "A");
         await InsertTradeAsync(DayStart(oldDay).AddHours(4), sequence: 4, contract: "B");
-        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "A");
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "A", rowCount: 3);
         using HostTelemetry telemetry = new();
         using MetricCollector<long> lost = new(
             telemetry, HostTelemetry.Name, HostTelemetry.TapePruneLeaseLostInstrument);

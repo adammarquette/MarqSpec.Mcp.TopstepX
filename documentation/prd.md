@@ -757,14 +757,22 @@ only after an `uploaded` trades receipt for that day and contract. No receipt me
   are one pair per instrument and resolution per day. The worker runs only when the transport is HTTP
   **and** `TapeExport__Enabled` is true. The default is **false**. It waits until
   `TapeExport__Schedule` (default `06:00`, UTC, exact `HH:mm`) and runs only while this process holds
-  a recorder lease. A restart does not take a pass before that time. The `export-tape` and
-  `import-tape` verbs do not read `Enabled`.
+  a recorder lease. A restart does not take a pass before that time. Stopping the host does not
+  export (gh#795). The `export-tape` and `import-tape` verbs do not read `Enabled`.
 - **R-10.2** A UTC day is copied only after its exclusive end (00:00 UTC the next day). The current
   day is not written. A day a still-open listen overlaps is not written. Rows stream into the gzip and
   the Parquet row groups. The manifest is renamed into place last and names one generation
-  (`yyyy-MM-dd.vN`). Its sha256 and row counts must match those files. A mismatch refuses that day.
-  A day whose receipt hash still matches is not read again. The pass does not delete local rows, an
-  older generation, or a Drive file.
+  (`yyyy-MM-dd.vN`). Its sha256 and row counts must match those files, and each gzip row count
+  must match the source rows before a receipt is marked `uploaded`. A file mismatch is
+  `verification_failed` with `reason=manifest`. A source mismatch discards that generation,
+  including its files, and writes the day once more in the same pass (gh#795). A generation
+  already on disk counts as the first write, so the pass adds at most one more. If it still
+  disagrees, those files are deleted and `mcp.tape.export.stuck` increments with
+  `reason=source_count`. The next export does not rediscover a day whose finished receipt
+  still hashes. Retention deletes the day only when the current source count equals the
+  receipt `RowCount`; a difference keeps the rows and counts `reason=source_count_changed`.
+  A count-query error fails that day, tags `exception.type`, and the pass continues.
+  A day whose receipt hash still matches is not read again. The pass does not delete a Drive file.
 - **R-10.3** `import-tape` restores a verified day into Postgres and refuses a checksum or row-count
   mismatch, inserting nothing for that day. A second import of the same rows inserts nothing
   (`ON CONFLICT DO NOTHING`).

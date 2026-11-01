@@ -130,6 +130,11 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>How long one tape export or import pass took, in seconds.</summary>
     public const string TapeExportDurationInstrument = "mcp.tape.export.duration";
 
+    /// <summary>
+    /// A day whose source count still disagreed after this pass wrote it again (gh#795).
+    /// </summary>
+    public const string TapeExportStuckInstrument = "mcp.tape.export.stuck";
+
     /// <summary>A Drive upload of one export file (gh#755).</summary>
     public const string TapeUploadsInstrument = "mcp.tape.uploads";
 
@@ -226,6 +231,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly ILogger<HostTelemetry>? _logger;
     private readonly Counter<long> _tapeExports;
     private readonly Histogram<double> _tapeExportDuration;
+    private readonly Counter<long> _tapeExportStuck;
     private readonly Counter<long> _tapeUploads;
     private readonly Counter<long> _tapePruned;
     private readonly Counter<long> _tapePruneSkipped;
@@ -350,6 +356,11 @@ public sealed class HostTelemetry : IDisposable
             TapeExportDurationInstrument,
             unit: "s",
             description: "How long one tape export or import pass took.");
+
+        _tapeExportStuck = _meter.CreateCounter<long>(
+            TapeExportStuckInstrument,
+            unit: "{day}",
+            description: "Days whose source count still disagreed after another write, by reason.");
 
         _tapeUploads = _meter.CreateCounter<long>(
             TapeUploadsInstrument,
@@ -757,8 +768,9 @@ public sealed class HostTelemetry : IDisposable
     /// <param name="outcome">What happened, from <see cref="TapeExportOutcome"/>.</param>
     /// <param name="count">Days or rows. Zero records nothing, so a quiet pass is not a series.</param>
     /// <remarks>
-    /// Tagged only with <see cref="OutcomeTag"/>. A day, a path or a contract id would be a new series
-    /// per value, and a counter keeps one accumulator per tag set for the life of the process.
+    /// Tagged with <see cref="OutcomeTag"/>. <see cref="TapeExportOutcome.VerificationFailed"/> also
+    /// carries <see cref="ReasonTag"/> via the overload. A day, a path or a contract id would be a new
+    /// series per value, and a counter keeps one accumulator per tag set for the life of the process.
     /// </remarks>
     public void TapeExport(string outcome, int count)
     {
@@ -768,6 +780,52 @@ public sealed class HostTelemetry : IDisposable
         }
 
         _tapeExports.Add(count, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+    }
+
+    /// <summary>Counts a verification failure and why.</summary>
+    /// <param name="outcome"><see cref="TapeExportOutcome.VerificationFailed"/>.</param>
+    /// <param name="count">Days. Zero records nothing.</param>
+    /// <param name="reason"><see cref="TapeExportVerificationReason"/>.</param>
+    public void TapeExport(string outcome, int count, string reason)
+    {
+        if (count <= 0
+            || !TapeExportOutcome.All.Contains(outcome)
+            || !TapeExportVerificationReason.All.Contains(reason))
+        {
+            return;
+        }
+
+        _tapeExports.Add(
+            count,
+            new KeyValuePair<string, object?>(OutcomeTag, outcome),
+            new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+
+    /// <summary>Counts one export failure and names the exception type. Not the message.</summary>
+    /// <param name="exceptionType">The CLR type name.</param>
+    public void TapeExportFailed(string exceptionType)
+    {
+        if (string.IsNullOrWhiteSpace(exceptionType))
+        {
+            return;
+        }
+
+        _tapeExports.Add(
+            1,
+            new KeyValuePair<string, object?>(OutcomeTag, TapeExportOutcome.ExportFailed),
+            new KeyValuePair<string, object?>(ExceptionTag, exceptionType));
+    }
+
+    /// <summary>Counts one day that still disagreed with its source after this pass wrote it again.</summary>
+    /// <param name="reason"><see cref="TapeExportVerificationReason.SourceCount"/>.</param>
+    public void TapeExportStuck(string reason)
+    {
+        if (!TapeExportVerificationReason.All.Contains(reason))
+        {
+            return;
+        }
+
+        _tapeExportStuck.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
     }
 
     /// <summary>Records how long one export or import pass took.</summary>
@@ -1535,7 +1593,9 @@ public static class TapeExportOutcome
     /// <summary>Rows written into a verified day.</summary>
     public const string RowsExported = "rows_exported";
 
-    /// <summary>The files did not match the manifest. Local rows stay.</summary>
+    /// <summary>
+    /// The files did not match the manifest, or the source count disagreed. Local rows stay.
+    /// </summary>
     public const string VerificationFailed = "verification_failed";
 
     /// <summary>Rows inserted by an import. A conflict inserts nothing.</summary>
@@ -1563,6 +1623,19 @@ public static class TapeExportOutcome
             LockHeld,
             ExportFailed,
         ];
+}
+
+/// <summary>Why <see cref="TapeExportOutcome.VerificationFailed"/> fired. The <c>reason</c> tag.</summary>
+public static class TapeExportVerificationReason
+{
+    /// <summary>The files did not match the manifest.</summary>
+    public const string Manifest = "manifest";
+
+    /// <summary>A gzip row count did not match the source table.</summary>
+    public const string SourceCount = "source_count";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Manifest, SourceCount];
 }
 
 /// <summary>What a Drive upload did — the <c>outcome</c> tag's vocabulary for <c>mcp.tape.uploads</c>.</summary>
@@ -1686,9 +1759,12 @@ public static class TapePruneReason
     /// <summary>The key walk hit its cap, so a chunk was not dropped.</summary>
     public const string KeyCap = "key_cap";
 
+    /// <summary>The source has a different row count than the uploaded receipt, so the day stays.</summary>
+    public const string SourceCountChanged = "source_count_changed";
+
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
-        [NoReceipt, LeaseLost, LockTimeout, PruneError, KeyCap];
+        [NoReceipt, LeaseLost, LockTimeout, PruneError, KeyCap, SourceCountChanged];
 }
 
 /// <summary>Values of the <c>tape.retention</c> span. Not a metric vocabulary.</summary>

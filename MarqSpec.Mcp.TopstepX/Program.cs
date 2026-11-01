@@ -1224,32 +1224,60 @@ public static class Program
     /// A socket reset, or Postgres shutting the session down (<c>57P01</c>) or refusing it
     /// (<c>57P03</c>). Those are the store going away, not a schema defect (gh#843).
     /// </summary>
-    /// <param name="exception">The failure from the apply, including an outer wrapper.</param>
+    /// <param name="exception">The failure from the apply, including the one EF wrapper.</param>
     /// <returns>Whether startup should degrade or exit instead of crashing.</returns>
     /// <remarks>
     /// <c>pg_terminate_backend</c> raises <c>PostgresException</c> <c>57P01</c>. EF's execution
-    /// strategy does not let that out: it throws <see cref="InvalidOperationException"/> ("a
-    /// transient failure") with the <c>PostgresException</c> inside. The SQLSTATE is what decides.
+    /// strategy does not let that out: it throws <see cref="InvalidOperationException"/> with
+    /// that <c>PostgresException</c> as its inner exception. A socket reset is an
+    /// <c>NpgsqlException</c> whose inner exception is the <c>SocketException</c>, sometimes
+    /// under an <c>IOException</c>. An exception that is not one of those, and only carries
+    /// one of them further inside, is still a defect and still fails the process.
     /// </remarks>
     private static bool IsDroppedStoreConnection(Exception exception)
     {
-        for (Exception? current = exception; current is not null; current = current.InnerException)
+        Exception current = exception;
+        if (current is InvalidOperationException { InnerException: { } inner })
         {
-            if (current is System.Net.Sockets.SocketException)
+            current = inner;
+        }
+
+        if (current is Npgsql.PostgresException postgres)
+        {
+            return IsAdminShutdownOrCannotConnect(postgres);
+        }
+
+        if (current is not Npgsql.NpgsqlException npgsql)
+        {
+            return false;
+        }
+
+        for (Exception? nested = npgsql.InnerException; nested is not null; nested = nested.InnerException)
+        {
+            if (nested is System.Net.Sockets.SocketException)
             {
                 return true;
             }
 
-            if (current is Npgsql.PostgresException postgres
-                && postgres.SqlState is Npgsql.PostgresErrorCodes.AdminShutdown
-                    or Npgsql.PostgresErrorCodes.CannotConnectNow)
+            if (nested is Npgsql.PostgresException nestedPostgres)
             {
-                return true;
+                return IsAdminShutdownOrCannotConnect(nestedPostgres);
+            }
+
+            // Npgsql puts the socket under an IOException ("reading from stream"). Stop at
+            // anything else so a defect that merely nests a reset is not classified as a drop.
+            if (nested is not IOException)
+            {
+                return false;
             }
         }
 
         return false;
     }
+
+    private static bool IsAdminShutdownOrCannotConnect(Npgsql.PostgresException postgres) =>
+        postgres.SqlState is Npgsql.PostgresErrorCodes.AdminShutdown
+            or Npgsql.PostgresErrorCodes.CannotConnectNow;
 
     private static async Task<EmbeddingAvailability> ProbeEmbeddingsAsync(
         WebApplication app,

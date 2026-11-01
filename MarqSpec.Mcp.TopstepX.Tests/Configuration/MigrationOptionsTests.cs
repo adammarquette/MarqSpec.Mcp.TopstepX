@@ -83,7 +83,9 @@ public sealed class MigrationOptionsTests
         negative.Should().Throw<OptionsValidationException>();
     }
 
-    /// <summary>Seven days is the ceiling for the wait as well. The bound at the ceiling still binds.</summary>
+    /// <summary>
+    /// Seven days is the ceiling for the wait as well. The bound at the ceiling still binds.
+    /// </summary>
     [Fact]
     public void LockWaitSeconds_RefusesMoreThanSevenDays()
     {

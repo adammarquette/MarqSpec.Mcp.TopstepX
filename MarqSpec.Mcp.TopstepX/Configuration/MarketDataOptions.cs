@@ -198,6 +198,15 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </summary>
     public static readonly TimeSpan MaxLatestQuoteSubscribeBackoff = TimeSpan.FromMinutes(5);
 
+    /// <summary>A quote older than this is stale. Shipped as fifteen seconds.</summary>
+    public static readonly TimeSpan DefaultLatestQuoteStaleAfter = TimeSpan.FromSeconds(15);
+
+    /// <summary>The shortest <see cref="LatestQuoteStaleAfter"/> startup will accept.</summary>
+    public static readonly TimeSpan MinLatestQuoteStaleAfter = TimeSpan.FromSeconds(1);
+
+    /// <summary>The longest <see cref="LatestQuoteStaleAfter"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxLatestQuoteStaleAfter = TimeSpan.FromMinutes(30);
+
     /// <summary>
     /// Whether the recorder may upsert the latest quote for each contract it is already
     /// listening to.
@@ -215,6 +224,16 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </para>
     /// </remarks>
     public bool RecordLatestQuotes { get; init; }
+
+    /// <summary>
+    /// Whether this process publishes <c>get_quote</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Off by default.</b> The public server cannot see the recorder's
+    /// <see cref="RecordLatestQuotes"/> switch. Leaving the tool listed while that switch is off
+    /// makes every call look like a market with no quote. PR 3 turns this on with the recorder.
+    /// </remarks>
+    public bool GetQuoteEnabled { get; init; }
 
     /// <summary>
     /// The shortest gap between latest-quote flushes.
@@ -249,6 +268,16 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// <c>MarketData:LatestQuoteSubscribeBackoff</c>.
     /// </remarks>
     public TimeSpan LatestQuoteSubscribeBackoff { get; init; } = DefaultLatestQuoteSubscribeBackoff;
+
+    /// <summary>
+    /// A stored quote older than this is reported stale. The row is still returned.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="MinLatestQuoteStaleAfter"/> through <see cref="MaxLatestQuoteStaleAfter"/>.
+    /// Age is the database clock, not this process. Zero is refused: it would mark every quote
+    /// stale. A value outside the range fails startup, naming <c>MarketData:LatestQuoteStaleAfter</c>.
+    /// </remarks>
+    public TimeSpan LatestQuoteStaleAfter { get; init; } = DefaultLatestQuoteStaleAfter;
 
     /// <summary>
     /// Whether a session conflict stops the recorder instead of reconnecting.
@@ -450,6 +479,15 @@ public sealed partial class MarketDataOptions : IValidatableObject
                 + "inclusive. "
                 + "It was '" + LatestQuoteSubscribeBackoff.ToString("c", CultureInfo.InvariantCulture) + "'.",
                 [nameof(LatestQuoteSubscribeBackoff)]));
+        }
+
+        if (LatestQuoteStaleAfter < MinLatestQuoteStaleAfter
+            || LatestQuoteStaleAfter > MaxLatestQuoteStaleAfter)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":LatestQuoteStaleAfter must be from 00:00:01 through 00:30:00 inclusive. "
+                + "It was '" + LatestQuoteStaleAfter.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(LatestQuoteStaleAfter)]));
         }
 
         BarSessionCalendar calendar;

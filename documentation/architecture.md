@@ -831,6 +831,7 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
 | `mcp.quote.writes` | counter | `outcome` = quote_written \| quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_subscribed \| quote_volume_rejected | `LatestQuoteWriter` (gh#351). Spans `quote.flush` and `quote.subscribe` carry the same `outcome` |
+| `mcp.quote.reads` | counter | `outcome` = quote_fresh \| quote_stale \| quote_miss \| quote_unknown \| quote_read_failed · `reason` = front_lookup_failed \| store_failed · `exception.type` = the CLR type name, not the message | `LatestQuoteReader` (gh#351). Span `quote.read` carries the same `outcome`. `quote_read_failed` sets Error and is not a miss. `reason` and `exception.type` are set only then. `quote_stale` is still a row |
 | `mcp.quote.failures` | counter | `reason` = quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_volume_rejected \| quote_unsubscribe_failed \| quote_shutdown_failed · `exception.type` = the CLR type name, not the message | `LatestQuoteWriter`. `quote_failed` is a store flush. Unsubscribe and shutdown are their own reasons |
 
 `mcp.recorder.health.reads` reuses the `outcome` tag key. Its values are `ok`, `degraded`, `unavailable` and
@@ -1326,8 +1327,9 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   subscribed, or stopped still refuses, closed cells included, as do a claim taken over and a claim
   lapsed — those are not "another recorder holds the claim". A still-open sentinel is coverage only while that
   instrument is listening. A read that is actually returned with `live` false is counted. A refusal is not. The recorder resolves the
-  scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
-  stay out of this phase, and there is still no `get_quote`.
+  scoped venue client per operation; it does not extend `IMarketDataGateway`. Depth recording
+  stays out of this phase. `get_quote` is registered only when `MarketData__GetQuoteEnabled`
+  is on, which defaults off, and it reads the stored row rather than opening a hub.
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
   in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).

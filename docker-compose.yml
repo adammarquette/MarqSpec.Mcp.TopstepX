@@ -138,6 +138,9 @@ services:
       MarketData__LatestQuoteFlush: "${MarketData__LatestQuoteFlush:-00:00:01}"
       MarketData__LatestQuoteFrontRefresh: "${MarketData__LatestQuoteFrontRefresh:-00:15:00}"
       MarketData__LatestQuoteSubscribeBackoff: "${MarketData__LatestQuoteSubscribeBackoff:-00:00:05}"
+      MarketData__LatestQuoteStaleAfter: "${MarketData__LatestQuoteStaleAfter:-00:00:15}"
+      # Off by default. get_quote is not registered until this and the recorder are both on.
+      MarketData__GetQuoteEnabled: "${MarketData__GetQuoteEnabled:-false}"
       # On by default: a session conflict stops the recorder instead of logging in again
       # and disconnecting the trading platform (gh#757). Zero through two minutes.
       MarketData__StopOnSessionConflict: "${MarketData__StopOnSessionConflict:-true}"

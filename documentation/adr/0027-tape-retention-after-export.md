@@ -28,6 +28,13 @@ only when a `TapeExportReceipts` row confirms that day:
 - `UploadState` = `uploaded`
 - `Sha256` is not empty
 - the day, venue, instrument and contract match the rows
+- the current source row count for that key equals the receipt `RowCount`
+
+A different source count is not confirmation. The pass logs a warning once, counts
+`reason=source_count_changed`, and sets that receipt back to `pending` with an empty
+`Sha256`. Those rows stay. Pending is not a finished export, so the next export writes
+a new generation with the true count. A later retention pass can delete the day only
+after that new receipt is `uploaded` and the counts still match.
 
 `drive_disabled`, `pending` and `failed` are not confirmation. A missing receipt is not
 confirmation. While Drive export is not live, receipts are not `uploaded`, so the pass deletes
@@ -41,12 +48,14 @@ What stays, with or without a receipt: bars, indicator values, session bars, cov
 cells, export receipts, and `LatestQuotes`. `LatestQuotes` is not tape. This pass has no statement
 against it. Timescale `policy_retention` stays empty. `SchemaTests` still asserts that.
 
-A hypertable chunk is dropped only when its range ends at or before the cutoff and every row in it
-has that uploaded receipt. The drop is `drop_chunks` under `lock_timeout` of 5 seconds. A compressed
-chunk that is only partly exported, or that still holds a row inside the window, is left for a
-later day. It is not decompressed. On a plain table the same receipt rule deletes in batches.
-Effective retention is 90 days, and longer when a compressed chunk is not fully exported:
-those rows stay until every row in the chunk has an uploaded receipt, which can be past the window.
+A hypertable chunk is dropped only when its range ends at or before the cutoff and every key in it
+has that uploaded receipt with a source count that still equals `RowCount`. A key whose count
+differs is not fully exported, so the chunk stays. The drop is `drop_chunks` under `lock_timeout`
+of 5 seconds. A compressed chunk that is only partly exported, or that still holds a row inside
+the window, is left for a later day. It is not decompressed. On a plain table the same receipt
+rule deletes in batches. Effective retention is 90 days, and longer when a compressed chunk is
+not fully exported: those rows stay until every key in the chunk has an uploaded receipt whose
+source count still equals `RowCount`, which can be past the window.
 
 The fully-exported check and `drop_chunks` are two steps. Nothing in this process inserts a
 `Trades` row older than the cutoff while a pass runs: the recorder writes live prints, and a
@@ -63,14 +72,18 @@ every 24 hours.
 
 Before any rows for a day go, an Information line names the day, the venue, the instrument, the
 contract and the receipt's row count. That count is the receipt's `RowCount`, not a measured
-delete. Skipped keys are logged with venue and contract, because no uploaded trades receipt
-exists. The span is `tape.retention`. Its `outcome` is `idle` (nothing eligible), `skipped`
-(keys refused for lack of a receipt), `pruned` (rows removed or chunks dropped), `lease_lost`
-or `failed`. `mcp.tape.pruned` counts rows a delete statement removed. `mcp.tape.chunks_dropped`
-counts chunks `drop_chunks` removed, and the log names the boundary those chunks ended at or
-before. A pass that only drops chunks is `pruned`, not `idle`. `mcp.tape.prune.skipped` counts
-keys left for lack of a receipt, tagged `reason=no_receipt`, and one event tagged
-`reason=key_cap` when the key walk hits its cap and a chunk is not dropped.
+delete. Keys with no uploaded trades receipt are logged with venue and contract. A key whose
+source count differs is a warning, not that line. The span is `tape.retention`. Its `outcome`
+is `idle` (nothing eligible), `skipped` (keys refused for lack of a receipt),
+`source_count_changed` (keys kept because the count did not match, and nothing was
+deleted), `pruned` (rows removed or chunks dropped), `lease_lost` or `failed`. The span
+tag `source_count_changed` is how many keys were kept that way. `mcp.tape.pruned` counts rows a delete
+statement removed. `mcp.tape.chunks_dropped` counts chunks `drop_chunks` removed, and the log
+names the boundary those chunks ended at or before. A pass that only drops chunks is `pruned`,
+not `idle`. `mcp.tape.prune.skipped` counts keys left for lack of a receipt, tagged
+`reason=no_receipt`, keys whose source count differs from the receipt, tagged
+`reason=source_count_changed`, and one event tagged `reason=key_cap` when the key walk hits
+its cap and a chunk is not dropped.
 `mcp.tape.prune.failures` is tagged
 `reason=prune_error` when the pass throws and `reason=lock_timeout` when `drop_chunks` gives up the
 lock and row deletes continue. `mcp.tape.prune.lease_lost` counts a pass that stopped because

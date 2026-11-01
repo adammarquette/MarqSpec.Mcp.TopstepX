@@ -50,6 +50,10 @@ public static class RecorderHealthReport
     /// <param name="AgeMs">
     /// How old the stored report is at this read, in milliseconds. Omitted when the reply was just built.
     /// </param>
+    /// <param name="TapeDaysKept">
+    /// Trades receipts retention set back to pending because the source count no longer matched,
+    /// still waiting for a new export. Zero is a real count. Omitted when the database probe did not connect.
+    /// </param>
     public sealed record Report(
         DateTimeOffset AsOfUtc,
         bool FeedConnected,
@@ -60,7 +64,8 @@ public static class RecorderHealthReport
         IReadOnlyList<Gap>? Gaps,
         int HubReconnects,
         DateTimeOffset? CachedAtUtc = null,
-        long? AgeMs = null);
+        long? AgeMs = null,
+        int? TapeDaysKept = null);
 
     /// <summary>The product session the gaps were measured against.</summary>
     /// <param name="TradeDate">The trade date the calendar assigns.</param>

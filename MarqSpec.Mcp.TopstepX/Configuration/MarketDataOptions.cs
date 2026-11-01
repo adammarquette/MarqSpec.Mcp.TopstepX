@@ -166,6 +166,120 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </remarks>
     public bool RecordTape { get; init; }
 
+    /// <summary>How often a latest-quote flush may run. Shipped as one second.</summary>
+    public static readonly TimeSpan DefaultLatestQuoteFlush = TimeSpan.FromSeconds(1);
+
+    /// <summary>The shortest <see cref="LatestQuoteFlush"/> startup will accept.</summary>
+    public static readonly TimeSpan MinLatestQuoteFlush = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>The longest <see cref="LatestQuoteFlush"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxLatestQuoteFlush = TimeSpan.FromSeconds(30);
+
+    /// <summary>How often fronts are resolved again. Shipped as fifteen minutes.</summary>
+    public static readonly TimeSpan DefaultLatestQuoteFrontRefresh = TimeSpan.FromMinutes(15);
+
+    /// <summary>The shortest <see cref="LatestQuoteFrontRefresh"/> startup will accept.</summary>
+    public static readonly TimeSpan MinLatestQuoteFrontRefresh = TimeSpan.FromMinutes(1);
+
+    /// <summary>The longest <see cref="LatestQuoteFrontRefresh"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxLatestQuoteFrontRefresh = TimeSpan.FromHours(6);
+
+    /// <summary>
+    /// How long a refused quote subscribe waits before the first retry. Shipped as five seconds.
+    /// </summary>
+    public static readonly TimeSpan DefaultLatestQuoteSubscribeBackoff = TimeSpan.FromSeconds(5);
+
+    /// <summary>The shortest <see cref="LatestQuoteSubscribeBackoff"/> startup will accept.</summary>
+    public static readonly TimeSpan MinLatestQuoteSubscribeBackoff = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// The longest a refused-subscribe wait may grow. Not the flush cap: a flush and a subscribe
+    /// retry are different clocks.
+    /// </summary>
+    public static readonly TimeSpan MaxLatestQuoteSubscribeBackoff = TimeSpan.FromMinutes(5);
+
+    /// <summary>A quote older than this is stale. Shipped as fifteen seconds.</summary>
+    public static readonly TimeSpan DefaultLatestQuoteStaleAfter = TimeSpan.FromSeconds(15);
+
+    /// <summary>The shortest <see cref="LatestQuoteStaleAfter"/> startup will accept.</summary>
+    public static readonly TimeSpan MinLatestQuoteStaleAfter = TimeSpan.FromSeconds(1);
+
+    /// <summary>The longest <see cref="LatestQuoteStaleAfter"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxLatestQuoteStaleAfter = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// Whether the recorder may upsert the latest quote for each contract it is already
+    /// listening to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off by default.</b> The writer runs only when the transport is HTTP, <see cref="RecordTape"/>
+    /// is on, and this switch is on. It uses the hub the tape recorder already connected. It does
+    /// not open a market hub of its own, and it does not touch the session-login gate. A server
+    /// process with <see cref="RecordTape"/> off never subscribes.
+    /// </para>
+    /// <para>
+    /// Quotes are coalesced to one row per contract and flushed at most once per
+    /// <see cref="LatestQuoteFlush"/>. The table is a cache, not a tape.
+    /// </para>
+    /// </remarks>
+    public bool RecordLatestQuotes { get; init; }
+
+    /// <summary>
+    /// Whether this process publishes <c>get_quote</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Off by default.</b> The public server cannot see the recorder's
+    /// <see cref="RecordLatestQuotes"/> switch. Leaving the tool listed while that switch is off
+    /// makes every call look like a market with no quote. The Railway template turns this on
+    /// for the server and leaves <see cref="RecordLatestQuotes"/> false there. Compose does not.
+    /// </remarks>
+    public bool GetQuoteEnabled { get; init; }
+
+    /// <summary>
+    /// The shortest gap between latest-quote flushes.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="MinLatestQuoteFlush"/> through <see cref="MaxLatestQuoteFlush"/>. Quotes that
+    /// arrive inside the gap collapse to the latest one per contract. A value outside that range
+    /// fails startup, naming <c>MarketData:LatestQuoteFlush</c>.
+    /// </remarks>
+    public TimeSpan LatestQuoteFlush { get; init; } = DefaultLatestQuoteFlush;
+
+    /// <summary>
+    /// How often the writer resolves fronts again and drops a contract that is no longer front.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="MinLatestQuoteFrontRefresh"/> through <see cref="MaxLatestQuoteFrontRefresh"/>.
+    /// A value outside that range fails startup, naming <c>MarketData:LatestQuoteFrontRefresh</c>.
+    /// A refused subscribe does not wait for this pass: it retries on
+    /// <see cref="LatestQuoteSubscribeBackoff"/>.
+    /// </remarks>
+    public TimeSpan LatestQuoteFrontRefresh { get; init; } = DefaultLatestQuoteFrontRefresh;
+
+    /// <summary>
+    /// How long the writer waits before retrying one refused quote subscription.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="MinLatestQuoteSubscribeBackoff"/> through
+    /// <see cref="MaxLatestQuoteSubscribeBackoff"/>.
+    /// The wait doubles after each further refusal, up to that maximum, and only the refused
+    /// contract is retried. Fronts are not resolved again until
+    /// <see cref="LatestQuoteFrontRefresh"/>. A value outside the range fails startup, naming
+    /// <c>MarketData:LatestQuoteSubscribeBackoff</c>.
+    /// </remarks>
+    public TimeSpan LatestQuoteSubscribeBackoff { get; init; } = DefaultLatestQuoteSubscribeBackoff;
+
+    /// <summary>
+    /// A stored quote older than this is reported stale. The row is still returned.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="MinLatestQuoteStaleAfter"/> through <see cref="MaxLatestQuoteStaleAfter"/>.
+    /// Age is the database clock, not this process. Zero is refused: it would mark every quote
+    /// stale. A value outside the range fails startup, naming <c>MarketData:LatestQuoteStaleAfter</c>.
+    /// </remarks>
+    public TimeSpan LatestQuoteStaleAfter { get; init; } = DefaultLatestQuoteStaleAfter;
+
     /// <summary>
     /// Whether a session conflict stops the recorder instead of reconnecting.
     /// </summary>
@@ -339,6 +453,42 @@ public sealed partial class MarketDataOptions : IValidatableObject
                 SectionName + ":SessionConflictBackoff must be from 00:00:00 through 00:02:00 inclusive. "
                 + "It was '" + SessionConflictBackoff.ToString("c", CultureInfo.InvariantCulture) + "'.",
                 [nameof(SessionConflictBackoff)]));
+        }
+
+        if (LatestQuoteFlush < MinLatestQuoteFlush || LatestQuoteFlush > MaxLatestQuoteFlush)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":LatestQuoteFlush must be from 00:00:00.200 through 00:00:30 inclusive. "
+                + "It was '" + LatestQuoteFlush.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(LatestQuoteFlush)]));
+        }
+
+        if (LatestQuoteFrontRefresh < MinLatestQuoteFrontRefresh
+            || LatestQuoteFrontRefresh > MaxLatestQuoteFrontRefresh)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":LatestQuoteFrontRefresh must be from 00:01:00 through 06:00:00 inclusive. "
+                + "It was '" + LatestQuoteFrontRefresh.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(LatestQuoteFrontRefresh)]));
+        }
+
+        if (LatestQuoteSubscribeBackoff < MinLatestQuoteSubscribeBackoff
+            || LatestQuoteSubscribeBackoff > MaxLatestQuoteSubscribeBackoff)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":LatestQuoteSubscribeBackoff must be from 00:00:01 through 00:05:00 "
+                + "inclusive. "
+                + "It was '" + LatestQuoteSubscribeBackoff.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(LatestQuoteSubscribeBackoff)]));
+        }
+
+        if (LatestQuoteStaleAfter < MinLatestQuoteStaleAfter
+            || LatestQuoteStaleAfter > MaxLatestQuoteStaleAfter)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":LatestQuoteStaleAfter must be from 00:00:01 through 00:30:00 inclusive. "
+                + "It was '" + LatestQuoteStaleAfter.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(LatestQuoteStaleAfter)]));
         }
 
         BarSessionCalendar calendar;

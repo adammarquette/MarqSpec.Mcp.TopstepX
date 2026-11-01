@@ -1,4 +1,6 @@
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
@@ -93,4 +95,16 @@ public sealed class EfRecorderHealthStore(TopstepXDbContext database) : IRecorde
 
         return slices;
     }
+
+    /// <inheritdoc />
+    public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
+        _database.TapeExportReceipts.AsNoTracking()
+            .CountAsync(
+                receipt => receipt.Kind == TapeExportArchive.TradesDirectory
+                    && receipt.Format == TapeExportArchive.CsvGzFormat
+                    && receipt.UploadState == TapeExportReceipt.StatePending
+                    && (receipt.FailureType == TapePruneReason.SourceCountChanged
+                        || receipt.FailureType == TapePruneReason.LateRows),
+                cancellationToken);
+
 }

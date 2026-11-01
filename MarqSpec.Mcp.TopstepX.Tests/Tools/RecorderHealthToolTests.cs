@@ -102,8 +102,28 @@ public sealed class RecorderHealthToolTests
 
         report.Database.Should().Be(RecorderHealthReport.StoreConnectivity.Unavailable);
         report.Gaps.Should().BeNull();
+        report.TapeDaysKept.Should().BeNull();
         report.Contracts.Should().OnlyContain(row => row.LastTickUtc == null && row.ContractId == null);
         Wire(report).TryGetProperty("gaps", out _).Should().BeFalse();
+        Wire(report).TryGetProperty("tapeDaysKept", out _).Should().BeFalse();
+        Wire(report).TryGetProperty("tapeLateRows", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenReceiptsWereWithdrawn_ReportsHowManyDaysAreKept()
+    {
+        await using Fixture fixture = Fixture.Listening();
+        fixture.Store.TapeDaysKept = 2;
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday));
+        fixture.Store.Ticks.Add(new ContractLastTick("NQ", Nq, _tuesday));
+        fixture.Store.Coverage.Add(Open(_open, "ES", Es));
+        fixture.Store.Coverage.Add(Open(_open, "NQ", Nq));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.TapeDaysKept.Should().Be(2);
+        Wire(report).GetProperty("tapeDaysKept").GetInt32().Should().Be(2);
+        Wire(report).TryGetProperty("tapeLateRows", out _).Should().BeFalse();
     }
 
     [Fact]
@@ -716,7 +736,8 @@ public sealed class RecorderHealthToolTests
                 BarSessionCalendar.Parse("16:00", holidays ?? [], earlyCloses: earlyCloses ?? []),
                 clock,
                 telemetry,
-                memo);
+                memo,
+                new BarBackfillStatus());
             return new Fixture(new RecorderHealthTools(service), service, telemetry, tape, store, clock);
         }
     }
@@ -751,6 +772,8 @@ public sealed class RecorderHealthToolTests
         public List<ContractLastTick> Ticks { get; } = [];
 
         public List<CoverageSlice> Coverage { get; } = [];
+
+        public int TapeDaysKept { get; set; }
 
         public void ReleaseProbe() => _release.TrySetResult();
 
@@ -805,5 +828,8 @@ public sealed class RecorderHealthToolTests
 
             return Task.FromResult<IReadOnlyList<CoverageSlice>>(Coverage);
         }
+
+        public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(TapeDaysKept);
     }
 }

@@ -10,9 +10,10 @@ gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`),
 gh#404 (`TapeLeases`),
 gh#499 (`SessionBars`),
 gh#501 (`SessionIndicatorValues`),
-gh#709 (`TradingAuditLog`)
+gh#709 (`TradingAuditLog`),
+gh#351 (`LatestQuotes`)
 
-One Postgres database, twelve tables — §4 is a retired number, not a thirteenth. Entities live in
+One Postgres database, fourteen tables — §4 is a retired number. Entities live in
 `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
 lockstep with them in the same PR.
 
@@ -403,16 +404,23 @@ store refuses that rewrite; a missing number stays missing.
 prints that cannot be refetched — the same fact §8 states for the listening ledger, and the correction
 [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)'s 2026-08-28 update records.
 
-**Deliberately no retention policy** — same reason as §1. This is the store's **first compression policy**:
-chunks older than seven days compress in place. Compression is a different Timescale job from retention;
-`SchemaTests` asserts both (`policy_compression` present on `Trades`, `policy_retention` still empty).
+**Compression, and a receipt-gated prune (ADR-0027, gh#763).** Chunks older than seven days still
+compress in place. Timescale `policy_retention` stays empty. `SchemaTests` still asserts
+`policy_compression` on `Trades` and that `policy_retention` is empty. The recorder deletes rows for
+a UTC day only when an `uploaded` trades receipt (`csv.gz`, non-empty `Sha256`) exists for that day,
+venue, instrument and contract. No receipt means the rows stay. A compressed chunk that is not fully
+exported is left, so retention can run longer than `TapeRetention__Days`. `LatestQuotes` is
+not this table and is not pruned. The batched delete filters venue, instrument, contract and
+the day, the leading columns of `PK_Trades`. The planner may use that key or
+`IX_Trades_Instrument_TradeTimeUtc`. The test requires an index scan, not one index name.
 
 **The export copies a finished UTC day and does not delete rows** (`R-10`, gh#755). A day of
 `TradeTimeUtc` is written once that day has ended, as gzip CSV and Parquet, one pair of files per
 contract: `trades/{venue}/{instrument}/{contract}/yyyy-MM-dd.vN.csv.gz` and `.parquet`, on the mounted
 volume at `TapeExport__Path` (default `/data/tape-exports`). The volume is not created by a migration.
-`Retention__*` is not read; dropping raw tape needs its own ADR. Whether each file was copied, and
-whether a Drive upload of it finished, is §14.
+`Retention__*` is not a key. ADR-0027 reads an `uploaded` trades receipt before it deletes that
+day; this export still does not delete rows. Whether each file was copied, and whether a Drive
+upload of it finished, is §14.
 
 The hypertable is **conditional**, following [ADR-0004](adr/0004-one-postgres-timescale-pgvector.md): probe
 `pg_available_extensions`, create it when Timescale is present, warn and leave a plain table when it is not.
@@ -738,11 +746,14 @@ Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of 
 | `Outcome` | `varchar(32)` | Closed outcome name — `Attempted`, `Preview`, `Refused`, `Live`, `Failed`, `Unknown` |
 | `VenueErrorCode` | `varchar(64)` | Venue business error when a write ran; null on the pre-send claim |
 | `OrderId` | `bigint` null | Broker order id on a `Live` row, so a replay can return it. Null otherwise |
+| `FinaliseId` | `uuid` null | One lock-failure reversal and its `Refused` row. A retry matches only this id |
 
 One row for **every** trading attempt that passes validation — preview, refusal, or live — before the
 outcome is returned (ADR-0024 §5, gh#707 / gh#709 / gh#750). A size, price, non-positive partial-close, or
-over-long-key refusal writes no row, and neither does `trading_disabled` before the claim. The kill switch,
-stage, allowlist, denylist, caps, a blank key, an idempotency conflict, a gateway refusal, and
+over-long-key refusal writes no row, and neither does `trading_disabled` before the claim. The kill switch
+on a new order or a modify, a second trading writer (`account_writer_held` or
+`account_writer_unavailable`), stage, allowlist, denylist,
+caps, a blank key, an idempotency conflict, a gateway refusal, and
 `trading_disabled` after the claim write `Refused`. The idempotency claim **is** a row in this table: one
 `Unknown` row inserted before the send, unique on `(AccountId, Tool, IdempotencyKey)` where
 `Outcome = 'Unknown'` and the key is not empty. The migration `AddTradingAuditIdempotencyClaim` that creates
@@ -783,18 +794,29 @@ unique partial `(AccountId, Tool, IdempotencyKey)` for the pre-send claim.
 | `RelativePath` | `varchar(512)` | Path under `TapeExport__Path`, `/` separators |
 | `Sha256` | `varchar(64)` | Lowercase hex of the file bytes |
 | `RowCount` | `integer` | Data rows. `0` for a manifest |
-| `ExportedAtUtc` | `timestamptz` | When this status was written |
+| `ExportedAtUtc` | `timestamptz` | Database `now()` inside the export snapshot. Retention compares `RecordedAt` to it |
 | `DriveFileId` | `varchar(128)` | Last Drive file id that landed. A failed attempt does not clear it |
 | `UploadState` | `varchar(16)` | `pending`, `drive_disabled`, `uploaded`, or `failed` |
-| `FailureType` | `varchar(128)` | Exception type name when `UploadState` is `failed`, or `Timeout`, `LockLost`, or `IdentityBusy`. Null otherwise. Never a credential |
+| `FailureType` | `varchar(128)` | Exception type name when `UploadState` is `failed`, or `Timeout`, `LockLost`, or `IdentityBusy`. `source_count_changed` or `late_rows` when retention set the row back to `pending`. Null otherwise. Never a credential |
 | `FailureStatus` | `integer` | HTTP status when the client reported one. Null when there is no status |
 
 Primary key: `(Day, Kind, Format, Venue, Instrument, ContractId, ResolutionMinutes)`. A second pass of
 the same file updates this row (`ON CONFLICT DO UPDATE`). It does not insert another, and it does not
 delete tape.
 
-**This is not a retention policy** (`R-10.7`, gh#755). It records that a file was written and whether
-the Drive upload finished, so a later decision can check. `Retention__*` is not read.
+**This is the confirmation ADR-0027 reads** (`R-10.7`, gh#755). It records that a file was written
+and whether the Drive upload finished. The prune deletes a `Trades` day only when `UploadState` is
+`uploaded` on the trades `csv.gz` row, `Sha256` is not empty, and the current source row count
+equals `RowCount`, and that comparison is before any delete for the key. A difference, or
+a `RecordedAt` later than `ExportedAtUtc` while every exported row is still stored, sets
+this row back to `pending`, clears `Sha256`, and stores `FailureType` `source_count_changed`
+or `late_rows`. `DriveFileId`, `RowCount` and `RelativePath` stay, so a later upload
+replaces that Drive file instead of leaving it. The local rows stay, and the next export
+writes the whole day (gh#795). The day is re-exported whole until a pass can delete it.
+Nothing is deleted that the export did not contain. After a delete has started, rows with
+`RecordedAt` after `ExportedAtUtc` stay and this receipt stays `uploaded`. `drive_disabled`
+is not that
+confirmation. `Retention__*` is not a key.
 `UploadState = failed` means the local file and the local rows are still there, and `DriveFileId` is
 the last id that landed. `drive_disabled` means Drive was not configured. While Drive stays off that
 state counts as finished. Once Drive is on, those days are exported. `pending` is committed in its
@@ -803,6 +825,40 @@ pass that finds pending rows logs the count. The file id is written in a second 
 the upload returns. Not a hypertable.
 
 Index: `(Day, UploadState)` — the read that decision would make.
+
+## §15 `LatestQuotes` — one row per contract
+
+| Column | Type | Note |
+|---|---|---|
+| `Venue` | `varchar(64)` | PK |
+| `ContractId` | `varchar(64)` | PK · the contract the recorder subscribed |
+| `Instrument` | `varchar(32)` | Normalised symbol. Not part of the key |
+| `Bid` | `numeric(18,8)` | Best bid |
+| `Ask` | `numeric(18,8)` | Best ask |
+| `Last` | `numeric(18,8)` | Last trade |
+| `Volume` | `bigint` | Session volume, in contracts. Zero is what the venue sent |
+| `QuoteTimeUtc` | `timestamptz` | Nullable. The venue stamp, when the payload had one |
+| `ReceivedAt` | `timestamptz` | Database `clock_timestamp()` at upsert |
+
+The recorder upserts this row from the market hub it already holds, at most once per
+`MarketData__LatestQuoteFlush`, and only when that process is also recording tape.
+`MarketData__RecordLatestQuotes` defaults off. The Railway recorder sets it on. The Railway
+server sets it false and sets `MarketData__GetQuoteEnabled` on, so the server lists
+`get_quote` and does not open a hub to fill the table. A server that is not the recorder
+does not open a hub to fill the table. `ReceivedAt` is `clock_timestamp()`. A flush delay
+makes the stamp up to one flush gap later than the hub event. `get_quote` reads the newest
+row for the instrument, the contract the recorder subscribed, and reports that age. It does
+not search the venue. Until the new front ticks, that row is the old contract: the answer
+names it and goes stale (gh#922, ADR-0016). A row older than
+`MarketData__LatestQuoteStaleAfter` is marked stale and still returned. The tool is
+registered only when `MarketData__GetQuoteEnabled` is on. The code default is off.
+A failure counter names the CLR type on `exception.type`, not the message.
+An older receipt cannot replace a newer one. This table is not subject to retention
+(gh#763, ADR-0027). The prune pass does not delete it. A rolled contract's row stays
+until a later slice deletes it. Older quotes are not kept. This is not the tape.
+Not a hypertable.
+
+No extra index. The key is `(Venue, ContractId)`.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

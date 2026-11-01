@@ -111,10 +111,69 @@ TAPE_VOLUME_ROOT="$work/drop" "$prepare" /bin/sh -c \
   "id -u; touch '$work/drop/tape-exports/probe'; stat -c %u '$work/drop/tape-exports/probe'" \
   >"$work/out" 2>"$work/err"
 if [ "$(sed -n 1p "$work/out")" != "64198" ] || [ "$(sed -n 2p "$work/out")" != "64198" ] \
-  || [ "$(stat -c %u "$work/drop/tape-exports")" != "64198" ]; then
-  echo "root with a volume did not chown and drop to 64198:" >&2
+  || [ "$(stat -c %u "$work/drop/tape-exports")" != "64198" ] \
+  || ! grep -q 'tape volume prepared' "$work/err" \
+  || grep -q 'tape volume prepared' "$work/out"; then
+  echo "root with a volume did not chown, drop to 64198, and log on stderr:" >&2
   cat "$work/out" "$work/err" >&2
   exit 1
+fi
+
+# gh#894. Streams: stderr is the failure path; stdout is the expected HTTP line.
+die_log() { echo "$1" >&2; cat "$work/out" "$work/err" >&2; exit 1; }
+
+# Recording off and not HTTP: the skip stays on stderr and stdout is empty.
+for spec in unset Stdio bogus; do
+  extra="-u Mcp__Transport"
+  [ "$spec" = unset ] || extra="Mcp__Transport=$spec"
+  # shellcheck disable=SC2086
+  if ! /usr/sbin/runuser -u nobody -- env $extra MarketData__RecordTape=false \
+      PREPARE_TAPE_VOLUME_ONLY=1 TAPE_VOLUME_ROOT="$work/skip" \
+      "$work/prepare-tape-volume.sh" >"$work/out" 2>"$work/err" \
+    || [ -s "$work/out" ] || ! grep -q 'skipped: running as uid' "$work/err"; then
+    die_log "non-root skip was not stderr-only ($spec) (gh#894)"
+  fi
+done
+
+if ! /usr/sbin/runuser -u nobody -- env Mcp__Transport=Http MarketData__RecordTape=false \
+    PREPARE_TAPE_VOLUME_ONLY=1 TAPE_VOLUME_ROOT="$work/http-off" \
+    "$work/prepare-tape-volume.sh" >"$work/out" 2>"$work/err" \
+  || ! grep -q 'skipped: running as uid' "$work/out" \
+  || grep -q 'tape volume prepare skipped' "$work/err"; then
+  die_log "http recording off did not log the skip on stdout (gh#894)"
+fi
+
+# ' true' matches the app's bool parse, so the skip stays on stderr.
+if ! /usr/sbin/runuser -u nobody -- env Mcp__Transport=Http MarketData__RecordTape=' true' \
+    PREPARE_TAPE_VOLUME_ONLY=1 TAPE_VOLUME_ROOT="$work/http-on" \
+    "$work/prepare-tape-volume.sh" >"$work/out" 2>"$work/err" \
+  || ! grep -q 'skipped: running as uid' "$work/err" || [ -s "$work/out" ]; then
+  die_log "http recording on did not keep the skip on stderr (gh#894)"
+fi
+
+mkdir -p "$work/real-http"
+ln -s "$work/real-http" "$work/linked-http"
+if Mcp__Transport=Http MarketData__RecordTape=false TAPE_VOLUME_ROOT="$work/linked-http" \
+  PREPARE_TAPE_VOLUME_ONLY=1 "$prepare" >"$work/out" 2>"$work/err" \
+  || ! grep -q 'refusing a symlink' "$work/err" || grep -q 'refusing a symlink' "$work/out"; then
+  die_log "a symlink refusal was not on stderr (gh#894)"
+fi
+
+Mcp__Transport=Http MarketData__RecordTape=false TAPE_VOLUME_ROOT="$work/absent-http" \
+  "$prepare" /bin/sh -c 'id -u; id -g' >"$work/out" 2>"$work/err"
+if [ -e "$work/absent-http" ] || ! grep -q 'skipped: no volume' "$work/out" \
+  || grep -q 'skipped: no volume' "$work/err" \
+  || [ "$(tail -n 2 "$work/out" | tr '\n' ' ')" != "64198 64198 " ]; then
+  die_log "http recording off, root, no volume, did not skip on stdout (gh#894)"
+fi
+
+mkdir -p "$work/drop-http" && chmod 755 "$work/drop-http"
+Mcp__Transport=Http MarketData__RecordTape=false TAPE_VOLUME_ROOT="$work/drop-http" \
+  "$prepare" /bin/sh -c 'id -u' >"$work/out" 2>"$work/err"
+if ! grep -q 'tape volume prepared' "$work/out" \
+  || grep -q 'tape volume prepared' "$work/err" \
+  || [ "$(tail -n 1 "$work/out")" != "64198" ]; then
+  die_log "http prepare success was not on stdout (gh#894)"
 fi
 
 echo "ok  tape volume entrypoint refuses a symlink, chowns with -h and drops to 64198"

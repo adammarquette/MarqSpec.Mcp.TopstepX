@@ -89,17 +89,14 @@ public sealed class TradingExecutionGateTests
             .Should().Be(TradingExecutionRefusal.OrderSizeExceedsLimit(4, 3));
     }
 
-    /// <summary>Unknown stage refuses and invokes the observability hook.</summary>
+    /// <summary>Unknown stage refuses. The writes counter is the signal (gh#732).</summary>
     [Fact]
-    public void RefuseIfStageBlocksWrite_InvokesSignalAndRefuses_ForUnknown()
+    public void RefuseIfStageBlocksWrite_Refuses_ForUnknown()
     {
-        RecordingUnknownSignal signal = new();
         TradingExecutionGate gate = Gate(new TradingExecutionOptions { Enabled = true });
 
-        gate.RefuseIfStageBlocksWrite(AccountStage.Unknown, accountId: 55, signal)
+        gate.RefuseIfStageBlocksWrite(AccountStage.Unknown, accountId: 55)
             .Should().Be(TradingExecutionRefusal.UnknownAccountStage(55));
-
-        signal.RefusedAccountIds.Should().ContainSingle().Which.Should().Be(55);
     }
 
     /// <summary>Practice stage passes the practice-only layer.</summary>
@@ -108,7 +105,7 @@ public sealed class TradingExecutionGateTests
     {
         TradingExecutionGate gate = Gate(new TradingExecutionOptions { Enabled = true });
 
-        gate.RefuseIfStageBlocksWrite(AccountStage.Practice, accountId: 1, new NullTradingUnknownStageRefusalSignal())
+        gate.RefuseIfStageBlocksWrite(AccountStage.Practice, accountId: 1)
             .Should().BeNull();
     }
 
@@ -118,7 +115,7 @@ public sealed class TradingExecutionGateTests
     {
         TradingExecutionGate gate = Gate(new TradingExecutionOptions { Enabled = true });
 
-        gate.RefuseIfStageBlocksWrite(AccountStage.Funded, accountId: 9, new NullTradingUnknownStageRefusalSignal())
+        gate.RefuseIfStageBlocksWrite(AccountStage.Funded, accountId: 9)
             .Should().Be(TradingExecutionRefusal.NonPracticeAccountStage(9, AccountStage.Funded));
     }
 
@@ -146,13 +143,6 @@ public sealed class TradingExecutionGateTests
         public bool Engaged { get; set; }
 
         public bool IsEngaged => Engaged;
-    }
-
-    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public List<int> RefusedAccountIds { get; } = [];
-
-        public void UnknownStageWriteRefused(int accountId) => RefusedAccountIds.Add(accountId);
     }
 
     [Fact]
@@ -296,7 +286,6 @@ public sealed class TradingExecutionGateTests
         TradingExecutionRefusal? refusal = await gate.RefuseWriteUnlessPermittedAsync(
             accountId: 1,
             marketData,
-            new NullTradingUnknownStageRefusalSignal(),
             CancellationToken.None);
 
         refusal.Should().Be(TradingExecutionRefusal.KillSwitchEngaged);
@@ -314,7 +303,6 @@ public sealed class TradingExecutionGateTests
         TradingExecutionRefusal? refusal = await gate.RefuseWriteUnlessPermittedAsync(
             accountId: 999,
             marketData,
-            new NullTradingUnknownStageRefusalSignal(),
             CancellationToken.None);
 
         refusal.Should().Be(TradingExecutionRefusal.AccountNotFound(999));
@@ -332,7 +320,6 @@ public sealed class TradingExecutionGateTests
         TradingExecutionRefusal? refusal = await gate.RefuseWriteUnlessPermittedAsync(
             accountId: 1,
             marketData,
-            new NullTradingUnknownStageRefusalSignal(),
             CancellationToken.None);
 
         refusal.Should().Be(TradingExecutionRefusal.AccountNotActive(1));

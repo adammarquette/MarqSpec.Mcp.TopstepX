@@ -645,6 +645,22 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // How long an exported Trades day may stay (gh#763, ADR-0027). The default is 90 days.
+        // Zero and a negative number are refused. Binding this does not delete anything; the
+        // recorder's pass does, and only after an uploaded trades receipt.
+        services.AddOptions<TapeRetentionOptions>()
+            .Bind(builder.Configuration.GetSection(TapeRetentionOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
+        // Historical bar backfill (gh#899). Off by default. The hosted pass runs once when enabled.
+        // No Railway variable is set for this; the deployment notes describe the keys.
+        services.AddOptions<BarBackfillOptions>()
+            .Bind(builder.Configuration.GetSection(BarBackfillOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+        services.AddSingleton<IValidateOptions<BarBackfillOptions>, BarBackfillOptionsValidator>();
+
         services.AddOptions<IndicatorOptions>()
             .Bind(builder.Configuration.GetSection(IndicatorOptions.SectionName))
             .ValidateDataAnnotations()
@@ -709,7 +725,6 @@ public static class Program
             sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>(),
             sp.GetRequiredService<ITradingKillSwitch>(),
             sp.GetRequiredService<IAccountStageResolver>()));
-        services.AddSingleton<ITradingUnknownStageRefusalSignal, NullTradingUnknownStageRefusalSignal>();
         services.AddSingleton<IAccountStageResolver, ProjectXAccountStageResolver>();
         services.AddScoped<ITradingAuditLogWriter, TradingAuditLogWriter>();
         services.AddScoped<ITradingDailyCapCoordinator, TradingDailyCapCoordinator>();
@@ -717,6 +732,14 @@ public static class Program
             sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>(),
             sp.GetRequiredService<InstrumentRegistry>()));
         services.AddScoped<TradingWriteVenueAccountCache>();
+        // One session per process, not per request. The lock outlives a single order so a second replica
+        // cannot trade the same account (gh#772). Shutdown disposes it and releases the locks.
+        services.AddSingleton(sp => new TradingAccountWriterLock(
+            StoreConnection.Resolve(sp.GetRequiredService<IConfiguration>()),
+            sp.GetRequiredService<ILogger<TradingAccountWriterLock>>(),
+            sp.GetRequiredService<TimeProvider>()));
+        services.AddSingleton<ITradingAccountWriterLock>(sp =>
+            sp.GetRequiredService<TradingAccountWriterLock>());
         // Scoped, and one order operation per instance. TradingRiskGate throws if a second operation
         // reuses it: the send-started flags would otherwise be cleared and a live send could be
         // reported as safe to retry.
@@ -934,6 +957,16 @@ public static class Program
         // front across a quarterly roll and go on answering the ledger's per-contract question with a
         // contract that has since retired (gh#504).
         services.AddScoped<BarCacheService>();
+        services.AddScoped<IBarBackfillCache, BarCacheBackfillAdapter>();
+        services.AddScoped<BarBackfillDriver>();
+        services.AddScoped<IBarBackfillRunner>(static provider =>
+            provider.GetRequiredService<BarBackfillDriver>());
+        services.AddSingleton<BarBackfillStatus>();
+        services.AddSingleton<IBarBackfillLock>(static provider =>
+            new PostgresBarBackfillLock(
+                StoreConnection.Resolve(provider.GetRequiredService<IConfiguration>()),
+                provider.GetRequiredService<ILogger<PostgresBarBackfillLock>>()));
+        services.AddHostedService<BarBackfillWorker>();
 
         // The reselect-bars verb (gh#506). Scoped because BarCacheService is, and it re-decides a window
         // through that service's seam -- the only thing on this path that reaches the venue.
@@ -949,6 +982,13 @@ public static class Program
         // every operation opens a scope (the captive-dependency case, ADR-0016).
         services.AddSingleton<TradeTapeRecorder>();
         services.AddHostedService(sp => sp.GetRequiredService<TradeTapeRecorder>());
+
+        // Latest quotes. The writer returns immediately unless HTTP, RecordTape, and
+        // RecordLatestQuotes are all on, and it never connects a hub of its own (gh#351).
+        // get_quote is registered below, only when MarketData__GetQuoteEnabled is on.
+        services.AddScoped<ILatestQuoteStore, LatestQuoteStore>();
+        services.AddSingleton<LatestQuoteWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<LatestQuoteWriter>());
 
         // Indicator warmup. Same shape: HTTP and an explicit switch, both. Always registered
         // so the container does not change with MarketData__WarmIndicators; ExecuteAsync
@@ -983,6 +1023,15 @@ public static class Program
         services.AddScoped<TapeExportPass>();
         services.AddScoped<ITapeExportPass>(sp => sp.GetRequiredService<TapeExportPass>());
         services.AddHostedService<TapeExportWorker>();
+
+        // Tape retention (gh#763, ADR-0027). Always registered. ExecuteAsync returns immediately
+        // unless the transport is HTTP and MarketData__RecordTape is on. It deletes only while
+        // this process holds a recorder lease, and only days with an uploaded trades receipt.
+        // The pass is scoped because it takes the DbContext.
+        services.AddScoped<TapeRetentionPass>();
+        services.AddScoped<ITapeRetentionPass>(sp => sp.GetRequiredService<TapeRetentionPass>());
+        services.AddSingleton<ITapeRetentionLease, RecorderTapeRetentionLease>();
+        services.AddHostedService<TapeRetentionWorker>();
 
         // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which
         // series it has already found complete, and the scope is one request. A singleton would remember the
@@ -1059,6 +1108,18 @@ public static class Program
         if (trading.Enabled)
         {
             server.WithTools<TradingOrderTools>();
+        }
+
+        // get_quote has no [McpServerToolType], for the same reason as the order tools: the assembly
+        // scan would publish it on every server. The recorder's write switch is not visible here.
+        // PR 3 turns this on together with MarketData__RecordLatestQuotes.
+        MarketDataOptions quotes = new();
+        builder.Configuration.GetSection(MarketDataOptions.SectionName).Bind(quotes);
+        if (quotes.GetQuoteEnabled)
+        {
+            services.AddScoped<LatestQuoteReader>();
+            services.AddScoped<QuoteTools>();
+            server.WithTools<QuoteTools>();
         }
 
         // The store-fault boundary (gh#89). ON THE SERVER, NOT ON A TOOL: every tools/call goes through
@@ -1224,32 +1285,63 @@ public static class Program
     /// A socket reset, or Postgres shutting the session down (<c>57P01</c>) or refusing it
     /// (<c>57P03</c>). Those are the store going away, not a schema defect (gh#843).
     /// </summary>
-    /// <param name="exception">The failure from the apply, including an outer wrapper.</param>
+    /// <param name="exception">The failure from the apply, including the one EF wrapper.</param>
     /// <returns>Whether startup should degrade or exit instead of crashing.</returns>
     /// <remarks>
     /// <c>pg_terminate_backend</c> raises <c>PostgresException</c> <c>57P01</c>. EF's execution
-    /// strategy does not let that out: it throws <see cref="InvalidOperationException"/> ("a
-    /// transient failure") with the <c>PostgresException</c> inside. The SQLSTATE is what decides.
+    /// strategy does not let that out: it throws <see cref="InvalidOperationException"/> with
+    /// that <c>PostgresException</c> as its inner exception. A socket reset is an
+    /// <c>NpgsqlException</c> whose inner exception is the <c>SocketException</c>, sometimes
+    /// under an <c>IOException</c>. An exception that is not one of those, and only carries
+    /// one of them further inside, is still a defect and still fails the process. An
+    /// <c>NpgsqlException</c> that ends at <see cref="System.IO.EndOfStreamException"/>, with
+    /// no <c>SocketException</c>, is treated as a crash: <c>EndOfStreamException</c> is an
+    /// <c>IOException</c> with nothing below it, so the walk ends without a match.
     /// </remarks>
     private static bool IsDroppedStoreConnection(Exception exception)
     {
-        for (Exception? current = exception; current is not null; current = current.InnerException)
+        Exception current = exception;
+        if (current is InvalidOperationException { InnerException: { } inner })
         {
-            if (current is System.Net.Sockets.SocketException)
+            current = inner;
+        }
+
+        if (current is Npgsql.PostgresException postgres)
+        {
+            return IsAdminShutdownOrCannotConnect(postgres);
+        }
+
+        if (current is not Npgsql.NpgsqlException npgsql)
+        {
+            return false;
+        }
+
+        for (Exception? nested = npgsql.InnerException; nested is not null; nested = nested.InnerException)
+        {
+            if (nested is System.Net.Sockets.SocketException)
             {
                 return true;
             }
 
-            if (current is Npgsql.PostgresException postgres
-                && postgres.SqlState is Npgsql.PostgresErrorCodes.AdminShutdown
-                    or Npgsql.PostgresErrorCodes.CannotConnectNow)
+            if (nested is Npgsql.PostgresException nestedPostgres)
             {
-                return true;
+                return IsAdminShutdownOrCannotConnect(nestedPostgres);
+            }
+
+            // Npgsql puts the socket under an IOException ("reading from stream"). Stop at
+            // anything else so a defect that merely nests a reset is not classified as a drop.
+            if (nested is not IOException)
+            {
+                return false;
             }
         }
 
         return false;
     }
+
+    private static bool IsAdminShutdownOrCannotConnect(Npgsql.PostgresException postgres) =>
+        postgres.SqlState is Npgsql.PostgresErrorCodes.AdminShutdown
+            or Npgsql.PostgresErrorCodes.CannotConnectNow;
 
     private static async Task<EmbeddingAvailability> ProbeEmbeddingsAsync(
         WebApplication app,

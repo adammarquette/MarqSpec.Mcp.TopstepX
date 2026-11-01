@@ -35,7 +35,10 @@ public sealed class MigrationOptionsTests
     [Fact]
     public void CommandTimeoutSeconds_RefusesZeroAndANegativeValue()
     {
-        Action zero = () => Bind(new Dictionary<string, string?> { ["Migrations:CommandTimeoutSeconds"] = "0" });
+        Action zero = () => Bind(new Dictionary<string, string?>
+        {
+            ["Migrations:CommandTimeoutSeconds"] = "0",
+        });
         Action negative = () => Bind(new Dictionary<string, string?>
         {
             ["Migrations:CommandTimeoutSeconds"] = "-1",
@@ -83,7 +86,9 @@ public sealed class MigrationOptionsTests
         negative.Should().Throw<OptionsValidationException>();
     }
 
-    /// <summary>Seven days is the ceiling for the wait as well. The bound at the ceiling still binds.</summary>
+    /// <summary>
+    /// Seven days is the ceiling for the wait as well. The bound at the ceiling still binds.
+    /// </summary>
     [Fact]
     public void LockWaitSeconds_RefusesMoreThanSevenDays()
     {
@@ -117,14 +122,17 @@ public sealed class MigrationOptionsTests
         }).CommandTimeoutSeconds.Should().Be(MigrationOptions.MaxCommandTimeoutSeconds);
     }
 
-    /// <summary>Binds through the real composition root, so this measures what the deployed server does.</summary>
+    /// <summary>
+    /// Binds through the real composition root, so this measures what the deployed server does.
+    /// </summary>
     /// <param name="configured">The <c>Migrations:*</c> settings to add.</param>
     /// <returns>The bound and validated options.</returns>
     private static MigrationOptions Bind(Dictionary<string, string?> configured)
     {
         WebApplicationBuilder builder = WebApplication.CreateBuilder();
 
-        // Same strip as StoreOptionsTests: a shell exporting Migrations__* would leak into the absent-key case.
+        // Same strip as StoreOptionsTests: a shell exporting Migrations__* would leak into the
+        // absent-key case.
         IConfigurationBuilder sources = builder.Configuration;
         foreach (EnvironmentVariablesConfigurationSource ambient in sources.Sources
             .OfType<EnvironmentVariablesConfigurationSource>()

@@ -820,11 +820,26 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
 | `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
-| `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`). One measurement per pass for a repeated outcome |
+| `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed · `reason` = manifest \| source_count on `verification_failed` · `exception.type` on `export_failed` | `TapeExportPass` (gh#755, gh#795, `R-10`). One measurement per pass for a repeated outcome |
+| `mcp.tape.export.stuck` | counter, days | `reason` = source_count | `TapeExportPass`, a day whose source count still disagreed after the pass wrote it again (gh#795) |
 | `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
+| `mcp.tape.pruned` | counter, rows | (none) | `TapeRetentionPass`, measured deletes only (gh#763) |
+| `mcp.tape.prune.skipped` | counter, keys | `reason` = no_receipt \| key_cap \| source_count_changed \| late_rows | `TapeRetentionPass`. `no_receipt` is a key with no uploaded trades receipt. `key_cap` is the walk hitting its cap, so a chunk is not dropped. `source_count_changed` and `late_rows` each withdraw a receipt once, before any delete |
+| `mcp.tape.prune.failures` | counter | `reason` = prune_error \| lock_timeout \| statement_timeout | a thrown pass is `prune_error`. `lock_timeout` (5s) and `statement_timeout` (30s) are separate drop failures. Row deletes continue |
+| `mcp.tape.prune.lease_lost` | counter | `reason` = lease_lost | `TapeRetentionPass`, the lease was gone |
+| `mcp.tape.chunks_dropped` | counter, chunks | (none) | `TapeRetentionPass`, chunks `drop_chunks` removed. Not a row count |
 | `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent \| drive_orphan_pending · `operation` = upload \| lock · `reason` = uploaded \| retried \| upload_timeout \| permanent \| failed \| disabled \| orphan_pending \| identity_busy \| lock_lost \| lock_fault | `TapeExportPass` records `drive_disabled` once when Drive is off, `drive_orphan_pending` for receipts still pending, and exactly one terminal measurement per file. `drive_uploaded` only when the receipt is `uploaded`. `drive_failed` with `identity_busy` or `lock_lost` when the lock does not stay held. A lost lock wins over a Drive failure on the same file: the receipt is `LockLost`, and the counter and the `tape.upload` span are `lock_lost` once, not also `failed`, `permanent`, or `upload_timeout`. The uploader records `drive_retried` only. The pass records a Drive timeout, a permanent failure, or another Drive failure after the probe shows the lock is still held. A lock-session exception that is not a dropped connection is `lock_fault` once and `export_failed`, and the pass continues. The `tape.upload` span covers that file's upload and its retries. When `lock_lost` supersedes a Drive failure, the span tag `drive.failure_type` names that Drive error (gh#755, gh#804, `R-10.6`). `drive_retried` counts the retries, not one event per attempt. A lock lost after the bytes land is `lock_lost`, not `drive_uploaded` |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
+| `mcp.quote.writes` | counter | `outcome` = quote_written \| quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_subscribed \| quote_volume_rejected | `LatestQuoteWriter` (gh#351). Spans `quote.flush` and `quote.subscribe` carry the same `outcome` |
+| `mcp.quote.reads` | counter | `outcome` = quote_fresh \| quote_stale \| quote_miss \| quote_unknown \| quote_read_failed · `reason` = front_lookup_failed \| store_failed · `exception.type` = the CLR type name, not the message | `LatestQuoteReader` (gh#351). Span `quote.read` carries the same `outcome`. `quote_read_failed` sets Error and is not a miss. `reason` and `exception.type` are set only then. `quote_stale` is still a row |
+| `mcp.quote.failures` | counter | `reason` = quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_volume_rejected \| quote_unsubscribe_failed \| quote_shutdown_failed · `exception.type` = the CLR type name, not the message | `LatestQuoteWriter`. `quote_failed` is a store flush. Unsubscribe and shutdown are their own reasons |
+| `mcp.bars.backfill.pages` | counter, pages | (none) | `BarBackfillWorker` (gh#899) |
+| `mcp.bars.backfill.bars` | counter, bars | (none) | bars the pass wrote |
+| `mcp.bars.backfill.empty` | counter, pages | (none) | empty venue pages |
+| `mcp.bars.backfill.rate_limited` | counter | (none) | passes that stopped on HTTP 429 |
+| `mcp.bars.backfill.errors` | counter | `exception.type` = the CLR type name, not the message | a thrown pass |
+| `mcp.bars.backfill.stops` | counter | `reason` = the `BarBackfillStop` vocabulary | every finished pass. Span `bars.backfill` carries `outcome` |
 
 `mcp.recorder.health.reads` reuses the `outcome` tag key. Its values are `ok`, `degraded`, `unavailable` and
 `timeout`, not the cache `hit` / `miss` / `partial` set. `ok` means the hub is up, every reported contract is
@@ -1141,6 +1156,32 @@ cannot hide as `SingleContract` — or omitted when the tape cannot prove a flip
 is live only; a historical `asOfUtc` omits `gatewayContractId` and `agree` rather than
 dating today's pick. It does not fetch bars and does not write a roll row.
 
+## Bar backfill — one HTTP pass, behind live reads
+
+`BarBackfillWorker` is a `BackgroundService`. It runs when `Backfill__Enabled` is true and the
+transport is HTTP, the same transport gate `TapeExportWorker` uses, so a stdio child does not
+backfill. The server and the recorder are both HTTP. The pass takes `pg_try_advisory_lock` on a
+connection with pooling off (`0x08990001`, object `899`). A second process finds the lock held
+and stops with `backfill_lock_held`.
+
+The driver asks `BarCacheService` for uncovered ranges. It does not write bars itself. Pages stay
+at 1,000 bars. A window is 5,000 bars. Minute bars stop at 63 days and hour bars at 365 days,
+both sim-tier measurements (gh#494). The live tier is not measured. While the pass is on the
+stack, `BarBackfillLane` is set on an `AsyncLocal`, and `ProjectXMarketDataGateway` takes
+`WaitForBackfillSlotAsync` instead of `WaitForSlotAsync`. Live and released backfill share one
+queue, trimmed to the window before each decision. The combined cap is 50 history requests in
+any 30 seconds. Backfill's own cap is 20. A live read waits only for backfill already sent, so
+that wait is at most those 20 requests, one window. Backfill does not book a new slot while a
+live read is waiting, and a busy tool can hold the pass back for as long as the reads continue.
+That starvation is the yield. A lost lock stops the pass and the pages already
+finished stay on the counters and on `get_recorder_health`.
+
+Empty answers use the cache's coverage rule: a range ending within 2 days expires after 15
+minutes, and an older empty range is permanent until its `BarCoverage` rows are deleted.
+Production exports no OTLP ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)), so the pass
+is visible on the `bars.backfill` span, the counters above, the log line, and `barBackfill` on
+`get_recorder_health`. The decision is [ADR-0028](adr/0028-bar-backfill-yields-to-live-reads.md).
+
 ## The tape export — a copy that outlives the container
 
 `Trades`, closed `TapeCoverage` and `FootprintCells` are the rows a reset can destroy and no venue call
@@ -1160,7 +1201,23 @@ Trades and closed coverage are one pair per contract per day,
 `footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.vN.csv.gz` and `.parquet`. The manifest is
 `manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`), written last by a temp file, fsync, and rename, and
 it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
-An older generation is left on disk.
+Before a receipt is recorded, the gzip counts are checked against the source rows. The check is
+not inside the file-write transaction: a day still receiving rows is already excluded. A fresh
+day is written at most twice in one pass. A generation already on disk counts as the first write,
+so that pass writes it at most once more. If it still disagrees, those files are deleted and
+`mcp.tape.export.stuck` increments with `reason=source_count` (gh#795). Retention compares the
+source count once, before any delete, and withdraws when `max(RecordedAt)` is later than the
+export while the full day is still stored. That sets the receipt back to `pending`, clears its
+hash, keeps the Drive file id, and deletes nothing. The next export writes the whole day through
+that file. The day is re-exported whole until a pass can delete it. After a delete has started,
+only rows recorded at or before the export time are removed, and the receipt stays `uploaded`.
+`get_recorder_health` reports either withdrawal as `tapeDaysKept`. The `tape.retention` span
+tags `source_count_changed` or `late_rows` with how many keys were withdrawn, and that is the
+outcome when nothing was deleted. A refused chunk drop sets `reason` on the same span.
+`lock_timeout` and `statement_timeout` are different reasons.
+`verification_failed` carries `reason=manifest` or `reason=source_count`. A count-query error is
+`export_failed` with `exception.type` for that day, and the pass continues.
+A generation that verified and whose count matched is left on disk.
 The image user is uid 64198. Railway allows one volume per service and mounts it as root at `/data`.
 Since gh#767 the image `ENTRYPOINT` is `scripts/prepare-tape-volume.sh`
 ([deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755)). Started as 64198 (the default) it
@@ -1207,9 +1264,10 @@ when it ends, after the lock probe. `TapeExportReceipts` records `pending`,
 **The copy is additive.** A day is the UTC calendar day of `TradeTimeUtc`, of a closed coverage
 `RangeStart`, or of a footprint `BucketStart`, half-open `[dayStart, dayEnd)`. It is exported once
 `now` is at or after `dayEnd`. The current day is left for a later pass. A re-read of the files must
-match the manifest. Local rows are not deleted, on a verified day or on a refused one. Timescale
-`policy_retention` on `Trades` stays empty ([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)).
-`Retention__*` is not read. Dropping raw tape is out of scope and needs its own ADR (gh#758).
+match the manifest. The export does not delete local rows, on a verified day or on a refused one.
+Timescale `policy_retention` on `Trades` stays empty
+([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)). ADR-0027 deletes a UTC day of `Trades`
+only after an `uploaded` trades receipt. No receipt means no delete. `Retention__*` is not a key.
 
 A candidate day is one whose rows have no matching receipt, or whose receipt hash no longer matches
 the file. Key discovery for the day is one short repeatable-read transaction. Each contract is then
@@ -1243,8 +1301,11 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   validated** (gh#708) — master enable off by default, kill switch, secondary account allowlist, contract caps
   and a symbol denylist. The five MCP tools `place_order`, `modify_order`, `cancel_order`, `close_position`
   and `partial_close_position` are registered only when `Trading__Enabled` is true, and each one calls that
-  gate and no other write path (gh#750). The kill switch blocks cancel
-  and close; that block is pending Adam's decision and is unchanged. Idempotency is the pre-send `Unknown`
+  gate and no other write path (gh#750). The kill switch blocks new orders and modifies only.
+  Cancel and close stay allowed (gh#770). A session advisory lock, taken after the daily cap and again
+  before the send, refuses a second trading writer (gh#772). The template still requires one server
+  replica (gh#774).
+  Idempotency is the pre-send `Unknown`
   audit row, unique per account, tool and key, not process memory. `check-no-order-path.sh` still confines
   order-method names to the execution seam. Bracket fields,
   `confirm_trading_action` and the OAuth trade scope are later slices (gh#713, gh#717, gh#719).
@@ -1318,8 +1379,11 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   subscribed, or stopped still refuses, closed cells included, as do a claim taken over and a claim
   lapsed — those are not "another recorder holds the claim". A still-open sentinel is coverage only while that
   instrument is listening. A read that is actually returned with `live` false is counted. A refusal is not. The recorder resolves the
-  scoped venue client per operation; it does not extend `IMarketDataGateway`. Quote and depth recording
-  stay out of this phase, and there is still no `get_quote`.
+  scoped venue client per operation; it does not extend `IMarketDataGateway`. Depth recording
+  stays out of this phase. `get_quote` is registered only when `MarketData__GetQuoteEnabled`
+  is on. The code default is off. The Railway server sets it on and keeps
+  `MarketData__RecordLatestQuotes` false, so the server reads the stored row and does not
+  open a hub. The recorder is the process that writes the row (ADR-0016, gh#351).
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
   in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).

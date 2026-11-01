@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX;
 using MarqSpec.Client.ProjectX.Exceptions;
@@ -7,6 +8,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.Configuration;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -25,19 +27,38 @@ public sealed class ProjectXExecutionGatewayTests
     public static IEnumerable<object[]> GateRefusalCases =>
         from verb in Enum.GetValues<WriteVerb>()
         from scenario in Enum.GetValues<GateScenario>()
+        where scenario != GateScenario.KillSwitch || verb is WriteVerb.Place or WriteVerb.Modify
         select new object[] { verb, scenario };
+
+    [Theory]
+    [InlineData(WriteVerb.Cancel)]
+    [InlineData(WriteVerb.Close)]
+    [InlineData(WriteVerb.PartialClose)]
+    public async Task CancelAndClose_CallTheClient_WhenTheKillSwitchIsEngaged(WriteVerb verb)
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        IExecutionGateway gateway = Gateway(
+            client,
+            [PracticeAccount()],
+            enabled: true,
+            killSwitchEngaged: true);
+
+        ExecutionWriteResult result = await InvokeAsync(gateway, verb, PracticeAccountId);
+
+        ClientCalls(fake, verb).Should().Be(1);
+        result.Outcome.Should().Be(ExecutionWriteOutcome.BrokerAcknowledged);
+        result.GateRefusal.Should().BeNull();
+    }
 
     [Theory]
     [MemberData(nameof(GateRefusalCases))]
     public async Task Write_DoesNotCallTheClient_WhenTheGateRefuses(WriteVerb verb, GateScenario scenario)
     {
-        RecordingUnknownSignal unknownSignal = new();
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
         StubAccountsGateway accountsGateway = new(AccountsFor(scenario));
         IExecutionGateway gateway = Gateway(
             client,
             accountsGateway,
-            unknownSignal,
             enabled: scenario != GateScenario.Disabled,
             killSwitchEngaged: scenario == GateScenario.KillSwitch);
 
@@ -48,15 +69,37 @@ public sealed class ProjectXExecutionGatewayTests
         result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
         result.GateRefusal.Should().Be(ExpectedRefusal(scenario, accountId));
         result.IsRetrySafe.Should().BeTrue();
+    }
 
-        if (scenario == GateScenario.Unknown)
-        {
-            unknownSignal.Invocations.Should().Be(1);
-        }
-        else
-        {
-            unknownSignal.Invocations.Should().Be(0);
-        }
+    [Fact]
+    public async Task PlaceOrder_UnknownStage_DoesNotRecordAWritesMeasurement()
+    {
+        // The risk gate already counted the refusal. The gateway's own stage check must not
+        // add a second one.
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.ExecutionWritesInstrument);
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        TradingExecutionGate gate = new(
+            TradingOptionsMonitors.Fixed(new TradingExecutionOptions { Enabled = true }),
+            new FakeKillSwitch { Engaged = false },
+            new ProjectXAccountStageResolver());
+        IExecutionGateway gateway = new ProjectXExecutionGateway(
+            gate,
+            new StubAccountsGateway(AccountsFor(GateScenario.Unknown)),
+            client,
+            new TradingWriteVenueAccountCache(),
+            telemetry,
+            NullLogger<ProjectXExecutionGateway>.Instance);
+
+        ExecutionWriteResult result = await gateway.PlaceOrder(
+            SamplePlaceCommand(UnknownAccountId),
+            CancellationToken.None);
+
+        fake.PlaceOrderCount.Should().Be(0);
+        result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
+        result.GateRefusal.Should().Be(TradingExecutionRefusal.UnknownAccountStage(UnknownAccountId));
+        writes.GetMeasurementSnapshot().Should().BeEmpty();
     }
 
     [Fact]
@@ -67,7 +110,6 @@ public sealed class ProjectXExecutionGatewayTests
         IExecutionGateway gateway = Gateway(
             client,
             accountsGateway,
-            new RecordingUnknownSignal(),
             enabled: true,
             killSwitchEngaged: false);
 
@@ -557,14 +599,12 @@ public sealed class ProjectXExecutionGatewayTests
         Gateway(
             client,
             new StubAccountsGateway(accounts),
-            new RecordingUnknownSignal(),
             enabled,
             killSwitchEngaged);
 
     private static IExecutionGateway Gateway(
         IProjectXApiClient client,
         StubAccountsGateway accountsGateway,
-        RecordingUnknownSignal unknownSignal,
         bool enabled,
         bool killSwitchEngaged)
     {
@@ -576,7 +616,6 @@ public sealed class ProjectXExecutionGatewayTests
         return new ProjectXExecutionGateway(
             gate,
             accountsGateway,
-            unknownSignal,
             client,
             new TradingWriteVenueAccountCache(),
             new HostTelemetry(),
@@ -623,13 +662,6 @@ public sealed class ProjectXExecutionGatewayTests
         public bool Engaged { get; init; }
 
         public bool IsEngaged => Engaged;
-    }
-
-    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public int Invocations { get; private set; }
-
-        public void UnknownStageWriteRefused(int accountId) => Invocations++;
     }
 
     private sealed class StubAccountsGateway(IReadOnlyList<VenueAccount> accounts) : IMarketDataGateway

@@ -451,7 +451,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 - **R-4.1** **A venue write exists only behind `TradingRiskGate`.** `Trading__Enabled` defaults to false and
   refuses every order operation, including cancel and close, before the vendor client is called and with no
-  side effects. The kill switch blocks the same calls. MCP tools call the gate and never the vendor client or
+  side effects. The kill switch blocks new orders and modifies only. Cancel and close stay allowed
+  (gh#770). A partial close is capped by the open size read at check time. MCP tools call the gate
+  and never the vendor client or
   `IExecutionGateway` ([ADR-0024](adr/0024-gated-trading-actions-practice-v1.md), which supersedes
   [ADR-0002](adr/0002-read-only-venue-boundary.md)).
 - **R-4.2** `scripts/check-no-order-path.sh` enforces that boundary over the product projects. Order-method
@@ -623,7 +625,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   the report window and is omitted. A reply reused from the five-second memo keeps that age
   against the cached `asOfUtc`. `hubReconnects` counts a successful market-hub
   connect after a connection was lost or a connect attempt failed. A clean first connect is zero,
-  and zero is reported (gh#793). `gaps` are the `TapeCoverage` holes in the elapsed portion of the
+  and zero is reported (gh#793).   `tapeDaysKept` is how many trades receipts retention set
+  back to pending because the source count no longer matched, or because a row was
+  recorded after the export, still waiting for a new export. Zero is a real count. It
+  is omitted when the database probe did not connect.
+  `gaps` are the `TapeCoverage` holes in the elapsed portion of the
   current product session, or of the session that most recently closed when the market is shut.
   A declared early close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this
   report's session and ends that session at the declared time; the hours after it are not a hole in this
@@ -643,8 +649,14 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   changing that flag does not change the listing until restart. The gate reads `Trading__Enabled`, the kill
   switch, the denylist, the allowlist and the contract caps from the options monitor on every check, so a
   configuration reload changes them without a process restart. A reload that fails validation refuses and
-  does not keep the last good values. The kill switch blocks cancel and close
-  on that same path. Every call emits the
+  does not keep the last good values. The kill switch blocks `place_order` and `modify_order` only.
+  Cancel and close stay allowed (gh#770). A partial close that would exceed the open position is refused,
+  and a full close sends no side and no size. One process holds a session advisory lock per account after
+  the daily-cap check and again immediately before a trading write (gh#772). A cap refusal does not hold
+  it. A second writer is `account_writer_held`. A lock that cannot be confirmed is
+  `account_writer_unavailable` and is not sent. Reads and the recorder are not locked.
+  A lost acknowledgment is `OutcomeUnknown` plus reconciliation. v1 adds no client order id (gh#771).
+  Every call emits the
   gate's execution-write span and counter, tagged with the operation and the refusal reason. Each tool takes
   a caller-supplied `idempotencyKey`, at most 256 characters and scoped per account and tool. A longer key
   is `idempotency_key_too_long` and writes no row. The gate writes an `Unknown` audit claim before the send.
@@ -747,7 +759,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 The tape is original data and it stays in Postgres. A container reset that drops the database volume
 drops prints that no REST call can refetch (gh#755). The export below is an additional copy on a
 mounted volume. Timescale `policy_retention` on `Trades` stays empty. **Deleting local tape is not
-this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758).
+this requirement.** ADR-0027 (gh#763) is the retention decision: a UTC day of `Trades` is deleted
+only after an `uploaded` trades receipt for that day and contract. No receipt means no delete.
+`Retention__*` is not read. `TapeRetention__Days` is the window.
 
 - **R-10.1** The HTTP host writes a scheduled export of `Trades`, closed `TapeCoverage` and
   `FootprintCells` as **both** gzip CSV and Parquet under `TapeExport__Path`. Trades and coverage are
@@ -755,17 +769,34 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
   are one pair per instrument and resolution per day. The worker runs only when the transport is HTTP
   **and** `TapeExport__Enabled` is true. The default is **false**. It waits until
   `TapeExport__Schedule` (default `06:00`, UTC, exact `HH:mm`) and runs only while this process holds
-  a recorder lease. A restart does not take a pass before that time. The `export-tape` and
-  `import-tape` verbs do not read `Enabled`.
+  a recorder lease. A restart does not take a pass before that time. Stopping the host does not
+  export (gh#795). The `export-tape` and `import-tape` verbs do not read `Enabled`.
 - **R-10.2** A UTC day is copied only after its exclusive end (00:00 UTC the next day). The current
   day is not written. A day a still-open listen overlaps is not written. Rows stream into the gzip and
   the Parquet row groups. The manifest is renamed into place last and names one generation
-  (`yyyy-MM-dd.vN`). Its sha256 and row counts must match those files. A mismatch refuses that day.
-  A day whose receipt hash still matches is not read again. The pass does not delete local rows, an
-  older generation, or a Drive file.
+  (`yyyy-MM-dd.vN`). Its sha256 and row counts must match those files, and each gzip row count
+  must match the source rows before a receipt is marked `uploaded`. A file mismatch is
+  `verification_failed` with `reason=manifest`. A source mismatch discards that generation,
+  including its files (gh#795). A fresh day is written at most twice in one pass. A generation
+  already on disk counts as the first write, so that pass writes it at most once more. If it
+  still disagrees, those files are deleted and `mcp.tape.export.stuck` increments with
+  `reason=source_count`.
+  Retention compares the source count to the receipt `RowCount` once, before any delete
+  for that key, and compares `max(RecordedAt)` to the receipt's export time while the
+  full day is still stored. Either mismatch deletes nothing, sets that receipt back to
+  `pending`, clears its hash, and counts `reason=source_count_changed` or
+  `reason=late_rows` once. `DriveFileId`, `RowCount` and the path stay. The next export
+  writes the whole day through that Drive file. The day is re-exported whole until a
+  pass can delete it, and nothing is deleted that the export did not contain. After a
+  delete has started, the receipt stays `uploaded` and only rows with `RecordedAt` at
+  or before the export time are removed. `get_recorder_health` reports a withdrawn
+  receipt as `tapeDaysKept` until the new export lands. A count-query error fails that
+  day, tags `exception.type`, and the pass continues. The pass does not delete a Drive
+  file.
 - **R-10.3** `import-tape` restores a verified day into Postgres and refuses a checksum or row-count
   mismatch, inserting nothing for that day. A second import of the same rows inserts nothing
-  (`ON CONFLICT DO NOTHING`).
+  (`ON CONFLICT DO NOTHING`). It keeps the file's `RecordedAt`, so imported rows compare as
+  already exported. That is safe, because the rows came from an export.
 - **R-10.4** `TapeExport__Path` is a filesystem directory, and it is expected to be a **mounted
   volume**. The default is `/data/tape-exports`. The process creates subdirectories there; it does not
   create the volume. An `s3://` URI and a relative path are refused as that path. The only accepted
@@ -790,7 +821,8 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
 - **R-10.7** Each file writes one `TapeExportReceipts` row. `pending` is the in-flight upload.
   `drive_disabled` means Drive was off. `uploaded` and `failed` are the outcomes. A failure stores the
   exception type and the HTTP status, never the credential, and does not clear `DriveFileId`. This
-  requirement does not delete tape. `Retention__*` is not read and needs its own ADR (gh#758).
+  requirement does not delete tape. ADR-0027 reads an `uploaded` trades receipt and deletes
+  nothing without one. `Retention__*` is not read.
 
 ## Open questions
 

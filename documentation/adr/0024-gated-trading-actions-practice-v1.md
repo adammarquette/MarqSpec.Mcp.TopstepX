@@ -212,17 +212,21 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    switch treats the validation failure as engaged. A disable
    that lands before the idempotency claim writes no audit
    row. A disable that lands after the claim
-   records the refusal and does not send. The kill switch blocks cancel and close on that same path.
-   **Pending Adam:** whether a halt should keep blocking cancel and close. v1 keeps the block. A carve-out
-   would be a write the switch does not cover, and v1 has no separate flatten privilege. Do not change it
-   until Adam decides.
+   records the refusal and does not send. Adam decided on 31 Oct 2026 that a halt blocks new
+   orders and modifies only. Cancel and close stay allowed (gh#770). Allowing cancel while the
+   switch is engaged can remove a protective stop. That is the trade-off of keeping flatten and
+   cancel available during a halt.
 2. **Kill switch** — env, file, or `Trading__KillSwitch` in configuration. The environment variable and the
    file are read on every check. The configured flag and the file path come from
    `IOptionsMonitor<TradingExecutionOptions>.CurrentValue`, so a reload changes them without a restart and
    retargets the watcher when the path changes. An invalid reload throws out of `Reload()` before that
    retarget runs, so the watcher stays on the previous path, and the switch engages on the next check.
-   Checked
-   on every call, including cancel and close. Same pending decision as the master-enable bullet.
+   It blocks `place_order` and `modify_order` only. `cancel_order`, `close_position` and
+   `partial_close_position` still run the rest of the gate. A full close sends the account and the
+   contract only, and the venue route `Position/closeContract` flattens that position. A partial close
+   is refused when the requested size exceeds the absolute open size read at check time
+   (`partial_close_exceeds_position`). That read is not the send: a fill between the check and the
+   venue call can change the position the close meets.
 3. **Practice-only stage gate (hard, v1)** — fresh account fetch + `ResolveStage` as §2; **cannot be overridden
    by config** in v1.
 4. **Account allowlist** — secondary: `accountId` must appear when the list is set; it does **not** bypass
@@ -234,8 +238,59 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    and does not treat a missing size as zero. A partial close is checked against the open position before
    the cap charge. A non-positive partial-close size is refused before the cap and cannot lower it.
 6. **Dry-run / preview** — `dryRun: true` or human-confirmation flow returns structured preview + short-lived
-   `confirmationToken`; confirm re-runs gates 1–5 before transmit.
-7. **Idempotency** — the audit log is the store. Before a send, the gate inserts one `Unknown` row keyed by
+   `confirmationToken`; confirm re-runs gates 1–5 before transmit and re-takes or re-checks the writer
+   lock. A preview does not take the writer lock.
+7. **One writer per account (gh#772).** Only a call that has passed the stage gate and the allowlist,
+   and has decided to send, takes a Postgres session advisory lock keyed by account
+   (`pg_try_advisory_lock`, class `0x07720024`, on one non-pooled connection). Place, modify and partial
+   close take it after the daily-cap check, so a cap refusal does not hold the lock. Cancel and close
+   have no daily cap. A dry-run, an account that is not allowlisted, and an unknown stage do not take
+   it, so an unknown stage still reports `unknown_account_stage`. A second process that cannot take
+   the lock refuses with `account_writer_held` and does not send. A probe that stalls, a session that
+   cannot be opened, or a wait on this process's mutex that exceeds the same 2 second timeout refuses
+   with `account_writer_unavailable` and does not send, so queued writers do not line up behind an
+   outage. The connection uses TCP keepalive and a 2 second command timeout so a dead socket cannot
+   stall every account for half a minute. The same check runs again immediately before the gateway
+   call, on a token the caller cannot cancel. A cancel or a fault there reverses a cap charge already
+   taken and records `Refused`, so the claim is not left `Unknown`. The reversal and that `Refused`
+   row commit in one save. The first attempt always writes. Both rows carry one `FinaliseId`. A failed
+   save drops the rows it had tracked. Only the retry reads the store, and only rows with that id, so
+   a concurrent unkeyed refusal is not this one and a lost acknowledgement cannot insert a second
+   reversal or a second `Refused` row. The partial unique index
+   `IX_TradingAuditLog_FinaliseId_Outcome` on `(FinaliseId, Outcome)`, where `FinaliseId` is not
+   null, is what keeps that to one reversal and one `Refused` row per attempt
+   (`20261101114605_AddTradingAuditFinaliseId`). The re-check's `TryHoldAsync` and both finalise
+   catches treat every exception except `OutOfMemoryException` as a failed attempt, including an
+   `InvalidOperationException` from the audit writer, so that fault still returns the writer refusal
+   and does not escape as a retryable pre-send exception (gh#958). The first attempt always writes.
+   Finalise does not swallow its own save: a cap reversal plus its `Refused` row when a charge was
+   taken, and the `Refused` row alone when no charge was taken or the reversal is already stored.
+   A failure of either save is retried once, and that retry reads the store for the `FinaliseId`
+   before it writes again. If both attempts fail, the gate reads the store for that `FinaliseId`
+   again. A `Refused` row there is that refusal. When that lookup fails with a store outage, the
+   caller still gets `account_writer_unavailable` or `account_writer_held` and no exception.
+   Nothing new is written. The pre-send claim stays `Unknown`, a cap
+   charge that already committed stays charged, a same-key retry replays `OutcomeUnknown`, and the
+   caller needs a fresh idempotency key. Nothing was sent. A failed reversal on the disabled check
+   after the charge, or on a writer refusal that is reversing a charge, is swallowed. The cap stays
+   over-charged. That is fail-safe: a later order hits the cap instead of being allowed. The same
+   store faults on an earlier read or write (the daily-cap lock, the cap total, the claim, a preview
+   row, or a refusal audit) return `error` when the outage is why the call cannot continue, or the
+   refusal already decided when only its audit row failed. A claim whose store call fails writes
+   `error` under the caller's key when the store can take the row, so a same-key retry replays
+   `error` and the caller needs a fresh key. Schema and constraint failures (`SqlState` class 42 or
+   23) are not that outage. The fault is logged by type. Caller cancellation still propagates where
+   the caller's token is the one that fired. A store fault after the send has started stays
+   `OutcomeUnknown`. An outage never becomes an allow.
+   A drop during that call is the
+   window that remains: the send may already be in flight, and the next write must take the lock
+   again. Reads and the recorder do not take the lock. The lock is released on shutdown. A dropped
+   connection drops the lock; the next write looks up `pg_locks` for this backend (`objsubid` 2)
+   rather than assuming it is still held, and takes it back when no other session holds it. The
+   Railway template still requires one server replica (`[single-server]`, gh#774). That check is
+   defence in depth beside this lock. During a Railway redeploy the new container refuses writes
+   until the old one exits.
+8. **Idempotency** — the audit log is the store. Before a send, the gate inserts one `Unknown` row keyed by
    `(AccountId, Tool, IdempotencyKey)` with the request hash (`dryRun` included). A partial unique index
    rejects a second claim, including across replicas. The migration `AddTradingAuditIdempotencyClaim`
    temporarily runs `DISABLE TRIGGER trading_audit_log_reject_update` — the `BEFORE UPDATE` trigger that
@@ -248,20 +303,24 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    as that refusal (`SafeToRetry`), not as `OutcomeUnknown`. An earlier refusal, such as an allowlist miss
    that was later fixed, must not turn a later unknown transmit into `SafeToRetry`. A later refusal with a
    different request hash, such as an idempotency conflict, does not either. Previews are not claims. A
+   claim whose store call fails writes `error` under the caller's key when that row can be stored, so
+   a same-key retry replays `error` and a fresh key is required (gh#958). A
    disabled refusal taken before the
    claim is not stored, so enabling trading does not replay it into a send. A key longer than 256 characters
    is `idempotency_key_too_long` and writes no row. A blank key is `idempotency_key_required` and is audited.
-8. **Audit log** — append-only. The pre-send `Unknown` claim (contract count 0) is the idempotency record.
+9. **Audit log** — append-only. The pre-send `Unknown` claim (contract count 0) is the idempotency record.
    The `Attempted` row still carries the key and is the cap charge. A replay prefers a later `Live` (with
    `OrderId`), then `Failed`, then a `Refused` row written after the claim with the same request hash. No
    secrets.
    **Rows written:** validation refusals (`size_not_positive`, `price_required`, `price_not_positive`,
    a non-positive partial close, `idempotency_key_too_long`) and `trading_disabled` before the claim write
-   none. The kill switch, stage, allowlist, denylist, caps, a blank key, an idempotency conflict, a gateway
+   none. The kill switch, stage, allowlist, denylist, caps, a blank key, an idempotency conflict,
+   `account_writer_held`, `account_writer_unavailable`, a gateway
    refusal, and a `trading_disabled` that lands after the claim write a `Refused` row. A preview writes
-   `Preview`. The pre-send `Unknown` claim is the only `Unknown` row for a keyed send.
-9. **HTTP OAuth** — when `Mcp__Auth__Mode=OAuth`, trading tools require a **write scope** distinct from read
-   (gh#719). Stdio/local deployments rely on process boundary + enable flag.
+   `Preview`. The pre-send `Unknown` claim is the only `Unknown` row for a keyed send. A store outage
+   before the send still refuses when that audit row cannot be written (gh#958).
+10. **HTTP OAuth** — when `Mcp__Auth__Mode=OAuth`, trading tools require a **write scope**
+   distinct from read (gh#719). Stdio/local deployments rely on process boundary + enable flag.
 
 #### OAuth scope names (decided)
 
@@ -311,7 +370,10 @@ An order is **not treated as live** until the **broker acknowledgment** arrives.
   cannot be retried into a second order and cannot be reported as `Live`. Refusals and previews are not
   stored as claims and are not replayed as `SafeToRetry`. `retrySafety` is `SafeToRetry` (refusal, preview,
   or venue rejection), `NotSafeToRetry` (broker acknowledged), or `OutcomeUnknown` (reconcile; do not retry
-  the same key). The claim survives a restart, a redeploy and a second replica (gh#712, gh#750). A replay
+  the same key). Adam's v1 answer for a lost acknowledgment is this `OutcomeUnknown` plus
+  reconciliation with `get_orders`, `get_positions` and `get_trades`. There is no extra safeguard and
+  no venue-side client order id (gh#771). `customTag` stays unexposed (ADR-0008). The claim survives a
+  restart, a redeploy and a second replica (gh#712, gh#750). A replay
   is tagged `replay=true` on `mcp.execution.writes` so it is not counted as a new outcome.
 - **`confirm_trading_action`** follows the same rule: confirming a preview performs the transmit and applies
   the ack rule above.
@@ -421,3 +483,9 @@ not start until v1 is shipped and a separate ADR amendment is accepted.
 | gh#722 | **Epic: v2 trading on evaluation/funded accounts** (out of v1 scope) |
 
 *Assisted-by: Cursor Cloud Agent*
+
+## Update (2026-11-01) — the unknown-stage alert (gh#732)
+
+gh#733 in the follow-up table was a duplicate of gh#732. The tag, the dry-run, and the unwired
+alert are specified in [deployment.md](../deployment.md#unknown-account-stage-gh732). This record
+does not set an endpoint or a Railway variable.

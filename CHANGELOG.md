@@ -13,6 +13,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-01
+
+### Added
+
+- **Historical bar backfill** (gh#899). `Backfill__Enabled` defaults off and is not a Railway
+  variable. When it is on, one HTTP startup pass fills uncovered ranges through the existing bar
+  cache. Stdio does not run it. A second replica skips when the advisory lock is held. Minute and
+  hour edges are the sim-tier measurements from gh#494 (63 days and one year). The live tier is
+  not measured. Pages stay at 1,000 bars. The combined history cap is 50 per 30 seconds and the
+  backfill cap is 20. Live reads count backfill still in the window and wait for at most those
+  20. Backfill yields while a live read is waiting. HTTP 429 stops the pass. An empty answer within
+  2 days of now expires after 15 minutes. An older empty answer is permanent until its
+  `BarCoverage` rows are deleted. The last pass is on `get_recorder_health`.
+- **One trading writer per account** (gh#772, ADR-0024). A session advisory lock is taken
+  before a trading write. A second replica refuses with `account_writer_held`. Reads and the
+  recorder are not locked. The template's one-replica check (gh#774) stays as defence in depth.
+  Migration `20261101114605_AddTradingAuditFinaliseId` adds nullable `FinaliseId`. The partial
+  unique index on `(FinaliseId, Outcome)` allows one reversal and one `Refused` row per attempt.
+- **Unknown account stage is visible on the writes counter** (gh#732, ADR-0024).
+  The tag and the unwired alert are specified in
+  [deployment.md](documentation/deployment.md#unknown-account-stage-gh732).
+- **The recorder can store the latest quote per contract** (gh#351). `LatestQuotes` is one row
+  per contract, upserted from the hub the tape recorder already holds. Volume is `bigint`.
+  `ReceivedAt` is the database clock. `MarketData__RecordLatestQuotes` defaults off and does
+  not open a hub. The Railway recorder sets it to the literal `true`; the Railway server
+  keeps the literal `false`. `True`, padding, and a shared reference are rejected.
+  Flushes are at most once per `MarketData__LatestQuoteFlush`
+  (one second). A refused subscribe retries only that contract, on
+  `MarketData__LatestQuoteSubscribeBackoff`. Fronts are resolved again on
+  `MarketData__LatestQuoteFrontRefresh`. A volume that does not fit in `bigint` is skipped.
+  No tool reads the table until `MarketData__GetQuoteEnabled` is on.
+- **`get_quote` reads that stored row** (gh#351, `R-5.2`, `R-5.7`, `R-5.10`). It is not
+  registered unless `MarketData__GetQuoteEnabled` is on, which defaults off. When it is on,
+  the front is the newest stored row for the instrument. It returns bid, ask, last, age and
+  whether the row is past `MarketData__LatestQuoteStaleAfter`. A missing row and an unknown
+  symbol are results. An unknown symbol is `unknown_symbol`, not the `R-5.3` error
+  (ADR-0016). A store failure is `failed`, not `missing`. The call does not open a market
+  hub and does not search the venue. The Railway server sets `MarketData__GetQuoteEnabled`
+  on. Around a roll the answer stays on the old contract until the new one ticks, named
+  and then stale (gh#922).
+- **Tape retention after a confirmed export (gh#763, ADR-0027).** The recorder deletes a UTC
+  day of `Trades` only when an `uploaded` `csv.gz` trades receipt exists for that day, venue,
+  instrument and contract. `TapeRetention__Days` defaults to 90 (accepted 7 through 3650).
+  Zero and a negative number are refused. No receipt, including `drive_disabled`, means the
+  rows stay, and the pass logs and counts the skipped days. A chunk is dropped only when it
+  ends before the cutoff and every key in it has that receipt with a matching source count.
+  A partly exported compressed chunk is left. `LatestQuotes` is not pruned. Timescale
+  `policy_retention` stays empty.
+  The Railway template is not edited; the code default applies where the key is absent.
+
+### Changed
+
+- **The kill switch blocks new orders and modifies only** (gh#770, ADR-0024). Cancel and close
+  stay allowed. A full close sends no side and no size. A partial close that would exceed the
+  open position is still refused. A lost acknowledgment stays `OutcomeUnknown` plus
+  reconciliation. v1 adds no client order id (gh#771).
+- **A tape day whose source count no longer matches is exported again** (gh#795).
+  The export checks gzip row counts before it records a receipt. A fresh day is written
+  at most twice in one pass. A generation already on disk counts as the first write, so
+  that pass writes it at most once more. The receipt's export time is the database `now()`
+  inside that read snapshot. Retention deletes an uploaded day only when the current source
+  count equals the receipt `RowCount` and no row was recorded later. That comparison is
+  once, before any delete. A difference withdraws the receipt (`source_count_changed`, or
+  `late_rows` when a later row is still with the full day), keeps the Drive file id, and
+  deletes nothing. The next export writes the whole day through that file. The day is
+  re-exported whole until a pass can delete it. After a delete has started, the receipt
+  stays `uploaded` and only rows recorded at or before the export time are removed.
+  Withdrawn receipts still waiting are `tapeDaysKept`. `lock_timeout` and
+  `statement_timeout` are separate drop failures.
+
+### Fixed
+
+- **A database outage on the trading gate refuses instead of throwing** (gh#958, ADR-0024).
+  A connection failure, a command timeout, or a store exception before the send returns the
+  fail-closed refusal. The writer-lock re-check still refuses on any non-fatal finalise fault,
+  and both save attempts plus the `FinaliseId` lookup run with or without a cap charge. When
+  both saves fail and the lookup fails too, the caller still gets `account_writer_unavailable`
+  or `account_writer_held`. A failed cap reversal leaves the cap over-charged. A failed claim
+  writes `error` under the caller's key. Schema and constraint errors are not outages. Caller
+  cancellation still throws. Nothing is sent.
+- **Expected tape-volume prepare logs are not Errors** (gh#894).
+- **Required-store review follow-ups** (gh#843, #864). The cold-start termination test
+  waits until the applying command has started, without polling pg_stat_activity.
+  Compose's 300 second migration-lock wait is documented with the `docker-compose.yml`
+  setting that configures it. A dropped migration and a lock-wait timeout log no
+  connection string and no password. A failure that only wraps a dropped connection
+  still fails the process.
+
 ## [0.7.1] - 2026-10-31
 
 ### Added
@@ -1358,7 +1446,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.5.0...v0.7.0
 [0.5.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.4.0...v0.5.0

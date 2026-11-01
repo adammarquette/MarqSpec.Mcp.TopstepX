@@ -75,6 +75,15 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A print stored from the market hub.</summary>
     public const string TapeTicksInstrument = "mcp.tape.ticks";
 
+    /// <summary>Latest-quote rows a flush wrote, or a write that failed.</summary>
+    public const string QuoteWritesInstrument = "mcp.quote.writes";
+
+    /// <summary>A latest-quote flush, subscribe, or front lookup that did not succeed.</summary>
+    public const string QuoteFailuresInstrument = "mcp.quote.failures";
+
+    /// <summary>One latest-quote read, by what it found.</summary>
+    public const string QuoteReadsInstrument = "mcp.quote.reads";
+
     /// <summary>A market-hub connection transition.</summary>
     public const string TapeReconnectsInstrument = "mcp.tape.reconnects";
 
@@ -121,8 +130,46 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>How long one tape export or import pass took, in seconds.</summary>
     public const string TapeExportDurationInstrument = "mcp.tape.export.duration";
 
+    /// <summary>
+    /// A day whose source count still disagreed after this pass wrote it again (gh#795).
+    /// </summary>
+    public const string TapeExportStuckInstrument = "mcp.tape.export.stuck";
+
     /// <summary>A Drive upload of one export file (gh#755).</summary>
     public const string TapeUploadsInstrument = "mcp.tape.uploads";
+
+    /// <summary>Trade rows a retention pass removed (gh#763). Untagged.</summary>
+    public const string TapePrunedInstrument = "mcp.tape.pruned";
+
+    /// <summary>Days a retention pass left because no uploaded trades receipt exists.</summary>
+    public const string TapePruneSkippedInstrument = "mcp.tape.prune.skipped";
+
+    /// <summary>A retention step that failed, by reason.</summary>
+    public const string TapePruneFailuresInstrument = "mcp.tape.prune.failures";
+
+    /// <summary>A retention pass that stopped because the recorder lease was gone.</summary>
+    public const string TapePruneLeaseLostInstrument = "mcp.tape.prune.lease_lost";
+
+    /// <summary>Chunks <c>drop_chunks</c> removed. Untagged. Not a row count.</summary>
+    public const string TapeChunksDroppedInstrument = "mcp.tape.chunks_dropped";
+
+    /// <summary>Pages one backfill pass asked the cache for (gh#899).</summary>
+    public const string BarBackfillPagesInstrument = "mcp.bars.backfill.pages";
+
+    /// <summary>Bars one backfill pass wrote (gh#899).</summary>
+    public const string BarBackfillBarsInstrument = "mcp.bars.backfill.bars";
+
+    /// <summary>Empty venue pages one backfill pass recorded (gh#899).</summary>
+    public const string BarBackfillEmptyInstrument = "mcp.bars.backfill.empty";
+
+    /// <summary>Backfill passes that stopped on HTTP 429 (gh#899).</summary>
+    public const string BarBackfillRateLimitedInstrument = "mcp.bars.backfill.rate_limited";
+
+    /// <summary>Backfill pass failures, by exception type name (gh#899).</summary>
+    public const string BarBackfillErrorsInstrument = "mcp.bars.backfill.errors";
+
+    /// <summary>Backfill passes by stop reason (gh#899).</summary>
+    public const string BarBackfillStopsInstrument = "mcp.bars.backfill.stops";
 
     /// <summary>Which cache-aside series a read was of. Values: <see cref="CacheSeries"/>.</summary>
     public const string SeriesTag = "series";
@@ -164,6 +211,9 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Why a range was outstanding. Values: <see cref="GapReason"/>.</summary>
     public const string ReasonTag = "reason";
 
+    /// <summary>The CLR type name on a latest-quote failure. OTel <c>exception.type</c>.</summary>
+    public const string ExceptionTag = "exception.type";
+
     /// <summary>Which way the hub moved. Values: <see cref="TapeTransition"/>.</summary>
     public const string TransitionTag = "transition";
 
@@ -182,6 +232,9 @@ public sealed class HostTelemetry : IDisposable
     private readonly Histogram<double> _venueCallDuration;
     private readonly Counter<long> _gapFills;
     private readonly Counter<long> _tapeTicks;
+    private readonly Counter<long> _quoteWrites;
+    private readonly Counter<long> _quoteFailures;
+    private readonly Counter<long> _quoteReads;
     private readonly Counter<long> _tapeReconnects;
     private readonly Counter<long> _tapeLeaseChanges;
     private readonly Counter<long> _recorderHealthReads;
@@ -196,7 +249,19 @@ public sealed class HostTelemetry : IDisposable
     private readonly ILogger<HostTelemetry>? _logger;
     private readonly Counter<long> _tapeExports;
     private readonly Histogram<double> _tapeExportDuration;
+    private readonly Counter<long> _tapeExportStuck;
     private readonly Counter<long> _tapeUploads;
+    private readonly Counter<long> _tapePruned;
+    private readonly Counter<long> _tapePruneSkipped;
+    private readonly Counter<long> _tapePruneFailures;
+    private readonly Counter<long> _tapePruneLeaseLost;
+    private readonly Counter<long> _tapeChunksDropped;
+    private readonly Counter<long> _barBackfillPages;
+    private readonly Counter<long> _barBackfillBars;
+    private readonly Counter<long> _barBackfillEmpty;
+    private readonly Counter<long> _barBackfillRateLimited;
+    private readonly Counter<long> _barBackfillErrors;
+    private readonly Counter<long> _barBackfillStops;
 
     /// <summary>Creates the meter and the activity source.</summary>
     /// <param name="logger">Optional. A bookkeeping failure logs one constant line through it.</param>
@@ -236,6 +301,21 @@ public sealed class HostTelemetry : IDisposable
             TapeTicksInstrument,
             unit: "{print}",
             description: "Prints stored from the market hub, by instrument.");
+
+        _quoteWrites = _meter.CreateCounter<long>(
+            QuoteWritesInstrument,
+            unit: "{row}",
+            description: "Latest-quote rows written, or a failed flush, by outcome.");
+
+        _quoteFailures = _meter.CreateCounter<long>(
+            QuoteFailuresInstrument,
+            unit: "{failure}",
+            description: "Latest-quote flushes, subscribes, or front lookups that did not succeed.");
+
+        _quoteReads = _meter.CreateCounter<long>(
+            QuoteReadsInstrument,
+            unit: "{read}",
+            description: "Latest-quote reads, by whether the row was fresh, stale, missing, or unknown.");
 
         _tapeReconnects = _meter.CreateCounter<long>(
             TapeReconnectsInstrument,
@@ -301,10 +381,70 @@ public sealed class HostTelemetry : IDisposable
             unit: "s",
             description: "How long one tape export or import pass took.");
 
+        _tapeExportStuck = _meter.CreateCounter<long>(
+            TapeExportStuckInstrument,
+            unit: "{day}",
+            description: "Days whose source count still disagreed after another write, by reason.");
+
         _tapeUploads = _meter.CreateCounter<long>(
             TapeUploadsInstrument,
             unit: "{upload}",
             description: "Drive uploads of one export file, by outcome, operation, and reason.");
+
+        _tapePruned = _meter.CreateCounter<long>(
+            TapePrunedInstrument,
+            unit: "{row}",
+            description: "Trade rows a retention pass removed. Untagged. Zero records nothing.");
+
+        _tapePruneSkipped = _meter.CreateCounter<long>(
+            TapePruneSkippedInstrument,
+            unit: "{key}",
+            description: "Tape keys the pass did not delete, by reason.");
+
+        _tapePruneFailures = _meter.CreateCounter<long>(
+            TapePruneFailuresInstrument,
+            unit: "{failure}",
+            description: "Retention failures, by reason. A lock timeout does not stop the pass.");
+
+        _tapePruneLeaseLost = _meter.CreateCounter<long>(
+            TapePruneLeaseLostInstrument,
+            unit: "{stop}",
+            description: "Retention passes that stopped because the recorder lease was gone.");
+
+        _tapeChunksDropped = _meter.CreateCounter<long>(
+            TapeChunksDroppedInstrument,
+            unit: "{chunk}",
+            description: "Chunks drop_chunks removed. Untagged. Not a row count.");
+
+        _barBackfillPages = _meter.CreateCounter<long>(
+            BarBackfillPagesInstrument,
+            unit: "{page}",
+            description: "Pages one bar-backfill pass asked the cache for. Untagged.");
+
+        _barBackfillBars = _meter.CreateCounter<long>(
+            BarBackfillBarsInstrument,
+            unit: "{bar}",
+            description: "Bars one bar-backfill pass wrote. Untagged.");
+
+        _barBackfillEmpty = _meter.CreateCounter<long>(
+            BarBackfillEmptyInstrument,
+            unit: "{page}",
+            description: "Empty venue pages one bar-backfill pass recorded. Untagged.");
+
+        _barBackfillRateLimited = _meter.CreateCounter<long>(
+            BarBackfillRateLimitedInstrument,
+            unit: "{stop}",
+            description: "Bar-backfill passes that stopped on HTTP 429. Untagged.");
+
+        _barBackfillErrors = _meter.CreateCounter<long>(
+            BarBackfillErrorsInstrument,
+            unit: "{failure}",
+            description: "Bar-backfill failures, by exception type name. Not the message.");
+
+        _barBackfillStops = _meter.CreateCounter<long>(
+            BarBackfillStopsInstrument,
+            unit: "{stop}",
+            description: "Bar-backfill passes, by stop reason.");
     }
 
     /// <summary>
@@ -493,6 +633,78 @@ public sealed class HostTelemetry : IDisposable
     public void TapeTick(string symbol) =>
         _tapeTicks.Add(1, new KeyValuePair<string, object?>(SymbolTag, symbol));
 
+    /// <summary>Counts a latest-quote write outcome.</summary>
+    /// <param name="outcome">What happened, from <see cref="QuoteWriteOutcome"/>.</param>
+    /// <param name="count">Rows, or one for a subscribe or front failure. Zero records nothing.</param>
+    public void QuoteWrite(string outcome, int count)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outcome);
+        if (count <= 0)
+        {
+            return;
+        }
+
+        _quoteWrites.Add(count, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+    }
+
+    /// <summary>Counts one latest-quote failure.</summary>
+    /// <param name="reason">Why, from <see cref="QuoteWriteOutcome"/> other than written.</param>
+    public void QuoteFailure(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        _quoteFailures.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+
+    /// <summary>Counts one latest-quote failure and names the exception type.</summary>
+    /// <param name="reason">Why, from <see cref="QuoteWriteOutcome"/> other than written.</param>
+    /// <param name="exceptionType">The CLR type name. Not the message.</param>
+    public void QuoteFailure(string reason, string exceptionType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        ArgumentException.ThrowIfNullOrWhiteSpace(exceptionType);
+        _quoteFailures.Add(
+            1,
+            new KeyValuePair<string, object?>(ReasonTag, reason),
+            new KeyValuePair<string, object?>(ExceptionTag, exceptionType));
+    }
+
+    /// <summary>Counts one latest-quote read.</summary>
+    /// <param name="outcome">What the read found, from <see cref="QuoteReadOutcome"/>.</param>
+    public void QuoteRead(string outcome)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outcome);
+        _quoteReads.Add(1, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+    }
+
+    /// <summary>Counts a latest-quote read that failed, with the reason and the exception type.</summary>
+    /// <param name="reason">From <see cref="QuoteReadFailure"/>.</param>
+    /// <param name="exceptionType">The CLR type name. Not the message.</param>
+    public void QuoteReadFailed(string reason, string exceptionType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        ArgumentException.ThrowIfNullOrWhiteSpace(exceptionType);
+        _quoteReads.Add(
+            1,
+            new KeyValuePair<string, object?>(OutcomeTag, QuoteReadOutcome.ReadFailed),
+            new KeyValuePair<string, object?>(ReasonTag, reason),
+            new KeyValuePair<string, object?>(ExceptionTag, exceptionType));
+    }
+
+    /// <summary>A span for one latest-quote read.</summary>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    public Activity? StartQuoteRead() =>
+        Activities.StartActivity("quote.read", ActivityKind.Internal);
+
+    /// <summary>A span for one latest-quote flush.</summary>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    public Activity? StartQuoteFlush() =>
+        Activities.StartActivity("quote.flush", ActivityKind.Internal);
+
+    /// <summary>A span for one pass that subscribes the current fronts.</summary>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    public Activity? StartQuoteSubscribe() =>
+        Activities.StartActivity("quote.subscribe", ActivityKind.Internal);
+
     /// <summary>Counts one market-hub connection transition.</summary>
     /// <param name="transition">Which way it moved, from <see cref="TapeTransition"/>.</param>
     /// <remarks>
@@ -610,8 +822,9 @@ public sealed class HostTelemetry : IDisposable
     /// <param name="outcome">What happened, from <see cref="TapeExportOutcome"/>.</param>
     /// <param name="count">Days or rows. Zero records nothing, so a quiet pass is not a series.</param>
     /// <remarks>
-    /// Tagged only with <see cref="OutcomeTag"/>. A day, a path or a contract id would be a new series
-    /// per value, and a counter keeps one accumulator per tag set for the life of the process.
+    /// Tagged with <see cref="OutcomeTag"/>. <see cref="TapeExportOutcome.VerificationFailed"/> also
+    /// carries <see cref="ReasonTag"/> via the overload. A day, a path or a contract id would be a new
+    /// series per value, and a counter keeps one accumulator per tag set for the life of the process.
     /// </remarks>
     public void TapeExport(string outcome, int count)
     {
@@ -623,9 +836,180 @@ public sealed class HostTelemetry : IDisposable
         _tapeExports.Add(count, new KeyValuePair<string, object?>(OutcomeTag, outcome));
     }
 
+    /// <summary>Counts a verification failure and why.</summary>
+    /// <param name="outcome"><see cref="TapeExportOutcome.VerificationFailed"/>.</param>
+    /// <param name="count">Days. Zero records nothing.</param>
+    /// <param name="reason"><see cref="TapeExportVerificationReason"/>.</param>
+    public void TapeExport(string outcome, int count, string reason)
+    {
+        if (count <= 0
+            || !TapeExportOutcome.All.Contains(outcome)
+            || !TapeExportVerificationReason.All.Contains(reason))
+        {
+            return;
+        }
+
+        _tapeExports.Add(
+            count,
+            new KeyValuePair<string, object?>(OutcomeTag, outcome),
+            new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+
+    /// <summary>Counts one export failure and names the exception type. Not the message.</summary>
+    /// <param name="exceptionType">The CLR type name.</param>
+    public void TapeExportFailed(string exceptionType)
+    {
+        if (string.IsNullOrWhiteSpace(exceptionType))
+        {
+            return;
+        }
+
+        _tapeExports.Add(
+            1,
+            new KeyValuePair<string, object?>(OutcomeTag, TapeExportOutcome.ExportFailed),
+            new KeyValuePair<string, object?>(ExceptionTag, exceptionType));
+    }
+
+    /// <summary>Counts one day that still disagreed with its source after this pass wrote it again.</summary>
+    /// <param name="reason"><see cref="TapeExportVerificationReason.SourceCount"/>.</param>
+    public void TapeExportStuck(string reason)
+    {
+        if (!TapeExportVerificationReason.All.Contains(reason))
+        {
+            return;
+        }
+
+        _tapeExportStuck.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+
     /// <summary>Records how long one export or import pass took.</summary>
     /// <param name="seconds">Elapsed seconds. Not tagged: one series for the pass, not one per day.</param>
     public void TapeExportDuration(double seconds) => _tapeExportDuration.Record(seconds);
+
+    /// <summary>Counts trade rows one retention pass removed.</summary>
+    /// <param name="rows">Rows removed. Zero records nothing, so a quiet pass is not a series.</param>
+    public void TapePruned(long rows)
+    {
+        if (rows <= 0)
+        {
+            return;
+        }
+
+        _tapePruned.Add(rows);
+    }
+
+    /// <summary>Counts tape keys the pass did not delete, by reason.</summary>
+    /// <param name="keys">Keys skipped. Zero records nothing.</param>
+    /// <param name="reason">Why, from <see cref="TapePruneReason"/>.</param>
+    public void TapePruneSkipped(int keys, string reason)
+    {
+        if (keys <= 0 || !TapePruneReason.All.Contains(reason))
+        {
+            return;
+        }
+
+        _tapePruneSkipped.Add(keys, new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+
+    /// <summary>Counts one retention failure.</summary>
+    /// <param name="reason">Why, from <see cref="TapePruneReason"/>.</param>
+    public void TapePruneFailed(string reason)
+    {
+        if (!TapePruneReason.All.Contains(reason))
+        {
+            return;
+        }
+
+        _tapePruneFailures.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+
+    /// <summary>Counts one pass that stopped because the recorder lease was gone.</summary>
+    public void TapePruneLeaseLost() =>
+        _tapePruneLeaseLost.Add(1, new KeyValuePair<string, object?>(ReasonTag, TapePruneReason.LeaseLost));
+
+    /// <summary>Counts pages one backfill pass asked for.</summary>
+    /// <param name="pages">Pages. Zero records nothing.</param>
+    public void BarBackfillPages(int pages)
+    {
+        if (pages <= 0)
+        {
+            return;
+        }
+
+        _barBackfillPages.Add(pages);
+    }
+
+    /// <summary>Counts bars one backfill pass wrote.</summary>
+    /// <param name="bars">Bars written. Zero records nothing.</param>
+    public void BarBackfillBars(int bars)
+    {
+        if (bars <= 0)
+        {
+            return;
+        }
+
+        _barBackfillBars.Add(bars);
+    }
+
+    /// <summary>Counts empty venue pages one backfill pass recorded.</summary>
+    /// <param name="pages">Empty pages. Zero records nothing.</param>
+    public void BarBackfillEmpty(int pages)
+    {
+        if (pages <= 0)
+        {
+            return;
+        }
+
+        _barBackfillEmpty.Add(pages);
+    }
+
+    /// <summary>Counts one backfill pass that stopped on HTTP 429.</summary>
+    public void BarBackfillRateLimited() => _barBackfillRateLimited.Add(1);
+
+    /// <summary>Counts one backfill failure and names the exception type. Not the message.</summary>
+    /// <param name="exceptionType">The CLR type name.</param>
+    public void BarBackfillError(string exceptionType)
+    {
+        if (string.IsNullOrWhiteSpace(exceptionType))
+        {
+            return;
+        }
+
+        _barBackfillErrors.Add(
+            1,
+            new KeyValuePair<string, object?>(ExceptionTag, exceptionType));
+    }
+
+    /// <summary>Counts one finished backfill pass.</summary>
+    /// <param name="reason">Why it stopped, from <see cref="BarBackfillStop"/>.</param>
+    public void BarBackfillStopped(string reason)
+    {
+        if (!BarBackfillStop.All.Contains(reason))
+        {
+            return;
+        }
+
+        _barBackfillStops.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+
+    /// <summary>
+    /// Starts the span for one backfill pass. The caller sets <c>outcome</c> and disposes it.
+    /// </summary>
+    /// <returns>The span, or null when nothing is listening.</returns>
+    public Activity? StartBarBackfill() =>
+        Activities.StartActivity("bars.backfill", ActivityKind.Internal);
+
+    /// <summary>Counts chunks <c>drop_chunks</c> removed.</summary>
+    /// <param name="chunks">Chunks removed. Zero records nothing.</param>
+    public void TapeChunksDropped(int chunks)
+    {
+        if (chunks <= 0)
+        {
+            return;
+        }
+
+        _tapeChunksDropped.Add(chunks);
+    }
 
     /// <summary>Counts one Drive upload outcome.</summary>
     /// <param name="outcome">What happened, from <see cref="TapeUploadOutcome"/>.</param>
@@ -1041,6 +1425,12 @@ public static class ExecutionWriteRefusal
     /// <summary>A partial close asked for more contracts than the open position holds.</summary>
     public const string PartialCloseExceedsPosition = "partial_close_exceeds_position";
 
+    /// <summary>Another replica holds the session lock for this account (gh#772).</summary>
+    public const string AccountWriterHeld = "account_writer_held";
+
+    /// <summary>The writer lock could not be confirmed, so the write was not sent (gh#772).</summary>
+    public const string AccountWriterUnavailable = "account_writer_unavailable";
+
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
         [
@@ -1070,6 +1460,8 @@ public static class ExecutionWriteRefusal
             PriceRequired,
             PriceNotPositive,
             PartialCloseExceedsPosition,
+            AccountWriterHeld,
+            AccountWriterUnavailable,
         ];
 }
 
@@ -1160,6 +1552,84 @@ public static class RecorderHealthOutcome
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Ok, Degraded, Unavailable, Timeout];
+}
+
+/// <summary>What a latest-quote read found. The <c>outcome</c> tag on <c>mcp.quote.reads</c>.</summary>
+public static class QuoteReadOutcome
+{
+    /// <summary>The row is within <c>LatestQuoteStaleAfter</c>.</summary>
+    public const string Fresh = "quote_fresh";
+
+    /// <summary>The row is older than <c>LatestQuoteStaleAfter</c>. It is still returned.</summary>
+    public const string Stale = "quote_stale";
+
+    /// <summary>The instrument has no stored quote.</summary>
+    public const string Miss = "quote_miss";
+
+    /// <summary>The symbol is not one this server serves.</summary>
+    public const string Unknown = "quote_unknown";
+
+    /// <summary>The read did not answer. Not a miss. See <see cref="QuoteReadFailure"/>.</summary>
+    public const string ReadFailed = "quote_read_failed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Fresh, Stale, Miss, Unknown, ReadFailed];
+}
+
+/// <summary>Why a latest-quote read failed. The <c>reason</c> tag beside <c>quote_read_failed</c>.</summary>
+public static class QuoteReadFailure
+{
+    /// <summary>The query that names the stored front did not answer.</summary>
+    public const string FrontLookupFailed = "front_lookup_failed";
+
+    /// <summary>The query that loads the quote row did not answer.</summary>
+    public const string StoreFailed = "store_failed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [FrontLookupFailed, StoreFailed];
+}
+
+/// <summary>
+/// Latest-quote write outcomes. Used as <c>outcome</c> on writes and <c>reason</c> on failures.
+/// </summary>
+public static class QuoteWriteOutcome
+{
+    /// <summary>A flush wrote or revised rows.</summary>
+    public const string Written = "quote_written";
+
+    /// <summary>A flush threw. The batch is kept and retried.</summary>
+    public const string Failed = "quote_failed";
+
+    /// <summary>The hub refused the price subscription.</summary>
+    public const string SubscribeRefused = "quote_subscribe_refused";
+
+    /// <summary>The venue named no front contract for an instrument.</summary>
+    public const string FrontUnresolved = "quote_front_unresolved";
+
+    /// <summary>A subscribe pass attached every current front.</summary>
+    public const string Subscribed = "quote_subscribed";
+
+    /// <summary>The quote volume was not a contract count, so the quote was skipped.</summary>
+    public const string VolumeRejected = "quote_volume_rejected";
+
+    /// <summary>A price unsubscribe did not finish. Not a store failure.</summary>
+    public const string UnsubscribeFailed = "quote_unsubscribe_failed";
+
+    /// <summary>The shutdown flush did not finish. Not a store failure during the loop.</summary>
+    public const string ShutdownFailed = "quote_shutdown_failed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+    [
+        Written,
+        Failed,
+        SubscribeRefused,
+        FrontUnresolved,
+        Subscribed,
+        VolumeRejected,
+        UnsubscribeFailed,
+        ShutdownFailed,
+    ];
 }
 
 /// <summary>Where a session conflict was seen — the <c>source</c> tag's closed vocabulary (gh#757).</summary>
@@ -1257,7 +1727,9 @@ public static class TapeExportOutcome
     /// <summary>Rows written into a verified day.</summary>
     public const string RowsExported = "rows_exported";
 
-    /// <summary>The files did not match the manifest. Local rows stay.</summary>
+    /// <summary>
+    /// The files did not match the manifest, or the source count disagreed. Local rows stay.
+    /// </summary>
     public const string VerificationFailed = "verification_failed";
 
     /// <summary>Rows inserted by an import. A conflict inserts nothing.</summary>
@@ -1285,6 +1757,19 @@ public static class TapeExportOutcome
             LockHeld,
             ExportFailed,
         ];
+}
+
+/// <summary>Why <see cref="TapeExportOutcome.VerificationFailed"/> fired. The <c>reason</c> tag.</summary>
+public static class TapeExportVerificationReason
+{
+    /// <summary>The files did not match the manifest.</summary>
+    public const string Manifest = "manifest";
+
+    /// <summary>A gzip row count did not match the source table.</summary>
+    public const string SourceCount = "source_count";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Manifest, SourceCount];
 }
 
 /// <summary>What a Drive upload did — the <c>outcome</c> tag's vocabulary for <c>mcp.tape.uploads</c>.</summary>
@@ -1388,4 +1873,87 @@ public static class TapeClosedReadReason
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [NeverStarted, HeldByAnotherRecorder];
+}
+
+/// <summary>Why a tape-retention counter fired. The <c>reason</c> tag on the prune counters.</summary>
+public static class TapePruneReason
+{
+    /// <summary>No uploaded trades receipt for that day, venue, instrument and contract.</summary>
+    public const string NoReceipt = "no_receipt";
+
+    /// <summary>The recorder lease was gone before the pass finished.</summary>
+    public const string LeaseLost = "lease_lost";
+
+    /// <summary><c>drop_chunks</c> waited out <c>lock_timeout</c>. Row deletes still run.</summary>
+    public const string LockTimeout = "lock_timeout";
+
+    /// <summary>The drop transaction's statement timed out. Row deletes still run.</summary>
+    public const string StatementTimeout = "statement_timeout";
+
+    /// <summary>The pass threw. The worker logs the exception message.</summary>
+    public const string PruneError = "prune_error";
+
+    /// <summary>The key walk hit its cap, so a chunk was not dropped.</summary>
+    public const string KeyCap = "key_cap";
+
+    /// <summary>The source has a different row count than the uploaded receipt, so the day stays.</summary>
+    public const string SourceCountChanged = "source_count_changed";
+
+    /// <summary>
+    /// A row was recorded after the export, before any delete. The receipt was withdrawn.
+    /// </summary>
+    public const string LateRows = "late_rows";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+    [
+        NoReceipt,
+        LeaseLost,
+        LockTimeout,
+        StatementTimeout,
+        PruneError,
+        KeyCap,
+        SourceCountChanged,
+        LateRows,
+    ];
+}
+
+/// <summary>Values of the <c>tape.retention</c> span. Not a metric vocabulary.</summary>
+public static class TapeRetentionOutcome
+{
+    /// <summary>Nothing old enough to consider.</summary>
+    public const string Idle = "idle";
+
+    /// <summary>Keys were left because they have no uploaded trades receipt.</summary>
+    public const string Skipped = "skipped";
+
+    /// <summary>Rows were deleted or chunks were dropped.</summary>
+    public const string Pruned = "pruned";
+
+    /// <summary>The recorder lease was gone.</summary>
+    public const string LeaseLost = "lease_lost";
+
+    /// <summary>The pass threw.</summary>
+    public const string Failed = "failed";
+
+    /// <summary>
+    /// At least one key was kept because its source count did not match the receipt.
+    /// Also the span tag whose value is how many keys were kept that way.
+    /// </summary>
+    public const string SourceCountChanged = "source_count_changed";
+
+    /// <summary>
+    /// Outcome, and the span tag, when receipts were withdrawn because a row was recorded
+    /// after the export and nothing was deleted. The tag value is how many keys.
+    /// </summary>
+    public const string LateRows = "late_rows";
+
+    /// <summary>Span tag for how many keys were skipped. Not the outcome.</summary>
+    public const string SkippedDays = "skipped_days";
+
+    /// <summary>Span tag for how many chunks were dropped.</summary>
+    public const string ChunksDropped = "chunks_dropped";
+
+    /// <summary>Span tag for the chunk boundary, a UTC timestamp.</summary>
+    public const string DroppedUntil = "dropped_until";
 }

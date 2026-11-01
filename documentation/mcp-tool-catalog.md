@@ -21,8 +21,10 @@ page against either**, so check it against the code, never against another docum
 
 - **Reads do not transmit.** The five tools under [Orders](#orders) are the only venue writes, and each one
   calls `TradingRiskGate` and nothing else. `Trading__Enabled` defaults to false and turns every one of them
-  off, including cancel and close. The kill switch blocks those same calls. Nothing else on this surface
-  places, modifies, cancels or closes.
+  off, including cancel and close. The kill switch blocks new orders and modifies only. Cancel and
+  close stay allowed. A full close flattens the contract. A partial close is capped by the open
+  size read at check time, so a fill before the send can change what that close meets.
+  Nothing else on this surface places, modifies, cancels or closes.
 - **Over HTTP, every call is authenticated, in one of two modes** — and the tool surface is identical under
   both. `Mcp__Auth__Mode=StaticToken`, the compose stack and the plain `dotnet run` recipe, is one shared
   secret in `Authorization: Bearer …`. `OAuth`, the deployed instance
@@ -282,6 +284,45 @@ calendar can hold — so a later `atUtc` is refused naming both it and the horiz
 the boundary (gh#110).
 
 ## Market data
+
+### `get_quote(symbol)`
+
+Read-only, idempotent. The latest stored bid, ask and last for one symbol (gh#351, `R-5.2`,
+`R-5.7`, `R-5.10`).
+
+The tool is not registered unless `MarketData__GetQuoteEnabled` is on. That switch defaults
+off. The Railway server sets it on, and sets `MarketData__RecordLatestQuotes` false, so the
+server lists the tool and does not write quotes. The recorder sets
+`MarketData__RecordLatestQuotes` on and does not set `GetQuoteEnabled`, so it does not
+list the tool. The template accepts only the literals `true` and `false`, or absence,
+for those switches. Compose leaves both off.
+This process cannot see the recorder's switch, which is why the two keys are separate.
+
+The front is the newest `LatestQuotes` row for the instrument, the contract the recorder
+subscribed. The call does not search the venue and does not open a market hub.
+
+Around a roll that row is still the old contract until the new one ticks. The answer names
+that `contractId` and goes stale once `ageSeconds` passes `MarketData__LatestQuoteStaleAfter`.
+The front itself can be as late as `MarketData__LatestQuoteFrontRefresh` (fifteen minutes).
+If the old unsubscribe fails, both contracts can keep ticking and the answer can move
+between them (gh#922, ADR-0016).
+
+Returns `{ symbol, status, contractId, bid, ask, last, volume, quoteTimeUtc, ageSeconds, stale, reason }`.
+Prices are raw decimals in the contract's price units (`R-5.2`). `volume` is session volume, in
+contracts. `ageSeconds` is how long ago the database accepted the row. `stale` is true when that
+age is past `MarketData__LatestQuoteStaleAfter` (shipped as 15 seconds). A stale row is still
+returned.
+
+`status` is `ok`, `missing`, `unknown_symbol`, or `failed`. `missing` means the symbol is served
+and the table has no row for it. `unknown_symbol` means the symbol is not served. `failed` means
+the store did not answer. `reason` is then `front_lookup_failed` or `store_failed`, and a raw
+database error is not returned (`R-5.7`). That is not a miss. None of those throw. The read span
+`quote.read` and the counter `mcp.quote.reads` carry the outcome (`R-5.10`). Fields that do not
+apply are omitted.
+
+`R-5.3` says an unknown instrument is an error. This tool returns `unknown_symbol` instead,
+because a quote probe is a result the caller branches on. The quote itself is specified by
+gh#351. There is no separate quote requirement id.
 
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
@@ -1045,7 +1086,12 @@ an end-of-day job. The same payload is served to a monitor at `GET /health/recor
 gate. `/health` stays the unauthenticated liveness probe and does not open a database connection.
 
 Returns `{ asOfUtc, feedConnected, feed, database, hubReconnects, session?, contracts, gaps?,
-cachedAtUtc?, ageMs? }`.
+cachedAtUtc?, ageMs?, tapeDaysKept?, barBackfill? }`.
+
+`barBackfill` is the last bar-backfill pass this process finished (gh#899): `startedUtc`,
+`endedUtc`, `stopReason`, `pages`, and `errors`. It is omitted when no pass has finished.
+`stopReason` is a closed tag. Production exports no OTLP, so this field and the log line are
+what an operator sees.
 
 `feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
 subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
@@ -1064,7 +1110,10 @@ later than `asOfUtc` is outside this report's window and is omitted. A reply reu
 five-second memo keeps that age against the cached `asOfUtc`. `hubReconnects`
 counts a successful market-hub connect after a connection was lost or a connect attempt failed.
 A clean first connect is zero, and zero is a real count. It is not the export-only
-`mcp.tape.reconnects` series.
+`mcp.tape.reconnects` series. `tapeDaysKept` counts trades receipts retention set back to
+pending because the source count no longer matched, or because a row was recorded after
+the export, still waiting for a new export. One receipt is one day, venue, instrument and
+contract. Zero is a real count. The field is omitted when the database probe did not connect.
 
 `session` is the product session in progress, or the one that most recently closed when the market is shut.
 It is omitted when the calendar cannot name one. A declared early close (`MarketData__EarlyCloses`) applies
@@ -1175,8 +1224,17 @@ them without a process restart. A reload that fails validation throws from the o
 publishing the invalid document, and the next check refuses with `trading_configuration_invalid`. The last
 good values are not kept. A disable before the claim writes no row.
 A disable after the claim records the refusal and does not send.
-The kill switch refuses with `kill_switch` on the same five tools. Cancel and close have no carve-out.
-**Pending Adam:** that block stays until he decides whether a halt may still flatten. v1 does not add a carve-out.
+The kill switch refuses with `kill_switch` on `place_order` and `modify_order` only (gh#770).
+`cancel_order`, `close_position` and `partial_close_position` stay allowed while it is engaged.
+A full close sends the account and the contract; the venue flattens that position. A partial close
+is refused when the size exceeds the absolute open size read at check time. A fill before the send
+can change the position that close meets.
+One replica may trade an account (gh#772). The gate takes a session advisory lock after the daily-cap
+check, and again immediately before the send. A cap refusal does not hold it. A second writer is
+`account_writer_held`. A lock that cannot be confirmed, including a mutex wait that expires, is
+`account_writer_unavailable` and is not sent. Reads and the recorder are not locked.
+The template's one-replica check (gh#774) is defence in depth. A lost acknowledgment is
+`OutcomeUnknown`; reconcile, and do not retry. v1 adds no client order id (gh#771).
 
 When `Trading__Enabled` is true, startup fails if `Trading__AllowedAccountIds` is empty.
 
@@ -1186,7 +1244,9 @@ Use a fresh `idempotencyKey` for each order. Never retry OutcomeUnknown; reconci
 
 **Every call emits the gate's telemetry.** The span is `execution.<tool>` and the counter is
 `mcp.execution.writes`, tagged `operation`, `refusal` and `replay`. A replay is `replay=true` and is not a
-new outcome. The gate owns both. The tools do not open a second span or counter.
+new outcome. The gate owns both. The tools do not open a second span or counter. An unknown
+account stage is that same counter; the tag and the unwired alert are specified in
+[deployment.md](deployment.md#unknown-account-stage-gh732) (gh#732, ADR-0024).
 
 **`idempotencyKey` is required.** It is scoped per account and per tool, and `TradingAuditClaims.MaxKeyLength`
 is 256, the same width as the audit column. A replay of the same account, tool and request hash returns the

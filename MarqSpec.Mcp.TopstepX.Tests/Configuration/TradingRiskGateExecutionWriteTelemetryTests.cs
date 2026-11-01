@@ -25,7 +25,6 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
     private const string MesContract = "CON.F.US.MES.Z26";
 
     private readonly FakeKillSwitch _killSwitch = new();
-    private readonly RecordingUnknownSignal _unknownSignal = new();
     private readonly FakeExecutionGateway _fakeGateway = new();
     private readonly RecordingAuditLog _audit = new();
     private readonly FakeDailyCapCoordinator _daily = new();
@@ -162,7 +161,6 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
             _fakeGateway,
             new StubMarketDataGateway([PracticeAccount(stageResolver)], []),
             stageResolver,
-            _unknownSignal,
             _daily,
             _audit,
             denylist,
@@ -188,7 +186,6 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
         IExecutionGateway gateway = new ProjectXExecutionGateway(
             executionGate,
             marketData,
-            _unknownSignal,
             client,
             accountCache,
             telemetry,
@@ -199,7 +196,6 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
             gateway,
             marketData,
             stageResolver,
-            _unknownSignal,
             _daily,
             _audit,
             denylist,
@@ -246,13 +242,6 @@ public sealed class TradingRiskGateExecutionWriteTelemetryTests
     private sealed class FakeKillSwitch : ITradingKillSwitch
     {
         public bool IsEngaged { get; set; }
-    }
-
-    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public void UnknownStageWriteRefused(int accountId)
-        {
-        }
     }
 
     private sealed class FakeExecutionGateway : IExecutionGateway

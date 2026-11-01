@@ -594,6 +594,14 @@ not leave a partial index: the create is `IF NOT EXISTS` after the lock. If the 
 build outlasts the wait, the second degrades or exits instead of sitting for the whole command.
 Restart it once the first is healthy.
 
+Compose configures that 300 second wait on the `server` service. `docker-compose.yml` sets
+`Migrations__LockWaitSeconds` to `${Migrations__LockWaitSeconds:-300}`. 300 seconds is the code
+default, passed through so an operator can change the wait without rebuilding the image. It is
+long enough for a normal multi-command apply to finish while the lock is held, and it is not the
+per-command timeout, so the waiter does not sit for a whole index build. It is also not Railway's
+healthcheck window: that window is 300 seconds by platform default and starts only after the
+container is deployed.
+
 The composed server has no healthcheck of its own. Postgres uses `pg_isready` with `start_period: 20s`,
 and the server waits on that, not on the server listening. If you add a healthcheck on the server that
 gates other services, give it a `start_period` that covers the same index-build migration.

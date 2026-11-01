@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Required-store review follow-ups** (gh#843, #864). The cold-start termination test waits
+  until the applying command is blocked, with no sleep between polls. Compose's 300 second
+  migration-lock wait is documented with the `docker-compose.yml` setting that configures it.
+  A dropped migration and a lock-wait timeout log no connection string and no password. A
+  failure that only wraps a dropped connection still fails the process.
+
 ## [0.7.1] - 2026-10-31
 
 ### Added

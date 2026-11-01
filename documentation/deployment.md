@@ -668,6 +668,18 @@ When a backend exists, the rule is: the sum of `mcp.execution.writes` where `ref
 `unknown_account_stage` is at least 1 over 5 minutes. Missing data does not breach. Any such
 increment is a parser gap. Fix the name parser. Do not turn trading on for that account to clear it.
 
+## Bar backfill (gh#899)
+
+`Backfill__Enabled` defaults to false. Nothing in the Railway template sets it. When it is true
+the process runs one pass at startup and then stops: for each configured instrument and for
+`Backfill__ResolutionsMinutes` (default `1,60`) it asks the bar cache for the uncovered ranges
+back to the measured history edge. One-minute bars stop at 63 days. Hour bars, and any resolution
+of 60 minutes or more, stop at 365 days. `Backfill__NotBeforeUtc` may start later than that edge.
+A value older than the edge is moved forward to it. An empty venue answer is coverage, not an
+error, so the next pass does not ask again. Pages stay at 1,000 bars. A window is 5,000 bars,
+several pages. Backfill may take 20 of the 50 history requests in each 30 seconds. A live read
+uses the shared pacer and is not charged against that 20. HTTP 429 stops the pass.
+
 ## Troubleshooting
 
 ### Vendor DNS on a custom Docker network (gh#697)

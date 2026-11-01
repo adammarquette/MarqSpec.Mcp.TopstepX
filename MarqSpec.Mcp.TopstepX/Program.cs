@@ -653,6 +653,13 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // Historical bar backfill (gh#899). Off by default. The hosted pass runs once when enabled.
+        // No Railway variable is set for this; the deployment notes describe the keys.
+        services.AddOptions<BarBackfillOptions>()
+            .Bind(builder.Configuration.GetSection(BarBackfillOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<IndicatorOptions>()
             .Bind(builder.Configuration.GetSection(IndicatorOptions.SectionName))
             .ValidateDataAnnotations()
@@ -941,6 +948,9 @@ public static class Program
         // front across a quarterly roll and go on answering the ledger's per-contract question with a
         // contract that has since retired (gh#504).
         services.AddScoped<BarCacheService>();
+        services.AddScoped<IBarBackfillCache, BarCacheBackfillAdapter>();
+        services.AddScoped<BarBackfillDriver>();
+        services.AddHostedService<BarBackfillWorker>();
 
         // The reselect-bars verb (gh#506). Scoped because BarCacheService is, and it re-decides a window
         // through that service's seam -- the only thing on this path that reaches the venue.

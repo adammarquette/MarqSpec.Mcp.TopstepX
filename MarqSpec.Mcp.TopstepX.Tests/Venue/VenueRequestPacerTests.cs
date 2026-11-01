@@ -261,4 +261,30 @@ public sealed class VenueRequestPacerTests
 
         build.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    [Fact]
+    public void BackfillKeepsTwentyPerWindow_AndLeavesTheRestForLive()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = VenueRequestPacer.ForHistory(clock);
+
+        for (int i = 0; i < VenueRequestPacer.BackfillRequestsPerWindow; i++)
+        {
+            pacer.ReserveBackfillSlot().Should().Be(_start);
+        }
+
+        DateTimeOffset blocked = pacer.ReserveBackfillSlot();
+        blocked.Should().Be(_start + VenueRequestPacer.HistoryWindow + VenueRequestPacer.BoundaryMargin);
+
+        int liveRoom = VenueRequestPacer.HistoryRequestsPerWindow
+            - VenueRequestPacer.BackfillRequestsPerWindow;
+        for (int i = 0; i < liveRoom; i++)
+        {
+            pacer.ReserveSlot().Should().Be(
+                _start,
+                "live reads are not charged against the backfill sub-budget");
+        }
+
+        pacer.ReserveSlot().Should().BeAfter(_start);
+    }
 }

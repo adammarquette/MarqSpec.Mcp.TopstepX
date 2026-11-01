@@ -38,6 +38,12 @@ public sealed class VenueRequestPacer
     /// <summary>Requests the vendor allows against <c>History/retrieveBars</c> per <see cref="HistoryWindow"/>.</summary>
     public const int HistoryRequestsPerWindow = 50;
 
+    /// <summary>
+    /// How many of those history requests a backfill may take in one <see cref="HistoryWindow"/>.
+    /// The rest stay available for a live read (gh#899).
+    /// </summary>
+    public const int BackfillRequestsPerWindow = 20;
+
     /// <summary>The window <see cref="HistoryRequestsPerWindow"/> is counted over.</summary>
     public static readonly TimeSpan HistoryWindow = TimeSpan.FromSeconds(30);
 
@@ -69,6 +75,12 @@ public sealed class VenueRequestPacer
     /// sit in the future — it is the instant the request is <i>allowed to go</i>, not when it was asked for.
     /// </remarks>
     private readonly Queue<DateTimeOffset> _reserved = new();
+
+    /// <summary>
+    /// Backfill reservations. Separate from <see cref="_reserved"/> so the sub-budget cannot
+    /// grow into the live allowance.
+    /// </summary>
+    private readonly Queue<DateTimeOffset> _backfill = new();
 
     /// <summary>Creates a pacer.</summary>
     /// <param name="capacity">The most requests allowed in any <paramref name="window"/>.</param>
@@ -168,5 +180,98 @@ public sealed class VenueRequestPacer
 
         await Task.Delay(wait, _clock, cancellationToken).ConfigureAwait(false);
         return wait;
+    }
+
+    /// <summary>
+    /// Takes a backfill slot. It counts against both the backfill sub-budget and the shared history cap.
+    /// </summary>
+    /// <returns>Now when both budgets have room, otherwise the later of the two release instants.</returns>
+    /// <remarks>
+    /// A backfill that has aged out of the sub-budget is removed from the shared queue before the
+    /// replacement is added. Leaving both in would charge a live read for a request that is no longer
+    /// inside this window.
+    /// </remarks>
+    public DateTimeOffset ReserveBackfillSlot()
+    {
+        lock (_sync)
+        {
+            DateTimeOffset now = _clock.GetUtcNow();
+            DateTimeOffset? retired = null;
+            if (_backfill.Count >= BackfillRequestsPerWindow)
+            {
+                retired = _backfill.Dequeue();
+            }
+
+            DateTimeOffset backfillAt = now;
+            if (retired is DateTimeOffset aged)
+            {
+                DateTimeOffset ready = aged + _window + BoundaryMargin;
+                if (ready > backfillAt)
+                {
+                    backfillAt = ready;
+                }
+            }
+
+            DateTimeOffset sharedAt = Earliest(_reserved, _capacity, backfillAt);
+            DateTimeOffset at = sharedAt > backfillAt ? sharedAt : backfillAt;
+            if (retired is DateTimeOffset drop)
+            {
+                RemoveOne(_reserved, drop);
+            }
+
+            if (_reserved.Count >= _capacity)
+            {
+                _reserved.Dequeue();
+            }
+
+            _backfill.Enqueue(at);
+            _reserved.Enqueue(at);
+            return at;
+        }
+    }
+
+    /// <summary>Takes a backfill slot and waits for it.</summary>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>How long the caller was held.</returns>
+    public async ValueTask<TimeSpan> WaitForBackfillSlotAsync(CancellationToken cancellationToken)
+    {
+        DateTimeOffset at = ReserveBackfillSlot();
+        TimeSpan wait = at - _clock.GetUtcNow();
+        if (wait <= TimeSpan.Zero)
+        {
+            return TimeSpan.Zero;
+        }
+
+        await Task.Delay(wait, _clock, cancellationToken).ConfigureAwait(false);
+        return wait;
+    }
+
+    private DateTimeOffset Earliest(Queue<DateTimeOffset> queue, int capacity, DateTimeOffset notBefore)
+    {
+        if (queue.Count < capacity)
+        {
+            return notBefore;
+        }
+
+        DateTimeOffset at = queue.Peek() + _window + BoundaryMargin;
+        return at > notBefore ? at : notBefore;
+    }
+
+    /// <summary>Drops one entry equal to <paramref name="instant"/>, keeping the order of the rest.</summary>
+    private static void RemoveOne(Queue<DateTimeOffset> queue, DateTimeOffset instant)
+    {
+        int count = queue.Count;
+        bool removed = false;
+        for (int i = 0; i < count; i++)
+        {
+            DateTimeOffset item = queue.Dequeue();
+            if (!removed && item == instant)
+            {
+                removed = true;
+                continue;
+            }
+
+            queue.Enqueue(item);
+        }
     }
 }

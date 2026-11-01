@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Historical bar backfill** (gh#899). `Backfill__Enabled` defaults off and is not a Railway
+  variable. When it is on, one startup pass fills uncovered ranges through the existing bar cache.
+  Minute bars stop at 63 days and hour bars at one year. Pages stay at 1,000 bars. Backfill may
+  use 20 of the 50 history requests per 30 seconds. HTTP 429 stops the pass. An empty answer is
+  recorded as coverage.
 - **Unknown account stage is visible on the writes counter** (gh#732, ADR-0024).
   The tag and the unwired alert are specified in
   [deployment.md](documentation/deployment.md#unknown-account-stage-gh732).

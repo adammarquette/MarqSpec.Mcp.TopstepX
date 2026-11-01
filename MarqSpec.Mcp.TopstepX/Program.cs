@@ -724,6 +724,13 @@ public static class Program
             sp.GetRequiredService<IOptionsMonitor<TradingExecutionOptions>>(),
             sp.GetRequiredService<InstrumentRegistry>()));
         services.AddScoped<TradingWriteVenueAccountCache>();
+        // One session per process, not per request. The lock outlives a single order so a second replica
+        // cannot trade the same account (gh#772). Shutdown disposes it and releases the locks.
+        services.AddSingleton(sp => new TradingAccountWriterLock(
+            StoreConnection.Resolve(sp.GetRequiredService<IConfiguration>()),
+            sp.GetRequiredService<ILogger<TradingAccountWriterLock>>()));
+        services.AddSingleton<ITradingAccountWriterLock>(sp =>
+            sp.GetRequiredService<TradingAccountWriterLock>());
         // Scoped, and one order operation per instance. TradingRiskGate throws if a second operation
         // reuses it: the send-started flags would otherwise be cleared and a live send could be
         // reported as safe to retry.

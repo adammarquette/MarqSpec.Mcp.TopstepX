@@ -1269,8 +1269,11 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   validated** (gh#708) — master enable off by default, kill switch, secondary account allowlist, contract caps
   and a symbol denylist. The five MCP tools `place_order`, `modify_order`, `cancel_order`, `close_position`
   and `partial_close_position` are registered only when `Trading__Enabled` is true, and each one calls that
-  gate and no other write path (gh#750). The kill switch blocks cancel
-  and close; that block is pending Adam's decision and is unchanged. Idempotency is the pre-send `Unknown`
+  gate and no other write path (gh#750). The kill switch blocks new orders and modifies only.
+  Cancel and close stay allowed (gh#770). A session advisory lock, taken after the daily cap and again
+  before the send, refuses a second trading writer (gh#772). The template still requires one server
+  replica (gh#774).
+  Idempotency is the pre-send `Unknown`
   audit row, unique per account, tool and key, not process memory. `check-no-order-path.sh` still confines
   order-method names to the execution seam. Bracket fields,
   `confirm_trading_action` and the OAuth trade scope are later slices (gh#713, gh#717, gh#719).

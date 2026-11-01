@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MarketData__LatestQuoteSubscribeBackoff`. Fronts are resolved again on
   `MarketData__LatestQuoteFrontRefresh`. A volume that does not fit in `bigint` is skipped.
   No tool reads the table yet.
+- **Tape retention after a confirmed export (gh#763, ADR-0027).** The recorder deletes a UTC
+  day of `Trades` only when an `uploaded` `csv.gz` trades receipt exists for that day, venue,
+  instrument and contract. `TapeRetention__Days` defaults to 90 (accepted 7 through 3650).
+  Zero and a negative number are refused. No receipt, including `drive_disabled`, means the
+  rows stay, and the pass logs and counts the skipped days. A chunk is dropped only when it
+  ends before the cutoff and every row in it has that receipt. A partly exported compressed
+  chunk is left. `LatestQuotes` is not pruned. Timescale `policy_retention` stays empty.
+  The Railway template is not edited; the code default applies where the key is absent.
 
 ### Fixed
 

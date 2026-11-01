@@ -822,6 +822,9 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
 | `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`). One measurement per pass for a repeated outcome |
 | `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
+| `mcp.tape.pruned` | counter, rows | (none) | `TapeRetentionPass`, rows removed when the count is positive (gh#763) |
+| `mcp.tape.prune.skipped` | counter, days | (none) | `TapeRetentionPass`, days left because no uploaded trades receipt exists |
+| `mcp.tape.prune.failures` | counter | (none) | `TapeRetentionWorker`, a pass that threw. The log has the exception message |
 | `mcp.tape.uploads` | counter | `outcome` = drive_disabled \| drive_retried \| drive_uploaded \| drive_failed \| drive_permanent \| drive_orphan_pending · `operation` = upload \| lock · `reason` = uploaded \| retried \| upload_timeout \| permanent \| failed \| disabled \| orphan_pending \| identity_busy \| lock_lost \| lock_fault | `TapeExportPass` records `drive_disabled` once when Drive is off, `drive_orphan_pending` for receipts still pending, and exactly one terminal measurement per file. `drive_uploaded` only when the receipt is `uploaded`. `drive_failed` with `identity_busy` or `lock_lost` when the lock does not stay held. A lost lock wins over a Drive failure on the same file: the receipt is `LockLost`, and the counter and the `tape.upload` span are `lock_lost` once, not also `failed`, `permanent`, or `upload_timeout`. The uploader records `drive_retried` only. The pass records a Drive timeout, a permanent failure, or another Drive failure after the probe shows the lock is still held. A lock-session exception that is not a dropped connection is `lock_fault` once and `export_failed`, and the pass continues. The `tape.upload` span covers that file's upload and its retries. When `lock_lost` supersedes a Drive failure, the span tag `drive.failure_type` names that Drive error (gh#755, gh#804, `R-10.6`). `drive_retried` counts the retries, not one event per attempt. A lock lost after the bytes land is `lock_lost`, not `drive_uploaded` |
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
@@ -1209,9 +1212,10 @@ when it ends, after the lock probe. `TapeExportReceipts` records `pending`,
 **The copy is additive.** A day is the UTC calendar day of `TradeTimeUtc`, of a closed coverage
 `RangeStart`, or of a footprint `BucketStart`, half-open `[dayStart, dayEnd)`. It is exported once
 `now` is at or after `dayEnd`. The current day is left for a later pass. A re-read of the files must
-match the manifest. Local rows are not deleted, on a verified day or on a refused one. Timescale
-`policy_retention` on `Trades` stays empty ([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)).
-`Retention__*` is not read. Dropping raw tape is out of scope and needs its own ADR (gh#758).
+match the manifest. The export does not delete local rows, on a verified day or on a refused one.
+Timescale `policy_retention` on `Trades` stays empty
+([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)). ADR-0027 deletes a UTC day of `Trades`
+only after an `uploaded` trades receipt. No receipt means no delete. `Retention__*` is not a key.
 
 A candidate day is one whose rows have no matching receipt, or whose receipt hash no longer matches
 the file. Key discovery for the day is one short repeatable-read transaction. Each contract is then

@@ -645,6 +645,14 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
+        // How long an exported Trades day may stay (gh#763, ADR-0027). The default is 90 days.
+        // Zero and a negative number are refused. Binding this does not delete anything; the
+        // recorder's pass does, and only after an uploaded trades receipt.
+        services.AddOptions<TapeRetentionOptions>()
+            .Bind(builder.Configuration.GetSection(TapeRetentionOptions.SectionName))
+            .ValidateDataAnnotations()
+            .ValidateOnStart();
+
         services.AddOptions<IndicatorOptions>()
             .Bind(builder.Configuration.GetSection(IndicatorOptions.SectionName))
             .ValidateDataAnnotations()

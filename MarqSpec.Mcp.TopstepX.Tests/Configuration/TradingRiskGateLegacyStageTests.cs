@@ -46,6 +46,7 @@ public sealed class TradingRiskGateLegacyStageTests
         _stageResolver.ResolveFromAccountName(LegacyPracticeName).Should().Be(AccountStage.Practice);
 
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> unknownStage = UnknownStageCollector(telemetry);
         StageRig rig = OpenRig(
             telemetry,
             new TradingExecutionOptions { Enabled = true },
@@ -61,6 +62,7 @@ public sealed class TradingRiskGateLegacyStageTests
         result.Refusal.Should().BeNull();
         result.WriteResult.Should().Be(AcknowledgedWrite());
         AssertVendorCalls(rig.Vendor, place: 1);
+        Count(unknownStage).Should().Be(0);
     }
 
     [Fact]
@@ -69,6 +71,7 @@ public sealed class TradingRiskGateLegacyStageTests
         _stageResolver.ResolveFromAccountName(NearMissName).Should().Be(AccountStage.Unknown);
 
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> unknownStage = UnknownStageCollector(telemetry);
         StageRig rig = OpenRig(
             telemetry,
             new TradingExecutionOptions { Enabled = true },
@@ -84,6 +87,30 @@ public sealed class TradingRiskGateLegacyStageTests
         result.Refusal.Should().Be(TradingExecutionRefusal.UnknownAccountStage(UnknownAccountId));
         result.WriteResult.Should().BeNull();
         AssertVendorCalls(rig.Vendor, place: 0);
+        Count(unknownStage).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_RefusesDryRun_WhenAccountNameIsPracxNearMiss_AndCountsOnce()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> unknownStage = UnknownStageCollector(telemetry);
+        StageRig rig = OpenRig(
+            telemetry,
+            new TradingExecutionOptions { Enabled = true },
+            Account(UnknownAccountId, NearMissName));
+
+        TradingRiskGateResult result = await rig.Gate.SubmitPlace(
+            Place(UnknownAccountId),
+            new TradingRiskAttemptContext(DryRun: true),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        result.ParsedStage.Should().Be(AccountStage.Unknown);
+        result.Refusal.Should().Be(TradingExecutionRefusal.UnknownAccountStage(UnknownAccountId));
+        result.WriteResult.Should().BeNull();
+        AssertVendorCalls(rig.Vendor, place: 0);
+        Count(unknownStage).Should().Be(1);
     }
 
     [Theory]
@@ -98,6 +125,7 @@ public sealed class TradingRiskGateLegacyStageTests
         _stageResolver.ResolveFromAccountName(accountName).Should().Be(stage);
 
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> unknownStage = UnknownStageCollector(telemetry);
         StageRig rig = OpenRig(
             telemetry,
             new TradingExecutionOptions
@@ -124,6 +152,7 @@ public sealed class TradingRiskGateLegacyStageTests
         result.Refusal.Should().Be(expected);
         result.WriteResult.Should().BeNull();
         AssertVendorCalls(rig.Vendor, place: 0);
+        Count(unknownStage).Should().Be(stage == AccountStage.Unknown ? 1 : 0);
     }
 
     [Fact]
@@ -133,6 +162,7 @@ public sealed class TradingRiskGateLegacyStageTests
         _stageResolver.ResolveFromAccountName(RenamedFundedName).Should().Be(AccountStage.Funded);
 
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> unknownStage = UnknownStageCollector(telemetry);
         StageRig rig = OpenRig(
             telemetry,
             new TradingExecutionOptions { Enabled = true },
@@ -164,6 +194,7 @@ public sealed class TradingRiskGateLegacyStageTests
         second.WriteResult.Should().BeNull();
         rig.Accounts.Fetches.Should().BeGreaterThan(readsBeforeRename);
         AssertVendorCalls(rig.Vendor, place: 1);
+        Count(unknownStage).Should().Be(0);
     }
 
     private VenueAccount Account(int accountId, string accountName) =>
@@ -186,6 +217,21 @@ public sealed class TradingRiskGateLegacyStageTests
             TrailPrice: null);
 
     private static TradingRiskAttemptContext Live() => new(DryRun: false);
+
+    private static MetricCollector<long> UnknownStageCollector(HostTelemetry telemetry) =>
+        new(telemetry, HostTelemetry.Name, HostTelemetry.UnknownStageInstrument);
+
+    private static int Count(MetricCollector<long> counter)
+    {
+        System.Collections.Generic.IReadOnlyList<CollectedMeasurement<long>> measurements =
+            counter.GetMeasurementSnapshot();
+        foreach (CollectedMeasurement<long> measurement in measurements)
+        {
+            measurement.Tags.Should().BeEmpty();
+        }
+
+        return (int)measurements.Sum(measurement => measurement.Value);
+    }
 
     private static ExecutionWriteResult AcknowledgedWrite() =>
         new(
@@ -258,10 +304,11 @@ public sealed class TradingRiskGateLegacyStageTests
         TradingRiskGate NewGate()
         {
             TradingWriteVenueAccountCache accountCache = new();
+            TradingUnknownStageRefusalSignal signal = new(telemetry);
             IExecutionGateway gateway = new ProjectXExecutionGateway(
                 executionGate,
                 accounts,
-                new RecordingUnknownSignal(),
+                signal,
                 client,
                 accountCache,
                 telemetry,
@@ -272,7 +319,7 @@ public sealed class TradingRiskGateLegacyStageTests
                 gateway,
                 accounts,
                 _stageResolver,
-                new RecordingUnknownSignal(),
+                signal,
                 new FakeDailyCapCoordinator(),
                 new RecordingAuditLog(),
                 denylist,
@@ -359,13 +406,6 @@ public sealed class TradingRiskGateLegacyStageTests
     private sealed class FakeKillSwitch : ITradingKillSwitch
     {
         public bool IsEngaged { get; set; }
-    }
-
-    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public void UnknownStageWriteRefused(int accountId)
-        {
-        }
     }
 
     private sealed class RecordingAuditLog : ITradingAuditLogWriter

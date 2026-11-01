@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Unknown account stage is counted for the operator** (gh#732, ADR-0024).
+  `mcp.execution.unknown_stage` increments once when a trading write is refused because the
+  account name parsed as `Unknown`, including a dry-run preview. It has no account id.
+  The runbook states the CloudWatch alarm. The refusal is unchanged.
 - **The recorder can store the latest quote per contract** (gh#351). `LatestQuotes` is one row
   per contract, upserted from the hub the tape recorder already holds. Volume is `bigint`.
   `ReceivedAt` is the database clock. `MarketData__RecordLatestQuotes` defaults off and does

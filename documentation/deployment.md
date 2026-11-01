@@ -617,6 +617,24 @@ The composed server has no healthcheck of its own. Postgres uses `pg_isready` wi
 and the server waits on that, not on the server listening. If you add a healthcheck on the server that
 gates other services, give it a `start_period` that covers the same index-build migration.
 
+## Unknown account stage (gh#732)
+
+`mcp.execution.unknown_stage` counts a trading write the gate refused because the account name parsed
+as `Unknown`. It is untagged. A practice write does not increment it, and neither does a known
+non-practice refusal. The refusal itself is unchanged.
+
+This repository does not define the alarm. Paging stays the CloudWatch path in
+[ADR-0023](adr/0023-aws-deployment-topology.md) (gh#526). Do not add a Grafana pager
+([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)).
+
+On each environment's existing topic `topstepx-mcp-<env>-alerts`:
+
+- Metric: `mcp.execution.unknown_stage`, as the OTLP sidecar writes it. No dimension.
+- Statistic: Sum. Period: 5 minutes. Threshold: at least 1. Missing data: not breaching.
+
+Any increment is a parser gap. Find the account name `ProjectXMapping.ResolveStage` did not recognise
+and fix the parser in a later change. Do not turn trading on for that account to clear the page.
+
 ## Troubleshooting
 
 ### Vendor DNS on a custom Docker network (gh#697)

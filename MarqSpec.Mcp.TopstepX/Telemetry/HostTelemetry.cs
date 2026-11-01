@@ -116,6 +116,11 @@ public sealed class HostTelemetry : IDisposable
     public const string ExecutionWritesInstrument = "mcp.execution.writes";
 
     /// <summary>
+    /// One trading write refused because the account stage parsed as Unknown (gh#732). Untagged.
+    /// </summary>
+    public const string UnknownStageInstrument = "mcp.execution.unknown_stage";
+
+    /// <summary>
     /// A bookkeeping failure after a trading attempt: the daily-cap unlock or the execution-write telemetry
     /// itself. Untagged. It must not decide the trading outcome (gh#750).
     /// </summary>
@@ -222,6 +227,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapeClosedReads;
     private readonly Counter<long> _indicatorProjections;
     private readonly Counter<long> _executionWrites;
+    private readonly Counter<long> _unknownStage;
     private readonly Counter<long> _bookkeepingFaults;
     private readonly ILogger<HostTelemetry>? _logger;
     private readonly Counter<long> _tapeExports;
@@ -336,6 +342,11 @@ public sealed class HostTelemetry : IDisposable
             unit: "{write}",
             description: "Gated execution writes, by operation and by refusal reason.");
 
+        _unknownStage = _meter.CreateCounter<long>(
+            UnknownStageInstrument,
+            unit: "{refusal}",
+            description: "Trading writes refused because the account stage parsed as Unknown. Untagged.");
+
         _bookkeepingFaults = _meter.CreateCounter<long>(
             BookkeepingFaultsInstrument,
             unit: "{fault}",
@@ -399,6 +410,11 @@ public sealed class HostTelemetry : IDisposable
             // The count is the signal. A listener that throws while it is recorded must not escape.
         }
     }
+
+    /// <summary>
+    /// Counts one trading write refused because the account stage parsed as Unknown. Untagged.
+    /// </summary>
+    public void UnknownStageRefused() => _unknownStage.Add(1);
 
     /// <summary>The spans this repository names. Children of the SDK's <c>tools/call</c> span.</summary>
     public ActivitySource Activities { get; }

@@ -167,6 +167,46 @@ public sealed class TradingWriterRefusalRetryTests(SeriesStoreFixture fixture) :
         (await fresh.TradingAuditLog.CountAsync()).Should().Be(0);
     }
 
+    [Fact]
+    public async Task AppendReversalAndRefusal_RejectsAnotherPendingModifiedRow()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        TradingAuditLogRecord saved = new()
+        {
+            AttemptedAt = DateTimeOffset.UnixEpoch,
+            AccountId = AccountId,
+            ParsedStage = "Practice",
+            Tool = "place_order",
+            IdempotencyKey = "saved",
+            RequestHash = new string('c', 64),
+            DryRun = false,
+            Outcome = TradingAuditOutcomes.Attempted,
+            ContractCount = 1,
+        };
+        database.TradingAuditLog.Add(saved);
+        await database.SaveChangesAsync();
+        saved.ContractCount = 2;
+        database.Entry(saved).State = EntityState.Modified;
+
+        TradingAuditLogWriter writer = new(database, TimeProvider.System);
+        Func<Task> save = () => writer.AppendReversalAndRefusalAsync(
+            Audit(TradingAuditOutcomes.Attempted, contractCount: -1),
+            Audit(TradingAuditOutcomes.Refused, contractCount: 0),
+            CancellationToken.None);
+
+        string accountText = AccountId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        (await save.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().NotContain(accountText)
+            .And.Contain("Modified")
+            .And.Contain(nameof(TradingAuditLogRecord));
+
+        await using TopstepXDbContext fresh = _fixture.CreateContext();
+        List<TradingAuditLogRecord> rows = await fresh.TradingAuditLog.AsNoTracking().ToListAsync();
+        rows.Should().ContainSingle();
+        rows[0].ContractCount.Should().Be(1);
+        rows[0].Outcome.Should().Be(TradingAuditOutcomes.Attempted);
+    }
+
     private TradingRiskGate PlaceGate(
         TopstepXDbContext database,
         HostTelemetry telemetry,

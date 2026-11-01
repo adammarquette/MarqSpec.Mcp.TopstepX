@@ -51,9 +51,11 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
     /// <inheritdoc />
     public async Task<TradingWriterLockTake> TryHoldAsync(int accountId, CancellationToken cancellationToken)
     {
-        if (!await _mutex
-                .WaitAsync(TimeSpan.FromSeconds(CommandTimeoutSeconds), cancellationToken)
-                .ConfigureAwait(false))
+        // WaitAsync(timeout, token) finishes on a thread-pool timer. A busy pool can run that
+        // callback after the caller's token has already fired, and the timeout then surfaces as
+        // cancellation (gh#956). Waiting here measures the two seconds on this thread, so a late
+        // timer cannot turn the expiry into a throw. A caller cancel still throws.
+        if (!_mutex.Wait(TimeSpan.FromSeconds(CommandTimeoutSeconds), cancellationToken))
         {
             _logger.LogWarning(
                 "Trading writes were refused. The writer lock wait expired.");

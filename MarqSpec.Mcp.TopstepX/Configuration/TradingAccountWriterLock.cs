@@ -12,7 +12,8 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// shutdown, or until the connection drops, which drops the lock with it. The next write probes
 /// <c>pg_advisory_lock_held</c> on that same session and refuses when the lock is gone and cannot be
 /// taken back. The Railway template still requires one server replica (gh#774); this lock is the
-/// gate, and that check is defence in depth.
+/// gate, and that check is defence in depth. Account ids are not kept in a field: the session is the
+/// record of which locks are held, and closing it releases them.
 /// </remarks>
 public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDisposable, IAsyncDisposable
 {
@@ -25,13 +26,13 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
     private readonly string _connectionString;
     private readonly ILogger<TradingAccountWriterLock> _logger;
     private readonly SemaphoreSlim _mutex = new(1, 1);
-    private readonly HashSet<int> _held = [];
     private NpgsqlConnection? _connection;
     private bool _disposed;
 
     /// <summary>Creates a lock that opens its session on the first write.</summary>
     /// <param name="connectionString">The store connection. Pooling is forced off for this session.</param>
-    /// <param name="logger">Receives a refusal when another replica holds the account, or the session drops.</param>
+    /// <param name="logger">Receives a refusal when another replica holds a lock, or the session drops.
+    /// </param>
     public TradingAccountWriterLock(string connectionString, ILogger<TradingAccountWriterLock> logger)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
@@ -58,36 +59,51 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
                     return false;
                 }
 
-                if (_held.Contains(accountId)
-                    && await LockIsHeldAsync(accountId, cancellationToken).ConfigureAwait(false) == true)
+                bool? held = await QueryAsync(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1 FROM pg_locks
+                        WHERE locktype = 'advisory'
+                          AND classid = @classId
+                          AND objid = @objectId
+                          AND pid = pg_backend_pid()
+                          AND granted)
+                    """,
+                    accountId,
+                    cancellationToken).ConfigureAwait(false);
+                if (held == true)
                 {
                     return true;
                 }
 
-                _held.Remove(accountId);
-                bool? acquired = await TryLockAsync(accountId, cancellationToken).ConfigureAwait(false);
+                if (held is null)
+                {
+                    DropSession();
+                    continue;
+                }
+
+                bool? acquired = await QueryAsync(
+                    "SELECT pg_try_advisory_lock(@classId, @objectId)",
+                    accountId,
+                    cancellationToken).ConfigureAwait(false);
+                if (acquired == true)
+                {
+                    return true;
+                }
+
                 if (acquired is null)
                 {
                     DropSession();
                     continue;
                 }
 
-                if (acquired == false)
-                {
-                    _logger.LogWarning(
-                        "Trading writes for account {AccountId} were refused. "
-                        + "Another replica holds the writer lock.",
-                        accountId);
-                    return false;
-                }
-
-                _held.Add(accountId);
-                return true;
+                _logger.LogWarning(
+                    "Trading writes were refused. Another replica holds the writer lock.");
+                return false;
             }
 
             _logger.LogWarning(
-                "Trading writes for account {AccountId} were refused. The writer lock session is gone.",
-                accountId);
+                "Trading writes were refused. The writer lock session is gone.");
             return false;
         }
         finally
@@ -96,32 +112,10 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
         }
     }
 
-    /// <summary>
-    /// Closes the session. Session advisory locks drop with the connection. The async dispose
-    /// unlocks first so a failed unlock is logged.
-    /// </summary>
-    public void Dispose()
-    {
-        _mutex.Wait();
-        try
-        {
-            if (_disposed)
-            {
-                return;
-            }
+    /// <summary>Closes the session. Session advisory locks drop with the connection.</summary>
+    public void Dispose() => CloseSession();
 
-            _disposed = true;
-            _held.Clear();
-            _connection?.Dispose();
-            _connection = null;
-        }
-        finally
-        {
-            _mutex.Release();
-        }
-    }
-
-    /// <summary>Unlocks every account this process held and closes the session.</summary>
+    /// <summary>Closes the session. Session advisory locks drop with the connection.</summary>
     public async ValueTask DisposeAsync()
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
@@ -133,30 +127,27 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
             }
 
             _disposed = true;
-            if (_connection is { State: System.Data.ConnectionState.Open })
+            await DisposeConnectionAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _mutex.Release();
+        }
+    }
+
+    private void CloseSession()
+    {
+        _mutex.Wait();
+        try
+        {
+            if (_disposed)
             {
-                foreach (int accountId in _held)
-                {
-                    try
-                    {
-                        await ExecuteAsync(
-                            "SELECT pg_advisory_unlock(@classId, @objectId)",
-                            accountId,
-                            CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch (Exception exception)
-                    {
-                        _logger.LogWarning(
-                            exception,
-                            "Trading writer lock for account {AccountId} did not unlock. "
-                            + "Closing the session drops it.",
-                            accountId);
-                    }
-                }
+                return;
             }
 
-            _held.Clear();
-            await DisposeConnectionAsync().ConfigureAwait(false);
+            _disposed = true;
+            _connection?.Dispose();
+            _connection = null;
         }
         finally
         {
@@ -172,7 +163,6 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
         }
 
         await DisposeConnectionAsync().ConfigureAwait(false);
-        _held.Clear();
         NpgsqlConnectionStringBuilder builder = new(_connectionString) { Pooling = false };
         _connection = new NpgsqlConnection(builder.ConnectionString);
         try
@@ -190,63 +180,33 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
         }
     }
 
-    private async Task<bool?> LockIsHeldAsync(int accountId, CancellationToken cancellationToken)
+    private async Task<bool?> QueryAsync(string sql, int accountId, CancellationToken cancellationToken)
     {
         try
         {
-            object? value = await ExecuteAsync(
-                "SELECT pg_advisory_lock_held(@classId, @objectId)",
-                accountId,
-                cancellationToken).ConfigureAwait(false);
+            await using NpgsqlCommand command = new(sql, _connection) { CommandTimeout = 30 };
+            command.Parameters.Add(new NpgsqlParameter("classId", NpgsqlDbType.Integer)
+            {
+                Value = AdvisoryLockClassId,
+            });
+            command.Parameters.Add(new NpgsqlParameter("objectId", NpgsqlDbType.Integer)
+            {
+                Value = accountId,
+            });
+            object? value = await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
             return value is true;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             _logger.LogWarning(
                 exception,
-                "Trading writer lock for account {AccountId} could not be probed. The session dropped it.",
-                accountId);
+                "Trading writer lock could not be probed. The session dropped.");
             return null;
         }
-    }
-
-    private async Task<bool?> TryLockAsync(int accountId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            object? value = await ExecuteAsync(
-                "SELECT pg_try_advisory_lock(@classId, @objectId)",
-                accountId,
-                cancellationToken).ConfigureAwait(false);
-            return value is true;
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            _logger.LogWarning(
-                exception,
-                "Trading writer lock for account {AccountId} could not be taken. The session dropped.",
-                accountId);
-            return null;
-        }
-    }
-
-    private async Task<object?> ExecuteAsync(string sql, int accountId, CancellationToken cancellationToken)
-    {
-        await using NpgsqlCommand command = new(sql, _connection) { CommandTimeout = 30 };
-        command.Parameters.Add(new NpgsqlParameter("classId", NpgsqlDbType.Integer)
-        {
-            Value = AdvisoryLockClassId,
-        });
-        command.Parameters.Add(new NpgsqlParameter("objectId", NpgsqlDbType.Integer)
-        {
-            Value = accountId,
-        });
-        return await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private void DropSession()
     {
-        _held.Clear();
         _connection?.Dispose();
         _connection = null;
     }

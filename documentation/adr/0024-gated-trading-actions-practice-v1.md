@@ -233,8 +233,8 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    advisory lock keyed by account (`pg_try_advisory_lock`, class `0x07720024`, on one non-pooled
    connection). A second process that cannot take it refuses with `account_writer_held` and does not
    send. Reads and the recorder do not take the lock. The lock is released on shutdown. A dropped
-   connection drops the lock, and the next write probes `pg_advisory_lock_held` on that session rather
-   than assuming it is still held. The Railway template still requires one server replica
+   connection drops the lock, and the next write looks up `pg_locks` for this session rather than
+   assuming it is still held. The Railway template still requires one server replica
    (`[single-server]`, gh#774). That check is defence in depth beside this lock.
 5. **Size / contract caps** — max contracts per order and per day per account; symbol denylist optional.
    Size must be greater than 0, and a limit or stop needs a positive price, before any audit row. Modify

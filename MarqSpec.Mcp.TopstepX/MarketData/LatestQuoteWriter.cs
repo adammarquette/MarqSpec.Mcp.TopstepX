@@ -275,6 +275,9 @@ public sealed class LatestQuoteWriter : BackgroundService
             }
             catch (Exception ex)
             {
+                // The flag was cleared before the pass. Without this, a throw leaves fronts
+                // unsubscribed until the next refresh.
+                Interlocked.Exchange(ref _resubscribe, 1);
                 _logger.LogWarning(ex, "A latest-quote pass failed. The recorder keeps running.");
                 try
                 {
@@ -448,9 +451,10 @@ public sealed class LatestQuoteWriter : BackgroundService
             MarketDataOptions.MaxLatestQuoteSubscribeBackoff);
         if (first)
         {
+            // Type only. The hub message is venue text and stays off this Warning.
             _logger.LogWarning(
-                exception,
-                "The latest-quote subscription was refused for {Instrument} ({ExceptionType}).",
+                "The latest-quote subscription was refused for {Instrument} ({ExceptionType}). "
+                + "The venue error is not logged.",
                 instrument,
                 exception.GetType().Name);
             return;

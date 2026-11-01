@@ -291,7 +291,9 @@ Read-only, idempotent. The latest stored bid, ask and last for one symbol (gh#35
 The tool is not registered unless `MarketData__GetQuoteEnabled` is on. That switch defaults
 off. The Railway server sets it on, and sets `MarketData__RecordLatestQuotes` false, so the
 server lists the tool and does not write quotes. The recorder sets
-`MarketData__RecordLatestQuotes` on and does not list the tool. Compose leaves both off.
+`MarketData__RecordLatestQuotes` on and does not set `GetQuoteEnabled`, so it does not
+list the tool. The template accepts only the literals `true` and `false`, or absence,
+for those switches. Compose leaves both off.
 This process cannot see the recorder's switch, which is why the two keys are separate.
 
 The front is the newest `LatestQuotes` row for the instrument, the contract the recorder

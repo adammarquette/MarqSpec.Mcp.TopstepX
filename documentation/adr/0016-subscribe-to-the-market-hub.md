@@ -644,12 +644,15 @@ session-login gate. The Railway template sets `MarketData__RecordLatestQuotes` t
 `"true"` on the recorder and to the literal `"false"` on the server.
 `evaluate-template.mjs` rejects any other value on the server (`server-records-quotes`).
 
-`get_quote` is registered only when `MarketData__GetQuoteEnabled` is true. The template
-sets that true on the server and does not set it on the recorder, so only the public
-server lists the tool. The check rejects the tool on without the recorder writing, and
-the recorder writing without the tool (`get-quote-without-recorder`,
-`quotes-recorded-unread`). Both off stays valid. The code default of both switches
-stays false, so compose and any process outside this template leave the feature off.
+`get_quote` is registered only when `MarketData__GetQuoteEnabled` is the exact literal
+`true`. The template sets that on the server and does not set it on the recorder, so
+only the public server lists the tool. The server's `GetQuoteEnabled`, the recorder's
+`RecordLatestQuotes`, and the recorder's `GetQuoteEnabled` must each be the literal
+`true`, the literal `false`, or absent (`quote-switch`). `True`, a padded value, and a
+shared or variable reference are rejected, because .NET would bind them as true. The
+check rejects the tool on without the recorder writing, and the recorder writing
+without the tool. Both off stays valid. The code default of both switches stays false,
+so compose and any process outside this template leave the feature off.
 
 ### What a read is
 

@@ -433,19 +433,51 @@ public sealed class VenueRequestPacerTests
     [Fact]
     public async Task YieldingToALiveReadIsNotReportedAsRatePacing()
     {
-        FakeTimeProvider clock = new(_start);
+        CountingClock clock = new(_start);
         VenueRequestPacer pacer = new(1, TimeSpan.FromSeconds(30), clock);
         pacer.ReserveSlot().Should().Be(_start);
         Task<TimeSpan> live = pacer.WaitForSlotAsync(CancellationToken.None).AsTask();
         Task<TimeSpan> backfill = pacer.WaitForBackfillSlotAsync(CancellationToken.None).AsTask();
-        live.IsCompleted.Should().BeFalse();
-        backfill.IsCompleted.Should().BeFalse();
+        using CancellationTokenSource budget = new(TimeSpan.FromSeconds(5));
+        while (clock.Timers < 2)
+        {
+            await Task.Delay(1, budget.Token);
+        }
 
         TimeSpan window = TimeSpan.FromSeconds(30) + VenueRequestPacer.BoundaryMargin;
+        int seen = clock.Timers;
         clock.Advance(window);
-        (await live.WaitAsync(TimeSpan.FromSeconds(5))).Should().Be(window);
-        clock.Advance(window);
-        (await backfill.WaitAsync(TimeSpan.FromSeconds(5))).Should().Be(window);
+        (await live.WaitAsync(budget.Token)).Should().Be(window);
+
+        // The live release is observed on a thread-pool continuation, which may arm a
+        // short yield before the rate wait. Advancing a full window over that short
+        // timer trims the reservation and the yield returns zero (gh#957). Follow
+        // only the timers armed after this release.
+        while (!backfill.IsCompleted)
+        {
+            while (clock.Timers == seen && !backfill.IsCompleted)
+            {
+                await Task.Delay(1, budget.Token);
+            }
+
+            if (backfill.IsCompleted)
+            {
+                break;
+            }
+
+            TimeSpan due = clock.Due(seen);
+            seen++;
+            if (due > TimeSpan.Zero)
+            {
+                clock.Advance(due);
+            }
+        }
+
+        // A re-plan that lands on the live slot arms one more margin of yield, which is
+        // not paced, so the rate wait that follows is one margin shorter.
+        TimeSpan paced = await backfill;
+        bool rateWait = paced == window || paced == window - VenueRequestPacer.BoundaryMargin;
+        rateWait.Should().BeTrue("the paced wait was {0}, not the yield", paced);
     }
 
     private static int WindowPeak(List<DateTimeOffset> sent, TimeSpan window)
@@ -469,5 +501,50 @@ public sealed class VenueRequestPacerTests
         }
 
         return peak;
+    }
+
+    /// <summary>Counts timers so a test can advance whichever wait was just armed.</summary>
+    private sealed class CountingClock : FakeTimeProvider
+    {
+        private readonly List<TimeSpan> _dues = [];
+
+        public CountingClock(DateTimeOffset start)
+            : base(start)
+        {
+        }
+
+        public int Timers
+        {
+            get
+            {
+                lock (_dues)
+                {
+                    return _dues.Count;
+                }
+            }
+        }
+
+        public TimeSpan Due(int index)
+        {
+            lock (_dues)
+            {
+                return _dues[index];
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ITimer timer = base.CreateTimer(callback, state, dueTime, period);
+            lock (_dues)
+            {
+                _dues.Add(dueTime);
+            }
+
+            return timer;
+        }
     }
 }

@@ -333,6 +333,31 @@ expect reject template startup-wait-zero 'Store__StartupWaitSeconds: "90"' 'Stor
 # gh#858: 0 retries is rejected by [app-restart]'s === 100 pin (the old >= 3 floor was dead and is gone).
 NAMED='[app-restart]' expect reject template app-restart-retries-zero 'const APP_RESTART_RETRIES = 100;' 'const APP_RESTART_RETRIES = 0;'
 expect reject template server-records-tape 'MarketData__RecordTape: "false"' 'MarketData__RecordTape: "true"'
+NAMED='[server-records-quotes]' expect reject template server-records-quotes \
+  'MarketData__RecordLatestQuotes: "false"' 'MarketData__RecordLatestQuotes: "true"'
+NAMED='[get-quote-without-recorder]' expect reject template get-quote-without-recorder \
+  'MarketData__RecordLatestQuotes: "true"' 'MarketData__RecordLatestQuotes: "false"'
+NAMED='[quotes-recorded-unread]' expect reject template quotes-recorded-unread \
+  'MarketData__GetQuoteEnabled: "true"' 'MarketData__GetQuoteEnabled: "false"'
+expect accept template quotes-off-together \
+  'MarketData__GetQuoteEnabled: "true"' 'MarketData__GetQuoteEnabled: "false"' \
+  'MarketData__RecordLatestQuotes: "true"' 'MarketData__RecordLatestQuotes: "false"'
+expect accept template quotes-both-on \
+  'MarketData__GetQuoteEnabled: "true",' 'MarketData__GetQuoteEnabled: "true",' \
+  'MarketData__RecordLatestQuotes: "true",' 'MarketData__RecordLatestQuotes: "true",'
+NAMED='[quote-switch]' expect reject template get-quote-enabled-true-word \
+  'MarketData__GetQuoteEnabled: "true"' 'MarketData__GetQuoteEnabled: "True"'
+NAMED='[quote-switch]' expect reject template get-quote-enabled-padded \
+  'MarketData__GetQuoteEnabled: "true"' 'MarketData__GetQuoteEnabled: " true"'
+NAMED='[quote-switch]' expect reject template get-quote-enabled-shared-ref \
+  'MarketData__GetQuoteEnabled: "true",' 'MarketData__GetQuoteEnabled: ctx.shared.PROJECTX_DATA_TIER,'
+NAMED='[quote-switch]' expect reject template recorder-quotes-true-word \
+  'MarketData__RecordLatestQuotes: "true"' 'MarketData__RecordLatestQuotes: "True"'
+NAMED='[quote-switch]' expect reject template recorder-get-quote-true-word \
+  'MarketData__RecordLatestQuotes: "true",' 'MarketData__RecordLatestQuotes: "true",
+      MarketData__GetQuoteEnabled: "True",'
+NAMED='[quotes-recorded-unread]' expect reject template get-quote-enabled-removed \
+  'MarketData__GetQuoteEnabled: "true",' ''
 expect reject template recorder-replicas-3 'replicas: 1,
     deploy: {
       ...RESTART,' 'replicas: 3,

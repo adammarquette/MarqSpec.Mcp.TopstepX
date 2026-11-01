@@ -238,7 +238,50 @@ public sealed class TradingRiskGateLegacyStageTests
             .ToList();
         execution.Should().HaveCount(5);
         execution.Should().OnlyContain(span =>
-            (string?)span.GetTagItem(HostTelemetry.RefusalTag) == ExecutionWriteRefusal.UnknownAccountStage);
+            (string?)span.GetTagItem(HostTelemetry.RefusalTag) == ExecutionWriteRefusal.UnknownAccountStage
+            && (string?)span.GetTagItem(HostTelemetry.ReplayTag) == ExecutionWriteReplay.False);
+        execution.Select(span => span.GetTagItem(HostTelemetry.OperationTag)).Should().BeEquivalentTo(
+            new object?[]
+            {
+                ExecutionOperation.PlaceOrderOperation,
+                ExecutionOperation.ModifyOrderOperation,
+                ExecutionOperation.CancelOrderOperation,
+                ExecutionOperation.ClosePositionOperation,
+                ExecutionOperation.PartialClosePositionOperation,
+            });
+    }
+
+    [Fact]
+    public async Task TradingOrderTools_LiveUnknownStage_CountsOnceAndTagsTheSpan()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Writes(telemetry);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        StageRig rig = OpenRig(
+            telemetry,
+            new TradingExecutionOptions { Enabled = true },
+            Account(UnknownAccountId, NearMissName));
+        await new TradingOrderTools(rig.Gate).SubmitPlace(
+            UnknownAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "k-place-live",
+            dryRun: false);
+
+        AssertVendorCalls(rig.Vendor, place: 0);
+        CollectedMeasurement<long> refused = writes.GetMeasurementSnapshot().Should().ContainSingle().Subject;
+        refused.Value.Should().Be(1);
+        refused.Tags[HostTelemetry.OperationTag].Should().Be(ExecutionOperation.PlaceOrderOperation);
+        refused.Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.UnknownAccountStage);
+        refused.Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
+        Activity span = spans.Should().ContainSingle(candidate =>
+            candidate.OperationName.StartsWith("execution.", StringComparison.Ordinal)).Subject;
+        span.GetTagItem(HostTelemetry.OperationTag).Should().Be(ExecutionOperation.PlaceOrderOperation);
+        span.GetTagItem(HostTelemetry.RefusalTag).Should().Be(ExecutionWriteRefusal.UnknownAccountStage);
+        span.GetTagItem(HostTelemetry.ReplayTag).Should().Be(ExecutionWriteReplay.False);
     }
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Diagnostics.Metrics;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX;
 using MarqSpec.Client.ProjectX.Exceptions;
@@ -7,6 +8,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.Configuration;
 using MarqSpec.Mcp.TopstepX.Venue;
+using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -67,6 +69,37 @@ public sealed class ProjectXExecutionGatewayTests
         result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
         result.GateRefusal.Should().Be(ExpectedRefusal(scenario, accountId));
         result.IsRetrySafe.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PlaceOrder_UnknownStage_DoesNotRecordAWritesMeasurement()
+    {
+        // The risk gate already counted the refusal. The gateway's own stage check must not
+        // add a second one.
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.ExecutionWritesInstrument);
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        TradingExecutionGate gate = new(
+            TradingOptionsMonitors.Fixed(new TradingExecutionOptions { Enabled = true }),
+            new FakeKillSwitch { Engaged = false },
+            new ProjectXAccountStageResolver());
+        IExecutionGateway gateway = new ProjectXExecutionGateway(
+            gate,
+            new StubAccountsGateway(AccountsFor(GateScenario.Unknown)),
+            client,
+            new TradingWriteVenueAccountCache(),
+            telemetry,
+            NullLogger<ProjectXExecutionGateway>.Instance);
+
+        ExecutionWriteResult result = await gateway.PlaceOrder(
+            SamplePlaceCommand(UnknownAccountId),
+            CancellationToken.None);
+
+        fake.PlaceOrderCount.Should().Be(0);
+        result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
+        result.GateRefusal.Should().Be(TradingExecutionRefusal.UnknownAccountStage(UnknownAccountId));
+        writes.GetMeasurementSnapshot().Should().BeEmpty();
     }
 
     [Fact]

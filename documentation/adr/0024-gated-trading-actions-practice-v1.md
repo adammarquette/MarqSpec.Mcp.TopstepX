@@ -256,7 +256,10 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    row commit in one save. The first attempt always writes. Both rows carry one `FinaliseId`. A failed
    save drops the rows it had tracked. Only the retry reads the store, and only rows with that id, so
    a concurrent unkeyed refusal is not this one and a lost acknowledgement cannot insert a second
-   reversal or a second `Refused` row. If both attempts fail,
+   reversal or a second `Refused` row. The partial unique index
+   `IX_TradingAuditLog_FinaliseId_Outcome` on `(FinaliseId, Outcome)`, where `FinaliseId` is not
+   null, is what keeps that to one reversal and one `Refused` row per attempt
+   (`20261101114605_AddTradingAuditFinaliseId`). If both attempts fail,
    nothing new is written. The pre-send claim stays `Unknown`, a cap
    charge that already committed stays charged, a same-key retry replays `OutcomeUnknown`, and the
    caller needs a fresh idempotency key. Nothing was sent. A drop during that call is the

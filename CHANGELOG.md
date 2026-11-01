@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **One trading writer per account** (gh#772, ADR-0024). A session advisory lock is taken
   before a trading write. A second replica refuses with `account_writer_held`. Reads and the
   recorder are not locked. The template's one-replica check (gh#774) stays as defence in depth.
+  Migration `20261101114605_AddTradingAuditFinaliseId` adds nullable `FinaliseId`. The partial
+  unique index on `(FinaliseId, Outcome)` allows one reversal and one `Refused` row per attempt.
 - **Unknown account stage is visible on the writes counter** (gh#732, ADR-0024).
   The tag and the unwired alert are specified in
   [deployment.md](documentation/deployment.md#unknown-account-stage-gh732).

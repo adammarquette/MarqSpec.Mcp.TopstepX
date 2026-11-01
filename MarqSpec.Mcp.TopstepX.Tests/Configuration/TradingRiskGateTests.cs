@@ -66,7 +66,7 @@ public sealed class TradingRiskGateTests
         int accountId,
         string accountName,
         AccountStage expectedStage,
-        bool expectSignal)
+        bool unknownStage)
     {
         TradingRiskGate gate = Gate(
             new TradingExecutionOptions { Enabled = true },
@@ -81,7 +81,7 @@ public sealed class TradingRiskGateTests
         result.Outcome.Should().Be(TradingAttemptOutcome.Refused);
         result.ParsedStage.Should().Be(expectedStage);
 
-        result.Refusal.Should().Be(expectSignal
+        result.Refusal.Should().Be(unknownStage
             ? TradingExecutionRefusal.UnknownAccountStage(accountId)
             : TradingExecutionRefusal.NonPracticeAccountStage(accountId, expectedStage));
     }

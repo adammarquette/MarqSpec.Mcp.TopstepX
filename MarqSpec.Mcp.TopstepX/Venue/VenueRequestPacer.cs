@@ -346,7 +346,11 @@ public sealed class VenueRequestPacer
         return wake;
     }
 
-    /// <summary>Drops rows whose window has already closed. The queue is oldest first.</summary>
+    /// <summary>
+    /// Drops rows whose window has already closed. The queue is oldest first.
+    /// A future time, and a row whose waiter was cancelled, both stay until that
+    /// window closes. Removing either early would free budget the vendor still holds.
+    /// </summary>
     private void Trim(DateTimeOffset now)
     {
         while (_reserved.Count > 0

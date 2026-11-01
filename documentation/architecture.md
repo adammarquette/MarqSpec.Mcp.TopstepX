@@ -1171,9 +1171,10 @@ stack, `BarBackfillLane` is set on an `AsyncLocal`, and `ProjectXMarketDataGatew
 `WaitForBackfillSlotAsync` instead of `WaitForSlotAsync`. Live and released backfill share one
 queue, trimmed to the window before each decision. The combined cap is 50 history requests in
 any 30 seconds. Backfill's own cap is 20. A live read waits only for backfill already sent, so
-that wait is at most 20. Backfill does not book a new slot while a live read is waiting. A lost
-lock stops the pass and the pages already finished stay on the counters and on
-`get_recorder_health`.
+that wait is at most those 20 requests, one window. Backfill does not book a new slot while a
+live read is waiting, and a busy tool can hold the pass back for as long as the reads continue.
+That starvation is the yield. A lost lock stops the pass and the pages already
+finished stay on the counters and on `get_recorder_health`.
 
 Empty answers use the cache's coverage rule: a range ending within 2 days expires after 15
 minutes, and an older empty range is permanent until its `BarCoverage` rows are deleted.

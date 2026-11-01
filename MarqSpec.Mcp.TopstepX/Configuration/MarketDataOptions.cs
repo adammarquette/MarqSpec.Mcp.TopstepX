@@ -166,6 +166,62 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </remarks>
     public bool RecordTape { get; init; }
 
+    /// <summary>How often a latest-quote flush may run. Shipped as one second.</summary>
+    public static readonly TimeSpan DefaultLatestQuoteFlush = TimeSpan.FromSeconds(1);
+
+    /// <summary>The shortest <see cref="LatestQuoteFlush"/> startup will accept.</summary>
+    public static readonly TimeSpan MinLatestQuoteFlush = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>The longest <see cref="LatestQuoteFlush"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxLatestQuoteFlush = TimeSpan.FromSeconds(30);
+
+    /// <summary>How often fronts are resolved again. Shipped as fifteen minutes.</summary>
+    public static readonly TimeSpan DefaultLatestQuoteFrontRefresh = TimeSpan.FromMinutes(15);
+
+    /// <summary>The shortest <see cref="LatestQuoteFrontRefresh"/> startup will accept.</summary>
+    public static readonly TimeSpan MinLatestQuoteFrontRefresh = TimeSpan.FromMinutes(1);
+
+    /// <summary>The longest <see cref="LatestQuoteFrontRefresh"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxLatestQuoteFrontRefresh = TimeSpan.FromHours(6);
+
+    /// <summary>
+    /// Whether the recorder may upsert the latest quote for each contract it is already
+    /// listening to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off by default.</b> The writer runs only when the transport is HTTP, <see cref="RecordTape"/>
+    /// is on, and this switch is on. It uses the hub the tape recorder already connected. It does
+    /// not open a market hub of its own, and it does not touch the session-login gate. A server
+    /// process with <see cref="RecordTape"/> off never subscribes.
+    /// </para>
+    /// <para>
+    /// Quotes are coalesced to one row per contract and flushed at most once per
+    /// <see cref="LatestQuoteFlush"/>. The table is a cache, not a tape.
+    /// </para>
+    /// </remarks>
+    public bool RecordLatestQuotes { get; init; }
+
+    /// <summary>
+    /// The shortest gap between latest-quote flushes.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="MinLatestQuoteFlush"/> through <see cref="MaxLatestQuoteFlush"/>. Quotes that
+    /// arrive inside the gap collapse to the latest one per contract. A value outside that range
+    /// fails startup, naming <c>MarketData:LatestQuoteFlush</c>.
+    /// </remarks>
+    public TimeSpan LatestQuoteFlush { get; init; } = DefaultLatestQuoteFlush;
+
+    /// <summary>
+    /// How often the writer resolves fronts again and drops a contract that is no longer front.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="MinLatestQuoteFrontRefresh"/> through <see cref="MaxLatestQuoteFrontRefresh"/>.
+    /// A refused subscribe is retried on this same pass, without waiting for a hub reconnect.
+    /// A value outside that range fails startup, naming <c>MarketData:LatestQuoteFrontRefresh</c>.
+    /// </remarks>
+    public TimeSpan LatestQuoteFrontRefresh { get; init; } = DefaultLatestQuoteFrontRefresh;
+
     /// <summary>
     /// Whether a session conflict stops the recorder instead of reconnecting.
     /// </summary>
@@ -339,6 +395,23 @@ public sealed partial class MarketDataOptions : IValidatableObject
                 SectionName + ":SessionConflictBackoff must be from 00:00:00 through 00:02:00 inclusive. "
                 + "It was '" + SessionConflictBackoff.ToString("c", CultureInfo.InvariantCulture) + "'.",
                 [nameof(SessionConflictBackoff)]));
+        }
+
+        if (LatestQuoteFlush < MinLatestQuoteFlush || LatestQuoteFlush > MaxLatestQuoteFlush)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":LatestQuoteFlush must be from 00:00:00.200 through 00:00:30 inclusive. "
+                + "It was '" + LatestQuoteFlush.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(LatestQuoteFlush)]));
+        }
+
+        if (LatestQuoteFrontRefresh < MinLatestQuoteFrontRefresh
+            || LatestQuoteFrontRefresh > MaxLatestQuoteFrontRefresh)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":LatestQuoteFrontRefresh must be from 00:01:00 through 06:00:00 inclusive. "
+                + "It was '" + LatestQuoteFrontRefresh.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(LatestQuoteFrontRefresh)]));
         }
 
         BarSessionCalendar calendar;

@@ -10,9 +10,10 @@ gh#215 (`Trades`, `TapeCoverage`, `FootprintCells`),
 gh#404 (`TapeLeases`),
 gh#499 (`SessionBars`),
 gh#501 (`SessionIndicatorValues`),
-gh#709 (`TradingAuditLog`)
+gh#709 (`TradingAuditLog`),
+gh#351 (`LatestQuotes`)
 
-One Postgres database, twelve tables — §4 is a retired number, not a thirteenth. Entities live in
+One Postgres database, fourteen tables — §4 is a retired number. Entities live in
 `MarqSpec.Mcp.TopstepX.Data/Entities/`; the schema is whatever the migrations say, and this page is kept in
 lockstep with them in the same PR.
 
@@ -803,6 +804,32 @@ pass that finds pending rows logs the count. The file id is written in a second 
 the upload returns. Not a hypertable.
 
 Index: `(Day, UploadState)` — the read that decision would make.
+
+## §15 `LatestQuotes` — one row per contract
+
+| Column | Type | Note |
+|---|---|---|
+| `Venue` | `varchar(64)` | PK |
+| `ContractId` | `varchar(64)` | PK · the contract the recorder subscribed |
+| `Instrument` | `varchar(32)` | Normalised symbol. Not part of the key |
+| `Bid` | `numeric(18,8)` | Best bid |
+| `Ask` | `numeric(18,8)` | Best ask |
+| `Last` | `numeric(18,8)` | Last trade |
+| `Volume` | `bigint` | Session volume, in contracts. Zero is what the venue sent |
+| `QuoteTimeUtc` | `timestamptz` | Nullable. The venue stamp, when the payload had one |
+| `ReceivedAt` | `timestamptz` | Database `clock_timestamp()` at upsert |
+
+The recorder upserts this row from the market hub it already holds, at most once per
+`MarketData__LatestQuoteFlush`, and only when that process is also recording tape.
+`MarketData__RecordLatestQuotes` defaults off. Railway does not turn the switch on, so the
+feature is inert in production until the deployment slice. A server that is not the recorder
+does not open a hub to fill the table. A read ages with `clock_timestamp() - ReceivedAt` on
+that same clock. A flush delay makes the stamp up to one flush gap later than the hub event.
+An older receipt cannot replace a newer one. This table is not subject to retention: gh#763
+will exclude it. A rolled contract's row stays until a later slice deletes it. No tool reads
+the table yet. Older quotes are not kept. This is not the tape. Not a hypertable.
+
+No extra index. The key is `(Venue, ContractId)`.
 
 ---
 *Changing an entity or a migration? Update the section above in the same PR. A data dictionary that lags the

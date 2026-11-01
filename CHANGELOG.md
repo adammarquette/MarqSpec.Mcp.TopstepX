@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The recorder can store the latest quote per contract** (gh#351). `LatestQuotes` is one row
+  per contract, upserted from the hub the tape recorder already holds. Volume is `bigint`.
+  `ReceivedAt` is the database clock. `MarketData__RecordLatestQuotes` defaults off and does
+  not open a hub. Railway does not turn the switch on, so the feature is inert in production
+  until the deployment slice. Flushes are at most once per `MarketData__LatestQuoteFlush`
+  (one second). Fronts are resolved again on `MarketData__LatestQuoteFrontRefresh`. No tool
+  reads the table yet.
+
 ### Fixed
 
 - **Expected tape-volume prepare logs are not Errors** (gh#894).

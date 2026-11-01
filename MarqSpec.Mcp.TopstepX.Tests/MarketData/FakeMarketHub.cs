@@ -26,6 +26,18 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public int PriceSubscriptions { get; private set; }
 
+    /// <summary>How many times <see cref="SubscribeToPriceUpdatesAsync"/> was asked, including a refusal.</summary>
+    public int PriceSubscribeAttempts { get; private set; }
+
+    /// <summary>How many times <see cref="UnsubscribeFromPriceUpdatesAsync"/> ran.</summary>
+    public int PriceUnsubscribes { get; private set; }
+
+    /// <summary>Thrown once from the next <see cref="SubscribeToPriceUpdatesAsync"/>, then cleared.</summary>
+    public Exception? PriceSubscribeThrows { get; set; }
+
+    /// <summary>Contract ids currently subscribed for quotes.</summary>
+    public List<string> PriceSubscriptionIds { get; } = [];
+
     public int OrderBookSubscriptions { get; private set; }
 
     public List<string> TradeSubscriptions { get; } = [];
@@ -127,6 +139,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     {
         MarketDisconnects++;
         TradeSubscriptions.Clear();
+        PriceSubscriptionIds.Clear();
         EnterMarketState(ConnectionState.Disconnected);
         return Task.CompletedTask;
     }
@@ -144,6 +157,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     public void SimulateMarketDisconnect()
     {
         TradeSubscriptions.Clear();
+        PriceSubscriptionIds.Clear();
         EnterMarketState(ConnectionState.Disconnected);
     }
 
@@ -154,6 +168,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     public void SimulateSessionConflict(string message)
     {
         TradeSubscriptions.Clear();
+        PriceSubscriptionIds.Clear();
         if (MarketHubState == ConnectionState.Disconnected)
         {
             ConnectionStatusChanged?.Invoke(this, new ConnectionStatusChange
@@ -187,6 +202,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     public void SimulateReconnecting(string? message = null)
     {
         TradeSubscriptions.Clear();
+        PriceSubscriptionIds.Clear();
         EnterMarketState(
             ConnectionState.Reconnecting,
             message,
@@ -230,12 +246,37 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public Task SubscribeToPriceUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
     {
+        PriceSubscribeAttempts++;
+        if (PriceSubscribeThrows is { } refused)
+        {
+            PriceSubscribeThrows = null;
+            throw refused;
+        }
+
         PriceSubscriptions++;
+        PriceSubscriptionIds.Add(contractId);
         return Task.CompletedTask;
     }
 
-    public Task UnsubscribeFromPriceUpdatesAsync(string contractId, CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
+    /// <summary>Raises a quote when the contract is in <see cref="PriceSubscriptionIds"/>.</summary>
+    /// <param name="update">The quote. <see cref="PriceUpdate.ContractId"/> is the hub argument.</param>
+    public void RaiseQuote(PriceUpdate update)
+    {
+        if (string.IsNullOrWhiteSpace(update.ContractId)
+            || !PriceSubscriptionIds.Contains(update.ContractId))
+        {
+            return;
+        }
+
+        PriceUpdateReceived?.Invoke(this, update);
+    }
+
+    public Task UnsubscribeFromPriceUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
+    {
+        PriceUnsubscribes++;
+        PriceSubscriptionIds.RemoveAll(id => id == contractId);
+        return Task.CompletedTask;
+    }
 
     public Task SubscribeToOrderBookUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
     {

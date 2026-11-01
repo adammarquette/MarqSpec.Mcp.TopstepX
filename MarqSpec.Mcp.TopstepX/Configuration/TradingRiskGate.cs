@@ -35,7 +35,6 @@ public sealed class TradingRiskGate
     private readonly IExecutionGateway _gateway;
     private readonly IMarketDataGateway _marketData;
     private readonly IAccountStageResolver _stageResolver;
-    private readonly ITradingUnknownStageRefusalSignal _unknownStageSignal;
     private readonly ITradingDailyCapCoordinator _dailyCap;
     private readonly ITradingAuditLogWriter _auditLog;
     private readonly TradingContractDenylist _contractDenylist;
@@ -75,7 +74,6 @@ public sealed class TradingRiskGate
         IExecutionGateway gateway,
         IMarketDataGateway marketData,
         IAccountStageResolver stageResolver,
-        ITradingUnknownStageRefusalSignal unknownStageSignal,
         ITradingDailyCapCoordinator dailyCap,
         ITradingAuditLogWriter auditLog,
         TradingContractDenylist contractDenylist,
@@ -86,7 +84,6 @@ public sealed class TradingRiskGate
             gateway,
             marketData,
             stageResolver,
-            unknownStageSignal,
             dailyCap,
             auditLog,
             contractDenylist,
@@ -106,7 +103,6 @@ public sealed class TradingRiskGate
     /// <param name="gateway">The venue write seam.</param>
     /// <param name="marketData">Account, order and position reads.</param>
     /// <param name="stageResolver">Practice-stage parsing.</param>
-    /// <param name="unknownStageSignal">Signal raised when a write is refused because the stage cannot be read.</param>
     /// <param name="dailyCap">The session-day lock and contract rollup.</param>
     /// <param name="auditLog">The append-only audit log.</param>
     /// <param name="contractDenylist">The contract denylist.</param>
@@ -120,7 +116,6 @@ public sealed class TradingRiskGate
         IExecutionGateway gateway,
         IMarketDataGateway marketData,
         IAccountStageResolver stageResolver,
-        ITradingUnknownStageRefusalSignal unknownStageSignal,
         ITradingDailyCapCoordinator dailyCap,
         ITradingAuditLogWriter auditLog,
         TradingContractDenylist contractDenylist,
@@ -132,7 +127,6 @@ public sealed class TradingRiskGate
         _gateway = gateway;
         _marketData = marketData;
         _stageResolver = stageResolver;
-        _unknownStageSignal = unknownStageSignal;
         _dailyCap = dailyCap;
         _auditLog = auditLog;
         _contractDenylist = contractDenylist;
@@ -876,8 +870,7 @@ public sealed class TradingRiskGate
         {
             TradingExecutionRefusal? stageRefusal = _executionGate.RefuseIfStageBlocksWrite(
                 stage,
-                accountId,
-                _unknownStageSignal);
+                accountId);
             return (stage, stageRefusal);
         }
 
@@ -1070,7 +1063,6 @@ public sealed class TradingRiskGate
         _executionGate.RefuseWriteUnlessPermittedAsync(
             accountId,
             _marketData,
-            _unknownStageSignal,
             cancellationToken,
             _accountCache.TryGet(accountId));
 

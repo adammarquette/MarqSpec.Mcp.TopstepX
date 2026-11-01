@@ -1303,7 +1303,6 @@ public sealed class TradingOrderToolGateTests
             _gateway,
             new StubMarketDataGateway(accounts, orders, () => _accountsFailure),
             stageResolver,
-            new RecordingUnknownSignal(),
             _daily,
             _audit,
             denylist,
@@ -1437,13 +1436,6 @@ public sealed class TradingOrderToolGateTests
     private sealed class FakeKillSwitch : ITradingKillSwitch
     {
         public bool IsEngaged { get; set; }
-    }
-
-    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public void UnknownStageWriteRefused(int accountId)
-        {
-        }
     }
 
     private sealed class CountingGateway : IExecutionGateway

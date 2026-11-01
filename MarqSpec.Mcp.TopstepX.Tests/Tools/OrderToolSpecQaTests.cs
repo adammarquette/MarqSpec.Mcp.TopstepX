@@ -44,7 +44,6 @@ public sealed class OrderToolSpecQaTests
     private readonly QaAudit _audit = new();
     private readonly QaKill _kill = new();
     private readonly QaMarket _market = new(_accounts);
-    private readonly QaSignal _signal = new();
     private readonly ProjectXAccountStageResolver _stage = new();
 
     public OrderToolSpecQaTests() => _gateway = new QaGateway(_daily);
@@ -471,7 +470,6 @@ public sealed class OrderToolSpecQaTests
             _gateway,
             _market,
             _stage,
-            _signal,
             _daily,
             _audit,
             new TradingContractDenylist(Options.Create(options), _registry),
@@ -497,13 +495,6 @@ public sealed class OrderToolSpecQaTests
     private sealed class QaKill : ITradingKillSwitch
     {
         public bool IsEngaged { get; set; }
-    }
-
-    private sealed class QaSignal : ITradingUnknownStageRefusalSignal
-    {
-        public void UnknownStageWriteRefused(int accountId)
-        {
-        }
     }
 
     private sealed class QaGateway(QaDailyCap daily) : IExecutionGateway

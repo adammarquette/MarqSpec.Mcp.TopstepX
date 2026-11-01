@@ -31,13 +31,11 @@ public sealed class ProjectXExecutionGatewayTests
     [MemberData(nameof(GateRefusalCases))]
     public async Task Write_DoesNotCallTheClient_WhenTheGateRefuses(WriteVerb verb, GateScenario scenario)
     {
-        RecordingUnknownSignal unknownSignal = new();
         (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
         StubAccountsGateway accountsGateway = new(AccountsFor(scenario));
         IExecutionGateway gateway = Gateway(
             client,
             accountsGateway,
-            unknownSignal,
             enabled: scenario != GateScenario.Disabled,
             killSwitchEngaged: scenario == GateScenario.KillSwitch);
 
@@ -48,15 +46,6 @@ public sealed class ProjectXExecutionGatewayTests
         result.Outcome.Should().Be(ExecutionWriteOutcome.NotTransmitted);
         result.GateRefusal.Should().Be(ExpectedRefusal(scenario, accountId));
         result.IsRetrySafe.Should().BeTrue();
-
-        if (scenario == GateScenario.Unknown)
-        {
-            unknownSignal.Invocations.Should().Be(1);
-        }
-        else
-        {
-            unknownSignal.Invocations.Should().Be(0);
-        }
     }
 
     [Fact]
@@ -67,7 +56,6 @@ public sealed class ProjectXExecutionGatewayTests
         IExecutionGateway gateway = Gateway(
             client,
             accountsGateway,
-            new RecordingUnknownSignal(),
             enabled: true,
             killSwitchEngaged: false);
 
@@ -557,14 +545,12 @@ public sealed class ProjectXExecutionGatewayTests
         Gateway(
             client,
             new StubAccountsGateway(accounts),
-            new RecordingUnknownSignal(),
             enabled,
             killSwitchEngaged);
 
     private static IExecutionGateway Gateway(
         IProjectXApiClient client,
         StubAccountsGateway accountsGateway,
-        RecordingUnknownSignal unknownSignal,
         bool enabled,
         bool killSwitchEngaged)
     {
@@ -576,7 +562,6 @@ public sealed class ProjectXExecutionGatewayTests
         return new ProjectXExecutionGateway(
             gate,
             accountsGateway,
-            unknownSignal,
             client,
             new TradingWriteVenueAccountCache(),
             new HostTelemetry(),
@@ -623,13 +608,6 @@ public sealed class ProjectXExecutionGatewayTests
         public bool Engaged { get; init; }
 
         public bool IsEngaged => Engaged;
-    }
-
-    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public int Invocations { get; private set; }
-
-        public void UnknownStageWriteRefused(int accountId) => Invocations++;
     }
 
     private sealed class StubAccountsGateway(IReadOnlyList<VenueAccount> accounts) : IMarketDataGateway

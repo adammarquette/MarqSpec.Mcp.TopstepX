@@ -23,7 +23,6 @@ public sealed class TradingRiskGateTests
     private const string CleContract = "CON.F.US.CLE.Z26";
 
     private readonly FakeKillSwitch _killSwitch = new();
-    private readonly RecordingUnknownSignal _unknownSignal = new();
     private readonly FakeExecutionGateway _gateway = new();
     private readonly RecordingAuditLog _audit = new();
     private readonly FakeDailyCapCoordinator _daily = new();
@@ -82,16 +81,9 @@ public sealed class TradingRiskGateTests
         result.Outcome.Should().Be(TradingAttemptOutcome.Refused);
         result.ParsedStage.Should().Be(expectedStage);
 
-        if (expectSignal)
-        {
-            _unknownSignal.RefusedAccountIds.Should().ContainSingle().Which.Should().Be(accountId);
-            result.Refusal.Should().Be(TradingExecutionRefusal.UnknownAccountStage(accountId));
-        }
-        else
-        {
-            _unknownSignal.RefusedAccountIds.Should().BeEmpty();
-            result.Refusal.Should().Be(TradingExecutionRefusal.NonPracticeAccountStage(accountId, expectedStage));
-        }
+        result.Refusal.Should().Be(expectSignal
+            ? TradingExecutionRefusal.UnknownAccountStage(accountId)
+            : TradingExecutionRefusal.NonPracticeAccountStage(accountId, expectedStage));
     }
 
     [Fact]
@@ -691,7 +683,6 @@ public sealed class TradingRiskGateTests
             _gateway,
             new StubMarketDataGateway(resolvedAccounts, orders ?? [], onAccounts),
             stageResolver,
-            _unknownSignal,
             _daily,
             _audit,
             denylist,
@@ -990,13 +981,6 @@ public sealed class TradingRiskGateTests
                 return ValueTask.CompletedTask;
             }
         }
-    }
-
-    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public List<int> RefusedAccountIds { get; } = [];
-
-        public void UnknownStageWriteRefused(int accountId) => RefusedAccountIds.Add(accountId);
     }
 
     private static class ExecutionWriteResultFactory

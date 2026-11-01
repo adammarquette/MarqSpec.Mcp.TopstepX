@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Globalization;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX;
@@ -9,6 +11,7 @@ using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.Venue;
+using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -46,6 +49,7 @@ public sealed class TradingRiskGateLegacyStageTests
         _stageResolver.ResolveFromAccountName(LegacyPracticeName).Should().Be(AccountStage.Practice);
 
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Writes(telemetry);
         StageRig rig = OpenRig(
             telemetry,
             new TradingExecutionOptions { Enabled = true },
@@ -61,6 +65,8 @@ public sealed class TradingRiskGateLegacyStageTests
         result.Refusal.Should().BeNull();
         result.WriteResult.Should().Be(AcknowledgedWrite());
         AssertVendorCalls(rig.Vendor, place: 1);
+        writes.GetMeasurementSnapshot().Should().NotContain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.RefusalTag], ExecutionWriteRefusal.UnknownAccountStage));
     }
 
     [Fact]
@@ -69,6 +75,7 @@ public sealed class TradingRiskGateLegacyStageTests
         _stageResolver.ResolveFromAccountName(NearMissName).Should().Be(AccountStage.Unknown);
 
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Writes(telemetry);
         StageRig rig = OpenRig(
             telemetry,
             new TradingExecutionOptions { Enabled = true },
@@ -84,6 +91,189 @@ public sealed class TradingRiskGateLegacyStageTests
         result.Refusal.Should().Be(TradingExecutionRefusal.UnknownAccountStage(UnknownAccountId));
         result.WriteResult.Should().BeNull();
         AssertVendorCalls(rig.Vendor, place: 0);
+        IReadOnlyList<CollectedMeasurement<long>> refused = writes.GetMeasurementSnapshot();
+        refused.Should().ContainSingle();
+        refused[0].Value.Should().Be(1);
+        refused[0].Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.UnknownAccountStage);
+        refused[0].Tags[HostTelemetry.OperationTag].Should().Be(ExecutionOperation.PlaceOrderOperation);
+        refused[0].Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_RefusesDryRun_WhenAccountNameIsPracxNearMiss_AndCountsOnce()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Writes(telemetry);
+        StageRig rig = OpenRig(
+            telemetry,
+            new TradingExecutionOptions { Enabled = true },
+            Account(UnknownAccountId, NearMissName));
+
+        TradingRiskGateResult result = await rig.Gate.SubmitPlace(
+            Place(UnknownAccountId),
+            new TradingRiskAttemptContext(DryRun: true),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        result.ParsedStage.Should().Be(AccountStage.Unknown);
+        result.Refusal.Should().Be(TradingExecutionRefusal.UnknownAccountStage(UnknownAccountId));
+        result.WriteResult.Should().BeNull();
+        AssertVendorCalls(rig.Vendor, place: 0);
+        IReadOnlyList<CollectedMeasurement<long>> refused = writes.GetMeasurementSnapshot();
+        refused.Should().ContainSingle();
+        refused[0].Value.Should().Be(1);
+        refused[0].Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.UnknownAccountStage);
+        refused[0].Tags[HostTelemetry.OperationTag].Should().Be(ExecutionOperation.PlaceOrderOperation);
+        refused[0].Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_CountsUnknownStageOnce_ForEveryWriteTool()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Writes(telemetry);
+        StageRig rig = OpenRig(
+            telemetry,
+            new TradingExecutionOptions { Enabled = true },
+            Account(UnknownAccountId, NearMissName));
+
+        await rig.Gate.SubmitPlace(Place(UnknownAccountId), Live(), CancellationToken.None);
+        await rig.NextGate().SubmitModify(
+            new ExecutionModifyOrderCommand(UnknownAccountId, OrderId: 1, Size: 1, null, null),
+            Live(),
+            CancellationToken.None);
+        await rig.NextGate().SubmitCancel(
+            new ExecutionCancelOrderCommand(UnknownAccountId, OrderId: 1),
+            Live(),
+            CancellationToken.None);
+        await rig.NextGate().SubmitClose(
+            new ExecutionClosePositionCommand(UnknownAccountId, MesContract),
+            Live(),
+            CancellationToken.None);
+        await rig.NextGate().SubmitPartialClose(
+            new ExecutionPartialClosePositionCommand(UnknownAccountId, MesContract, Size: 1),
+            new TradingRiskAttemptContext(DryRun: true),
+            CancellationToken.None);
+
+        IReadOnlyList<CollectedMeasurement<long>> refused = writes.GetMeasurementSnapshot();
+        refused.Should().HaveCount(5);
+        foreach (CollectedMeasurement<long> measurement in refused)
+        {
+            measurement.Value.Should().Be(1);
+            measurement.Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.UnknownAccountStage);
+            measurement.Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
+        }
+
+        refused.Select(measurement => measurement.Tags[HostTelemetry.OperationTag]).Should().BeEquivalentTo(
+            new object?[]
+            {
+                ExecutionOperation.PlaceOrderOperation,
+                ExecutionOperation.ModifyOrderOperation,
+                ExecutionOperation.CancelOrderOperation,
+                ExecutionOperation.ClosePositionOperation,
+                ExecutionOperation.PartialClosePositionOperation,
+            });
+        foreach (CollectedMeasurement<long> measurement in refused)
+        {
+            measurement.Tags.Select(tag => tag.Key).Should().BeEquivalentTo(
+                HostTelemetry.OperationTag,
+                HostTelemetry.RefusalTag,
+                HostTelemetry.ReplayTag);
+        }
+    }
+
+    [Fact]
+    public async Task TradingOrderTools_DryRunUnknownStage_CountsOnceAndTagsTheSpan()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Writes(telemetry);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        StageRig rig = OpenRig(
+            telemetry,
+            new TradingExecutionOptions { Enabled = true },
+            Account(UnknownAccountId, NearMissName));
+        await new TradingOrderTools(rig.Gate).SubmitPlace(
+            UnknownAccountId,
+            MesContract,
+            ExecutionOrderType.Market,
+            VenueSide.Buy,
+            1,
+            "k-place",
+            dryRun: true);
+        await new TradingOrderTools(rig.NextGate()).SubmitModify(
+            UnknownAccountId, 1, "k-modify", dryRun: true);
+        await new TradingOrderTools(rig.NextGate()).SubmitCancel(
+            UnknownAccountId, 1, "k-cancel", dryRun: true);
+        await new TradingOrderTools(rig.NextGate()).SubmitClose(
+            UnknownAccountId, MesContract, "k-close", dryRun: true);
+        await new TradingOrderTools(rig.NextGate()).SubmitPartialClose(
+            UnknownAccountId, MesContract, 1, "k-partial", dryRun: true);
+
+        AssertVendorCalls(rig.Vendor, place: 0);
+        IReadOnlyList<CollectedMeasurement<long>> refused = writes.GetMeasurementSnapshot();
+        refused.Should().HaveCount(5);
+        foreach (CollectedMeasurement<long> measurement in refused)
+        {
+            measurement.Value.Should().Be(1);
+            measurement.Tags[HostTelemetry.RefusalTag].Should().Be(ExecutionWriteRefusal.UnknownAccountStage);
+            measurement.Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
+            measurement.Tags.Select(tag => tag.Key).Should().BeEquivalentTo(
+                HostTelemetry.OperationTag,
+                HostTelemetry.RefusalTag,
+                HostTelemetry.ReplayTag);
+        }
+
+        refused.Select(measurement => measurement.Tags[HostTelemetry.OperationTag]).Should().BeEquivalentTo(
+            new object?[]
+            {
+                ExecutionOperation.PlaceOrderOperation,
+                ExecutionOperation.ModifyOrderOperation,
+                ExecutionOperation.CancelOrderOperation,
+                ExecutionOperation.ClosePositionOperation,
+                ExecutionOperation.PartialClosePositionOperation,
+            });
+        List<Activity> execution = spans
+            .Where(span => span.OperationName.StartsWith("execution.", StringComparison.Ordinal))
+            .ToList();
+        execution.Should().HaveCount(5);
+        execution.Should().OnlyContain(span =>
+            (string?)span.GetTagItem(HostTelemetry.RefusalTag) == ExecutionWriteRefusal.UnknownAccountStage);
+    }
+
+    [Fact]
+    public async Task TradingRiskGate_WhenTheWritesListenerThrows_StillRefusesUnknownStage()
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> faults = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.BookkeepingFaultsInstrument);
+        using MeterListener listener = new();
+        listener.InstrumentPublished = (instrument, subscriber) =>
+        {
+            if (instrument.Name == HostTelemetry.ExecutionWritesInstrument
+                && ReferenceEquals(instrument.Meter.Scope, telemetry))
+            {
+                subscriber.EnableMeasurementEvents(instrument);
+            }
+        };
+        listener.SetMeasurementEventCallback<long>((_, _, _, _) =>
+            throw new InvalidOperationException("listener failed"));
+        listener.Start();
+        StageRig rig = OpenRig(
+            telemetry,
+            new TradingExecutionOptions { Enabled = true },
+            Account(UnknownAccountId, NearMissName));
+
+        TradingRiskGateResult result = await rig.Gate.SubmitPlace(
+            Place(UnknownAccountId),
+            Live(),
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(TradingAttemptOutcome.Refused);
+        result.Refusal.Should().Be(TradingExecutionRefusal.UnknownAccountStage(UnknownAccountId));
+        result.WriteResult.Should().BeNull();
+        AssertVendorCalls(rig.Vendor, place: 0);
+        faults.GetMeasurementSnapshot().Should().ContainSingle().Which.Value.Should().Be(1);
     }
 
     [Theory]
@@ -98,6 +288,7 @@ public sealed class TradingRiskGateLegacyStageTests
         _stageResolver.ResolveFromAccountName(accountName).Should().Be(stage);
 
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Writes(telemetry);
         StageRig rig = OpenRig(
             telemetry,
             new TradingExecutionOptions
@@ -124,6 +315,21 @@ public sealed class TradingRiskGateLegacyStageTests
         result.Refusal.Should().Be(expected);
         result.WriteResult.Should().BeNull();
         AssertVendorCalls(rig.Vendor, place: 0);
+        IReadOnlyList<CollectedMeasurement<long>> refused = writes.GetMeasurementSnapshot()
+            .Where(measurement =>
+                Equals(measurement.Tags[HostTelemetry.RefusalTag], ExecutionWriteRefusal.UnknownAccountStage))
+            .ToList();
+        if (stage == AccountStage.Unknown)
+        {
+            refused.Should().ContainSingle();
+            refused[0].Value.Should().Be(1);
+            refused[0].Tags[HostTelemetry.OperationTag].Should().Be(ExecutionOperation.PlaceOrderOperation);
+            refused[0].Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
+        }
+        else
+        {
+            refused.Should().BeEmpty();
+        }
     }
 
     [Fact]
@@ -133,6 +339,7 @@ public sealed class TradingRiskGateLegacyStageTests
         _stageResolver.ResolveFromAccountName(RenamedFundedName).Should().Be(AccountStage.Funded);
 
         using HostTelemetry telemetry = new();
+        using MetricCollector<long> writes = Writes(telemetry);
         StageRig rig = OpenRig(
             telemetry,
             new TradingExecutionOptions { Enabled = true },
@@ -164,6 +371,8 @@ public sealed class TradingRiskGateLegacyStageTests
         second.WriteResult.Should().BeNull();
         rig.Accounts.Fetches.Should().BeGreaterThan(readsBeforeRename);
         AssertVendorCalls(rig.Vendor, place: 1);
+        writes.GetMeasurementSnapshot().Should().NotContain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.RefusalTag], ExecutionWriteRefusal.UnknownAccountStage));
     }
 
     private VenueAccount Account(int accountId, string accountName) =>
@@ -186,6 +395,9 @@ public sealed class TradingRiskGateLegacyStageTests
             TrailPrice: null);
 
     private static TradingRiskAttemptContext Live() => new(DryRun: false);
+
+    private static MetricCollector<long> Writes(HostTelemetry telemetry) =>
+        new(telemetry, HostTelemetry.Name, HostTelemetry.ExecutionWritesInstrument);
 
     private static ExecutionWriteResult AcknowledgedWrite() =>
         new(
@@ -261,7 +473,6 @@ public sealed class TradingRiskGateLegacyStageTests
             IExecutionGateway gateway = new ProjectXExecutionGateway(
                 executionGate,
                 accounts,
-                new RecordingUnknownSignal(),
                 client,
                 accountCache,
                 telemetry,
@@ -272,7 +483,6 @@ public sealed class TradingRiskGateLegacyStageTests
                 gateway,
                 accounts,
                 _stageResolver,
-                new RecordingUnknownSignal(),
                 new FakeDailyCapCoordinator(),
                 new RecordingAuditLog(),
                 denylist,
@@ -359,13 +569,6 @@ public sealed class TradingRiskGateLegacyStageTests
     private sealed class FakeKillSwitch : ITradingKillSwitch
     {
         public bool IsEngaged { get; set; }
-    }
-
-    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public void UnknownStageWriteRefused(int accountId)
-        {
-        }
     }
 
     private sealed class RecordingAuditLog : ITradingAuditLogWriter

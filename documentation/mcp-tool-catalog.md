@@ -1225,7 +1225,9 @@ Use a fresh `idempotencyKey` for each order. Never retry OutcomeUnknown; reconci
 
 **Every call emits the gate's telemetry.** The span is `execution.<tool>` and the counter is
 `mcp.execution.writes`, tagged `operation`, `refusal` and `replay`. A replay is `replay=true` and is not a
-new outcome. The gate owns both. The tools do not open a second span or counter.
+new outcome. The gate owns both. The tools do not open a second span or counter. An unknown
+account stage is that same counter; the tag and the unwired alert are specified in
+[deployment.md](deployment.md#unknown-account-stage-gh732) (gh#732, ADR-0024).
 
 **`idempotencyKey` is required.** It is scoped per account and per tool, and `TradingAuditClaims.MaxKeyLength`
 is 256, the same width as the audit column. A replay of the same account, tool and request hash returns the

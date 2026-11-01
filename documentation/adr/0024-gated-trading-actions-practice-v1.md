@@ -421,3 +421,9 @@ not start until v1 is shipped and a separate ADR amendment is accepted.
 | gh#722 | **Epic: v2 trading on evaluation/funded accounts** (out of v1 scope) |
 
 *Assisted-by: Cursor Cloud Agent*
+
+## Update (2026-11-01) — the unknown-stage alert (gh#732)
+
+gh#733 in the follow-up table was a duplicate of gh#732. The tag, the dry-run, and the unwired
+alert are specified in [deployment.md](../deployment.md#unknown-account-stage-gh732). This record
+does not set an endpoint or a Railway variable.

@@ -26,6 +26,26 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public int PriceSubscriptions { get; private set; }
 
+    /// <summary>
+    /// How many times <see cref="SubscribeToPriceUpdatesAsync"/> was asked, including a refusal.
+    /// </summary>
+    public int PriceSubscribeAttempts { get; private set; }
+
+    /// <summary>How many times <see cref="UnsubscribeFromPriceUpdatesAsync"/> ran.</summary>
+    public int PriceUnsubscribes { get; private set; }
+
+    /// <summary>Thrown once from the next <see cref="SubscribeToPriceUpdatesAsync"/>, then cleared.</summary>
+    public Exception? PriceSubscribeThrows { get; set; }
+
+    /// <summary>When set, every subscribe for this contract throws, and the count grows.</summary>
+    public string? PriceSubscribeThrowsFor { get; set; }
+
+    /// <summary>How many times <see cref="PriceSubscribeThrowsFor"/> refused a subscribe.</summary>
+    public int PriceSubscribeThrowCount { get; private set; }
+
+    /// <summary>Contract ids currently subscribed for quotes.</summary>
+    public List<string> PriceSubscriptionIds { get; } = [];
+
     public int OrderBookSubscriptions { get; private set; }
 
     public List<string> TradeSubscriptions { get; } = [];
@@ -61,7 +81,9 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     /// <summary>When set, unsubscribe waits here so a disconnect can run mid-await.</summary>
     public TaskCompletionSource? UnsubscribeHold { get; set; }
 
-    /// <summary>How many times the market hub transitioned into <see cref="ConnectionState.Connected"/>.</summary>
+    /// <summary>
+    /// How many times the market hub transitioned into <see cref="ConnectionState.Connected"/>.
+    /// </summary>
     public int TransitionsIntoConnected { get; private set; }
 
     /// <summary>How many times <see cref="DisconnectMarketHubAsync"/> ran.</summary>
@@ -127,6 +149,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     {
         MarketDisconnects++;
         TradeSubscriptions.Clear();
+        PriceSubscriptionIds.Clear();
         EnterMarketState(ConnectionState.Disconnected);
         return Task.CompletedTask;
     }
@@ -144,6 +167,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     public void SimulateMarketDisconnect()
     {
         TradeSubscriptions.Clear();
+        PriceSubscriptionIds.Clear();
         EnterMarketState(ConnectionState.Disconnected);
     }
 
@@ -154,6 +178,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     public void SimulateSessionConflict(string message)
     {
         TradeSubscriptions.Clear();
+        PriceSubscriptionIds.Clear();
         if (MarketHubState == ConnectionState.Disconnected)
         {
             ConnectionStatusChanged?.Invoke(this, new ConnectionStatusChange
@@ -187,6 +212,7 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     public void SimulateReconnecting(string? message = null)
     {
         TradeSubscriptions.Clear();
+        PriceSubscriptionIds.Clear();
         EnterMarketState(
             ConnectionState.Reconnecting,
             message,
@@ -230,14 +256,49 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
 
     public Task SubscribeToPriceUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
     {
+        PriceSubscribeAttempts++;
+        if (PriceSubscribeThrows is { } refused)
+        {
+            PriceSubscribeThrows = null;
+            throw refused;
+        }
+
+        if (PriceSubscribeThrowsFor == contractId)
+        {
+            PriceSubscribeThrowCount++;
+            throw new InvalidOperationException("refused");
+        }
+
         PriceSubscriptions++;
+        PriceSubscriptionIds.Add(contractId);
         return Task.CompletedTask;
     }
 
-    public Task UnsubscribeFromPriceUpdatesAsync(string contractId, CancellationToken cancellationToken = default) =>
-        Task.CompletedTask;
+    /// <summary>Raises a quote when the contract is in <see cref="PriceSubscriptionIds"/>.</summary>
+    /// <param name="update">The quote. <see cref="PriceUpdate.ContractId"/> is the hub argument.</param>
+    public void RaiseQuote(PriceUpdate update)
+    {
+        if (string.IsNullOrWhiteSpace(update.ContractId)
+            || !PriceSubscriptionIds.Contains(update.ContractId))
+        {
+            return;
+        }
 
-    public Task SubscribeToOrderBookUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
+        PriceUpdateReceived?.Invoke(this, update);
+    }
+
+    public Task UnsubscribeFromPriceUpdatesAsync(
+        string contractId,
+        CancellationToken cancellationToken = default)
+    {
+        PriceUnsubscribes++;
+        PriceSubscriptionIds.RemoveAll(id => id == contractId);
+        return Task.CompletedTask;
+    }
+
+    public Task SubscribeToOrderBookUpdatesAsync(
+        string contractId,
+        CancellationToken cancellationToken = default)
     {
         OrderBookSubscriptions++;
         return Task.CompletedTask;
@@ -289,19 +350,29 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     public Task SubscribeToOrderUpdatesAsync(int accountId, CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
-    public Task UnsubscribeFromOrderUpdatesAsync(int accountId, CancellationToken cancellationToken = default) =>
+    public Task UnsubscribeFromOrderUpdatesAsync(
+        int accountId,
+        CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
-    public Task SubscribeToPositionUpdatesAsync(int accountId, CancellationToken cancellationToken = default) =>
+    public Task SubscribeToPositionUpdatesAsync(
+        int accountId,
+        CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
-    public Task UnsubscribeFromPositionUpdatesAsync(int accountId, CancellationToken cancellationToken = default) =>
+    public Task UnsubscribeFromPositionUpdatesAsync(
+        int accountId,
+        CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
-    public Task SubscribeToTradeNotificationsAsync(int accountId, CancellationToken cancellationToken = default) =>
+    public Task SubscribeToTradeNotificationsAsync(
+        int accountId,
+        CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
-    public Task UnsubscribeFromTradeNotificationsAsync(int accountId, CancellationToken cancellationToken = default) =>
+    public Task UnsubscribeFromTradeNotificationsAsync(
+        int accountId,
+        CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

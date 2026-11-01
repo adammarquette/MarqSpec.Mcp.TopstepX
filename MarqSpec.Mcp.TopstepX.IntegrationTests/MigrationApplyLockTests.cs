@@ -349,7 +349,8 @@ public sealed class MigrationApplyLockTests
 
             availability.IsAvailable.Should().BeFalse();
             availability.Explanation.Should().Contain("migration lock wait timed out");
-            logs.Lines.Should().NotContain(line => line.Contains("Store__Required", StringComparison.Ordinal));
+            logs.Lines.Should().NotContain(line =>
+                line.Contains("Store__Required", StringComparison.Ordinal));
         }
         finally
         {
@@ -392,6 +393,87 @@ public sealed class MigrationApplyLockTests
         {
             await UnlockAsync(holder);
         }
+    }
+
+    /// <summary>
+    /// The lines added for a dropped migration and a lock wait do not carry the connection
+    /// string or its password. The logger records exception text too, so a line that logged
+    /// the failure itself would still have to be redacted (gh#843).
+    /// </summary>
+    [Fact]
+    public async Task MigrationFailureLogs_OmitTheConnectionStringAndPassword()
+    {
+        string connectionString = _fixture.ConnectionString;
+        string password = new NpgsqlConnectionStringBuilder(connectionString).Password!;
+        password.Should().NotBeNullOrWhiteSpace();
+
+        ListLogger dropLogs = new() { IncludeExceptionText = true };
+        await using (WebApplication dropped = Build(
+            connectionString,
+            required: false,
+            gate: null,
+            failure: Dropped("57P01-wrapped"),
+            logs: dropLogs))
+        {
+            StoreAvailability availability = await Program.MigrateAsync(dropped);
+            availability.Explanation.Should().Contain("The connection dropped while applying migrations.");
+        }
+
+        AssertRedacted(dropLogs, connectionString, password);
+        dropLogs.Lines.Should().Contain(line => line.Contains(
+            "The connection dropped while applying migrations.",
+            StringComparison.Ordinal));
+
+        ListLogger requiredLogs = new() { IncludeExceptionText = true };
+        await using (WebApplication requiredApp = Build(
+            connectionString,
+            required: true,
+            gate: null,
+            failure: Dropped("socket"),
+            logs: requiredLogs))
+        {
+            Func<Task> act = () => Program.MigrateAsync(requiredApp);
+            await act.Should().ThrowAsync<StoreRequiredException>();
+        }
+
+        AssertRedacted(requiredLogs, connectionString, password);
+        requiredLogs.Lines.Should().Contain(line =>
+            line.Contains("Store__Required", StringComparison.Ordinal));
+
+        await using NpgsqlConnection holder = new(connectionString);
+        await holder.OpenAsync();
+        await using (NpgsqlCommand hold = LockCommand(holder, "SELECT pg_advisory_lock(@classId, @objectId)"))
+        {
+            await hold.ExecuteNonQueryAsync();
+        }
+
+        ListLogger waitLogs = new() { IncludeExceptionText = true };
+        try
+        {
+            Func<Task> waiting = () => MigrationApplyLock.ApplyUnderLockAsync(
+                connectionString,
+                _ => Task.CompletedTask,
+                waitLogs,
+                lockWaitTimeoutSeconds: 1,
+                CancellationToken.None);
+            await waiting.Should().ThrowAsync<MigrationLockWaitTimedOutException>();
+        }
+        finally
+        {
+            await UnlockAsync(holder);
+        }
+
+        AssertRedacted(waitLogs, connectionString, password);
+        waitLogs.Lines.Should().Contain(line =>
+            line.Contains("Waiting up to 1s.", StringComparison.Ordinal));
+    }
+
+    private static void AssertRedacted(ListLogger logs, string connectionString, string password)
+    {
+        string text = string.Join('\n', logs.Lines);
+        text.Should().NotContain(password);
+        text.Should().NotContain(connectionString);
+        text.Should().NotContain("Password=");
     }
 
     private static async Task UnlockAsync(NpgsqlConnection holder)
@@ -528,6 +610,9 @@ public sealed class MigrationApplyLockTests
     {
         public List<string> Lines { get; } = [];
 
+        /// <summary>When set, the captured line includes the exception text the logger was given.</summary>
+        public bool IncludeExceptionText { get; init; }
+
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull
             => null;
@@ -541,7 +626,13 @@ public sealed class MigrationApplyLockTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            Lines.Add(formatter(state, exception));
+            string message = formatter(state, exception);
+            if (IncludeExceptionText && exception is not null)
+            {
+                message = message + "\n" + exception;
+            }
+
+            Lines.Add(message);
         }
     }
 

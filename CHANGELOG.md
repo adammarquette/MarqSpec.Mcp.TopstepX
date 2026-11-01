@@ -42,9 +42,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instrument and contract. `TapeRetention__Days` defaults to 90 (accepted 7 through 3650).
   Zero and a negative number are refused. No receipt, including `drive_disabled`, means the
   rows stay, and the pass logs and counts the skipped days. A chunk is dropped only when it
-  ends before the cutoff and every row in it has that receipt. A partly exported compressed
-  chunk is left. `LatestQuotes` is not pruned. Timescale `policy_retention` stays empty.
+  ends before the cutoff and every key in it has that receipt with a matching source count.
+  A partly exported compressed chunk is left. `LatestQuotes` is not pruned. Timescale
+  `policy_retention` stays empty.
   The Railway template is not edited; the code default applies where the key is absent.
+
+### Changed
+
+- **A tape day whose source count no longer matches is exported again** (gh#795).
+  The export checks gzip row counts before it records a receipt. A fresh day is written
+  at most twice in one pass. A generation already on disk counts as the first write, so
+  that pass writes it at most once more. The receipt's export time is the database `now()`
+  inside that read snapshot. Retention deletes an uploaded day only when the current source
+  count equals the receipt `RowCount` and no row was recorded later. That comparison is
+  once, before any delete. A difference withdraws the receipt (`source_count_changed`, or
+  `late_rows` when a later row is still with the full day), keeps the Drive file id, and
+  deletes nothing. The next export writes the whole day through that file. The day is
+  re-exported whole until a pass can delete it. After a delete has started, the receipt
+  stays `uploaded` and only rows recorded at or before the export time are removed.
+  Withdrawn receipts still waiting are `tapeDaysKept`. `lock_timeout` and
+  `statement_timeout` are separate drop failures.
 
 ### Fixed
 

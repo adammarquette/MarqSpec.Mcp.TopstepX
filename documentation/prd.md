@@ -623,7 +623,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   the report window and is omitted. A reply reused from the five-second memo keeps that age
   against the cached `asOfUtc`. `hubReconnects` counts a successful market-hub
   connect after a connection was lost or a connect attempt failed. A clean first connect is zero,
-  and zero is reported (gh#793). `gaps` are the `TapeCoverage` holes in the elapsed portion of the
+  and zero is reported (gh#793).   `tapeDaysKept` is how many trades receipts retention set
+  back to pending because the source count no longer matched, or because a row was
+  recorded after the export, still waiting for a new export. Zero is a real count. It
+  is omitted when the database probe did not connect.
+  `gaps` are the `TapeCoverage` holes in the elapsed portion of the
   current product session, or of the session that most recently closed when the market is shut.
   A declared early close (`MarketData__EarlyCloses`, `yyyy-MM-dd HH:mm` Central) applies only to this
   report's session and ends that session at the declared time; the hours after it are not a hole in this
@@ -757,17 +761,34 @@ only after an `uploaded` trades receipt for that day and contract. No receipt me
   are one pair per instrument and resolution per day. The worker runs only when the transport is HTTP
   **and** `TapeExport__Enabled` is true. The default is **false**. It waits until
   `TapeExport__Schedule` (default `06:00`, UTC, exact `HH:mm`) and runs only while this process holds
-  a recorder lease. A restart does not take a pass before that time. The `export-tape` and
-  `import-tape` verbs do not read `Enabled`.
+  a recorder lease. A restart does not take a pass before that time. Stopping the host does not
+  export (gh#795). The `export-tape` and `import-tape` verbs do not read `Enabled`.
 - **R-10.2** A UTC day is copied only after its exclusive end (00:00 UTC the next day). The current
   day is not written. A day a still-open listen overlaps is not written. Rows stream into the gzip and
   the Parquet row groups. The manifest is renamed into place last and names one generation
-  (`yyyy-MM-dd.vN`). Its sha256 and row counts must match those files. A mismatch refuses that day.
-  A day whose receipt hash still matches is not read again. The pass does not delete local rows, an
-  older generation, or a Drive file.
+  (`yyyy-MM-dd.vN`). Its sha256 and row counts must match those files, and each gzip row count
+  must match the source rows before a receipt is marked `uploaded`. A file mismatch is
+  `verification_failed` with `reason=manifest`. A source mismatch discards that generation,
+  including its files (gh#795). A fresh day is written at most twice in one pass. A generation
+  already on disk counts as the first write, so that pass writes it at most once more. If it
+  still disagrees, those files are deleted and `mcp.tape.export.stuck` increments with
+  `reason=source_count`.
+  Retention compares the source count to the receipt `RowCount` once, before any delete
+  for that key, and compares `max(RecordedAt)` to the receipt's export time while the
+  full day is still stored. Either mismatch deletes nothing, sets that receipt back to
+  `pending`, clears its hash, and counts `reason=source_count_changed` or
+  `reason=late_rows` once. `DriveFileId`, `RowCount` and the path stay. The next export
+  writes the whole day through that Drive file. The day is re-exported whole until a
+  pass can delete it, and nothing is deleted that the export did not contain. After a
+  delete has started, the receipt stays `uploaded` and only rows with `RecordedAt` at
+  or before the export time are removed. `get_recorder_health` reports a withdrawn
+  receipt as `tapeDaysKept` until the new export lands. A count-query error fails that
+  day, tags `exception.type`, and the pass continues. The pass does not delete a Drive
+  file.
 - **R-10.3** `import-tape` restores a verified day into Postgres and refuses a checksum or row-count
   mismatch, inserting nothing for that day. A second import of the same rows inserts nothing
-  (`ON CONFLICT DO NOTHING`).
+  (`ON CONFLICT DO NOTHING`). It keeps the file's `RecordedAt`, so imported rows compare as
+  already exported. That is safe, because the rows came from an export.
 - **R-10.4** `TapeExport__Path` is a filesystem directory, and it is expected to be a **mounted
   volume**. The default is `/data/tape-exports`. The process creates subdirectories there; it does not
   create the volume. An `s3://` URI and a relative path are refused as that path. The only accepted

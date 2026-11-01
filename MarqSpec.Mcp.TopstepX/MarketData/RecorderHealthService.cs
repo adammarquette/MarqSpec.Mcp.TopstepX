@@ -167,6 +167,9 @@ public sealed class RecorderHealthService(
 
         string outcome = Outcome(probe, feedConnected, contracts, gaps);
         _telemetry.RecorderHealthRead(outcome);
+        int? tapeDaysKept = databaseUp
+            ? await _store.TapeDaysKeptAsync(cancellationToken).ConfigureAwait(false)
+            : null;
 
         RecorderHealthReport.Report report = new(
             asOf,
@@ -184,7 +187,8 @@ public sealed class RecorderHealthService(
                 : null,
             contracts,
             gaps,
-            _tape.HubReconnects);
+            _tape.HubReconnects,
+            TapeDaysKept: tapeDaysKept);
         return (report, outcome);
     }
 

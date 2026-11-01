@@ -49,7 +49,8 @@ public sealed class TradingAccountWriterLockTests(SchemaFixture fixture)
     {
         await using TradingAccountWriterLock broken = new(
             "Host=127.0.0.1;Port=1;Username=x;Password=x;Database=x;Timeout=1",
-            NullLogger<TradingAccountWriterLock>.Instance);
+            NullLogger<TradingAccountWriterLock>.Instance,
+            TimeProvider.System);
 
         (await broken.TryHoldAsync(Account, CancellationToken.None))
             .Should().Be(TradingWriterLockTake.Unavailable);
@@ -71,7 +72,10 @@ public sealed class TradingAccountWriterLockTests(SchemaFixture fixture)
     }
 
     private TradingAccountWriterLock Lock() =>
-        new(_fixture.ConnectionString, NullLogger<TradingAccountWriterLock>.Instance);
+        new(
+            _fixture.ConnectionString,
+            NullLogger<TradingAccountWriterLock>.Instance,
+            TimeProvider.System);
 
     private async Task TerminateHolderAsync()
     {

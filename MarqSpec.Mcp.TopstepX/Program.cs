@@ -736,7 +736,8 @@ public static class Program
         // cannot trade the same account (gh#772). Shutdown disposes it and releases the locks.
         services.AddSingleton(sp => new TradingAccountWriterLock(
             StoreConnection.Resolve(sp.GetRequiredService<IConfiguration>()),
-            sp.GetRequiredService<ILogger<TradingAccountWriterLock>>()));
+            sp.GetRequiredService<ILogger<TradingAccountWriterLock>>(),
+            sp.GetRequiredService<TimeProvider>()));
         services.AddSingleton<ITradingAccountWriterLock>(sp =>
             sp.GetRequiredService<TradingAccountWriterLock>());
         // Scoped, and one order operation per instance. TradingRiskGate throws if a second operation

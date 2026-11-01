@@ -32,6 +32,7 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
 
     private readonly string _connectionString;
     private readonly ILogger<TradingAccountWriterLock> _logger;
+    private readonly TimeProvider _clock;
     private readonly SemaphoreSlim _mutex = new(1, 1);
     private NpgsqlConnection? _connection;
     private bool _disposed;
@@ -40,20 +41,35 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
     /// <param name="connectionString">The store connection. Pooling is forced off for this session.</param>
     /// <param name="logger">Receives a refusal when another replica holds a lock, or the session drops.
     /// </param>
-    public TradingAccountWriterLock(string connectionString, ILogger<TradingAccountWriterLock> logger)
+    /// <param name="clock">Times the process-mutex wait. A test can drive it without a wall clock.</param>
+    public TradingAccountWriterLock(
+        string connectionString,
+        ILogger<TradingAccountWriterLock> logger,
+        TimeProvider clock)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
         ArgumentNullException.ThrowIfNull(logger);
+        ArgumentNullException.ThrowIfNull(clock);
         _connectionString = connectionString;
         _logger = logger;
+        _clock = clock;
     }
 
     /// <inheritdoc />
     public async Task<TradingWriterLockTake> TryHoldAsync(int accountId, CancellationToken cancellationToken)
     {
-        if (!await _mutex
-                .WaitAsync(TimeSpan.FromSeconds(CommandTimeoutSeconds), cancellationToken)
-                .ConfigureAwait(false))
+        // The budget is our token, linked to the caller's. WaitAsync reports either as
+        // cancellation. It is a lock refusal only when ours fired and the caller's did not.
+        // When the caller's token has also fired, cancellation is the right answer (gh#956).
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(CommandTimeoutSeconds), _clock);
+        using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            timeout.Token);
+        try
+        {
+            await _mutex.WaitAsync(linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             _logger.LogWarning(
                 "Trading writes were refused. The writer lock wait expired.");

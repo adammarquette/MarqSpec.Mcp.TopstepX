@@ -794,7 +794,7 @@ unique partial `(AccountId, Tool, IdempotencyKey)` for the pre-send claim.
 | `ExportedAtUtc` | `timestamptz` | When this status was written |
 | `DriveFileId` | `varchar(128)` | Last Drive file id that landed. A failed attempt does not clear it |
 | `UploadState` | `varchar(16)` | `pending`, `drive_disabled`, `uploaded`, or `failed` |
-| `FailureType` | `varchar(128)` | Exception type name when `UploadState` is `failed`, or `Timeout`, `LockLost`, or `IdentityBusy`. Null otherwise. Never a credential |
+| `FailureType` | `varchar(128)` | Exception type name when `UploadState` is `failed`, or `Timeout`, `LockLost`, or `IdentityBusy`. `source_count_changed` when retention set the row back to `pending`. Null otherwise. Never a credential |
 | `FailureStatus` | `integer` | HTTP status when the client reported one. Null when there is no status |
 
 Primary key: `(Day, Kind, Format, Venue, Instrument, ContractId, ResolutionMinutes)`. A second pass of
@@ -803,8 +803,14 @@ delete tape.
 
 **This is the confirmation ADR-0027 reads** (`R-10.7`, gh#755). It records that a file was written
 and whether the Drive upload finished. The prune deletes a `Trades` day only when `UploadState` is
-`uploaded` on the trades `csv.gz` row. `drive_disabled` is not that confirmation. `Retention__*`
-is not a key.
+`uploaded` on the trades `csv.gz` row, `Sha256` is not empty, and the current source row count
+equals `RowCount`, and that comparison is before any delete for the key. A difference sets
+this row back to `pending`, clears `Sha256`, and stores `FailureType` `source_count_changed`.
+`DriveFileId`, `RowCount` and `RelativePath` stay, so a later upload replaces that Drive
+file instead of leaving it. The local rows stay, and the next export writes the whole day
+(gh#795). After a delete has started, rows with `RecordedAt` after `ExportedAtUtc` stay and
+this receipt stays `uploaded`. `drive_disabled` is not that
+confirmation. `Retention__*` is not a key.
 `UploadState = failed` means the local file and the local rows are still there, and `DriveFileId` is
 the last id that landed. `drive_disabled` means Drive was not configured. While Drive stays off that
 state counts as finished. Once Drive is on, those days are exported. `pending` is committed in its

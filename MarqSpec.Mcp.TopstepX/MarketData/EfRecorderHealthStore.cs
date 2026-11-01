@@ -1,4 +1,6 @@
 using MarqSpec.Mcp.TopstepX.Data;
+using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
@@ -92,5 +94,51 @@ public sealed class EfRecorderHealthStore(TopstepXDbContext database) : IRecorde
             .ConfigureAwait(false);
 
         return slices;
+    }
+
+    /// <inheritdoc />
+    public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
+        _database.TapeExportReceipts.AsNoTracking()
+            .CountAsync(
+                receipt => receipt.Kind == TapeExportArchive.TradesDirectory
+                    && receipt.Format == TapeExportArchive.CsvGzFormat
+                    && receipt.UploadState == TapeExportReceipt.StatePending
+                    && receipt.FailureType == TapePruneReason.SourceCountChanged,
+                cancellationToken);
+
+    /// <inheritdoc />
+    public async Task<int> TapeLateRowsAsync(CancellationToken cancellationToken)
+    {
+        int receipts = await _database.TapeExportReceipts.AsNoTracking()
+            .CountAsync(
+                receipt => receipt.Kind == TapeExportArchive.TradesDirectory
+                    && receipt.Format == TapeExportArchive.CsvGzFormat
+                    && receipt.UploadState == TapeExportReceipt.StateUploaded
+                    && receipt.Sha256 != string.Empty,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (receipts == 0)
+        {
+            return 0;
+        }
+
+        List<int> counts = await _database.Database.SqlQuery<int>(
+                $"""
+                SELECT COUNT(*)::int AS "Value"
+                FROM "Trades" AS t
+                JOIN "TapeExportReceipts" AS r
+                  ON r."Day" = (t."TradeTimeUtc" AT TIME ZONE 'UTC')::date
+                 AND r."Kind" = 'trades'
+                 AND r."Format" = 'csv.gz'
+                 AND r."Venue" = t."Venue"
+                 AND r."Instrument" = t."Instrument"
+                 AND r."ContractId" = t."ContractId"
+                 AND r."UploadState" = 'uploaded'
+                 AND r."Sha256" <> ''
+                 AND t."RecordedAt" > r."ExportedAtUtc"
+                """)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return counts.Count == 0 ? 0 : counts[0];
     }
 }

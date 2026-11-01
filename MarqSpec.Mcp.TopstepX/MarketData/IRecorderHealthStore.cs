@@ -66,4 +66,20 @@ public interface IRecorderHealthStore
         DateTimeOffset windowStart,
         DateTimeOffset windowEnd,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Trades receipts retention set back to pending because the source count no longer matched.
+    /// One per day, venue, instrument and contract. Zero is a real count.
+    /// </summary>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>How many such receipts are still waiting for a new export.</returns>
+    Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Trades rows recorded after the uploaded receipt's export time. The receipt stays uploaded,
+    /// so the Drive file is not replaced. Zero is a real count.
+    /// </summary>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>How many such rows are still stored.</returns>
+    Task<int> TapeLateRowsAsync(CancellationToken cancellationToken);
 }

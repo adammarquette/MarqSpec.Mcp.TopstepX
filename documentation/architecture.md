@@ -820,10 +820,11 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
 | `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
-| `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`). One measurement per pass for a repeated outcome |
+| `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed · `reason` = manifest \| source_count on `verification_failed` · `exception.type` on `export_failed` | `TapeExportPass` (gh#755, gh#795, `R-10`). One measurement per pass for a repeated outcome |
+| `mcp.tape.export.stuck` | counter, days | `reason` = source_count | `TapeExportPass`, a day whose source count still disagreed after the pass wrote it again (gh#795) |
 | `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
 | `mcp.tape.pruned` | counter, rows | (none) | `TapeRetentionPass`, measured deletes only (gh#763) |
-| `mcp.tape.prune.skipped` | counter, keys | `reason` = no_receipt \| key_cap | `TapeRetentionPass`. `no_receipt` is a key with no uploaded trades receipt. `key_cap` is the walk hitting its cap, so a chunk is not dropped |
+| `mcp.tape.prune.skipped` | counter, keys or rows | `reason` = no_receipt \| key_cap \| source_count_changed \| late_row | `TapeRetentionPass`. `no_receipt` is a key with no uploaded trades receipt. `key_cap` is the walk hitting its cap, so a chunk is not dropped. `source_count_changed` withdraws a receipt before any delete. `late_row` is a row recorded after the export; the receipt stays uploaded |
 | `mcp.tape.prune.failures` | counter | `reason` = prune_error \| lock_timeout | a thrown pass is `prune_error`; a `drop_chunks` lock timeout is `lock_timeout` and deletes continue |
 | `mcp.tape.prune.lease_lost` | counter | `reason` = lease_lost | `TapeRetentionPass`, the lease was gone |
 | `mcp.tape.chunks_dropped` | counter, chunks | (none) | `TapeRetentionPass`, chunks `drop_chunks` removed. Not a row count |
@@ -1168,7 +1169,21 @@ Trades and closed coverage are one pair per contract per day,
 `footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.vN.csv.gz` and `.parquet`. The manifest is
 `manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`), written last by a temp file, fsync, and rename, and
 it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
-An older generation is left on disk.
+Before a receipt is recorded, the gzip counts are checked against the source rows. The check is
+not inside the file-write transaction: a day still receiving rows is already excluded. A fresh
+day is written at most twice in one pass. A generation already on disk counts as the first write,
+so that pass writes it at most once more. If it still disagrees, those files are deleted and
+`mcp.tape.export.stuck` increments with `reason=source_count` (gh#795). Retention compares the
+source count once, before any delete. A difference sets that receipt back to `pending`, clears
+its hash, and deletes nothing, so the next export writes the whole day. After a delete has
+started, only rows recorded at or before the receipt's export time are removed. Later rows stay
+and the receipt stays `uploaded`, so the Drive file is not replaced. `get_recorder_health`
+reports withdrawn receipts as `tapeDaysKept` and those later rows as `tapeLateRows`. The
+`tape.retention` span tags `source_count_changed` with how many keys were kept, and that is the
+outcome when nothing else was deleted. A refused chunk drop sets `reason` on the same span.
+`verification_failed` carries `reason=manifest` or `reason=source_count`. A count-query error is
+`export_failed` with `exception.type` for that day, and the pass continues.
+A generation that verified and whose count matched is left on disk.
 The image user is uid 64198. Railway allows one volume per service and mounts it as root at `/data`.
 Since gh#767 the image `ENTRYPOINT` is `scripts/prepare-tape-volume.sh`
 ([deployment](deployment.md#recorded-tape-on-a-persistent-host-gh755)). Started as 64198 (the default) it

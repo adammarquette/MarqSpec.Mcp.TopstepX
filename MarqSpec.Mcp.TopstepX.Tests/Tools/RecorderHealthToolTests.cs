@@ -102,8 +102,31 @@ public sealed class RecorderHealthToolTests
 
         report.Database.Should().Be(RecorderHealthReport.StoreConnectivity.Unavailable);
         report.Gaps.Should().BeNull();
+        report.TapeDaysKept.Should().BeNull();
+        report.TapeLateRows.Should().BeNull();
         report.Contracts.Should().OnlyContain(row => row.LastTickUtc == null && row.ContractId == null);
         Wire(report).TryGetProperty("gaps", out _).Should().BeFalse();
+        Wire(report).TryGetProperty("tapeDaysKept", out _).Should().BeFalse();
+        Wire(report).TryGetProperty("tapeLateRows", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenReceiptsWereWithdrawn_ReportsHowManyDaysAreKept()
+    {
+        await using Fixture fixture = Fixture.Listening();
+        fixture.Store.TapeDaysKept = 2;
+        fixture.Store.TapeLateRows = 4;
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday));
+        fixture.Store.Ticks.Add(new ContractLastTick("NQ", Nq, _tuesday));
+        fixture.Store.Coverage.Add(Open(_open, "ES", Es));
+        fixture.Store.Coverage.Add(Open(_open, "NQ", Nq));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.TapeDaysKept.Should().Be(2);
+        report.TapeLateRows.Should().Be(4);
+        Wire(report).GetProperty("tapeDaysKept").GetInt32().Should().Be(2);
+        Wire(report).GetProperty("tapeLateRows").GetInt32().Should().Be(4);
     }
 
     [Fact]
@@ -752,6 +775,10 @@ public sealed class RecorderHealthToolTests
 
         public List<CoverageSlice> Coverage { get; } = [];
 
+        public int TapeDaysKept { get; set; }
+
+        public int TapeLateRows { get; set; }
+
         public void ReleaseProbe() => _release.TrySetResult();
 
         public async Task<bool> DatabaseConnectedAsync(CancellationToken cancellationToken)
@@ -805,5 +832,11 @@ public sealed class RecorderHealthToolTests
 
             return Task.FromResult<IReadOnlyList<CoverageSlice>>(Coverage);
         }
+
+        public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(TapeDaysKept);
+
+        public Task<int> TapeLateRowsAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(TapeLateRows);
     }
 }

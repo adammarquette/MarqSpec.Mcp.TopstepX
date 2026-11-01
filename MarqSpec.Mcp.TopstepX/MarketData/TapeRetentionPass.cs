@@ -22,6 +22,16 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <param name="ChunksDroppedUntil">
 /// Those chunks ended at or before this instant. Null when none dropped.
 /// </param>
+/// <param name="SourceCountChanged">
+/// Keys whose source count did not match the receipt. The receipt was set back to pending.
+/// Compared once, before any delete for that key.
+/// </param>
+/// <param name="LateRows">
+/// Rows recorded after the receipt's export time. They stay, and the receipt stays uploaded.
+/// </param>
+/// <param name="DropRefused">
+/// Why <c>drop_chunks</c> was not run. Null when it ran or there was nothing to drop.
+/// </param>
 public readonly record struct TapeRetentionRun(
     long Rows,
     int Batches,
@@ -29,7 +39,10 @@ public readonly record struct TapeRetentionRun(
     bool StoppedForLease,
     DateTimeOffset CutoffUtc,
     int ChunksDropped = 0,
-    DateTimeOffset? ChunksDroppedUntil = null);
+    DateTimeOffset? ChunksDroppedUntil = null,
+    int SourceCountChanged = 0,
+    int LateRows = 0,
+    string? DropRefused = null);
 
 /// <summary>The store operation the recorder's retention worker runs (ADR-0027).</summary>
 public interface ITapeRetentionPass
@@ -62,8 +75,10 @@ public interface ITapeRetentionPass
 /// <para>
 /// The batched delete adds the day bounds on the outer statement so the planner can exclude chunks.
 /// The predicate is the leading columns of <c>PK_Trades</c>. The planner may use that key or
-/// <see cref="DeleteIndex"/>, with venue and contract as filters. Each batch autocommits. The caller
-/// must not wrap <see cref="PruneAsync"/> in a transaction.
+/// <see cref="DeleteIndex"/>, with venue and contract as filters. The source count is compared
+/// once, before the first delete for that key. After that, each batch removes rows recorded at
+/// or before the receipt's export time. The caller must not wrap <see cref="PruneAsync"/> in a
+/// transaction.
 /// </para>
 /// </remarks>
 public sealed class TapeRetentionPass : ITapeRetentionPass
@@ -89,8 +104,9 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
 
     /// <summary>
     /// The delete the pass runs. Tests <c>EXPLAIN</c> this text. Parameters are
-    /// <c>@venue</c>, <c>@instrument</c>, <c>@contract</c>, <c>@dayStart</c>, <c>@dayEnd</c>
-    /// and <c>@batch</c>.
+    /// <c>@venue</c>, <c>@instrument</c>, <c>@contract</c>, <c>@dayStart</c>, <c>@dayEnd</c>,
+    /// <c>@batch</c> and <c>@exportedAt</c>. Only rows recorded at or before the receipt's
+    /// export time are removed. A row recorded after that stays, and the receipt is not withdrawn.
     /// </summary>
     public const string DeleteBatchSql =
         """
@@ -102,6 +118,7 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
               AND "ContractId" = @contract
               AND "TradeTimeUtc" >= @dayStart
               AND "TradeTimeUtc" < @dayEnd
+              AND "RecordedAt" <= @exportedAt
             ORDER BY "TradeTimeUtc"
             LIMIT @batch
         )
@@ -197,6 +214,21 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
                 }
             }
 
+            if (run.SourceCountChanged > 0)
+            {
+                span?.SetTag(TapeRetentionOutcome.SourceCountChanged, run.SourceCountChanged);
+            }
+
+            if (run.LateRows > 0)
+            {
+                span?.SetTag(TapeRetentionOutcome.LateRows, run.LateRows);
+            }
+
+            if (run.DropRefused is string dropReason)
+            {
+                span?.SetTag(HostTelemetry.ReasonTag, dropReason);
+            }
+
             return run;
         }
         catch
@@ -219,8 +251,47 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
 
         List<ExportedDay> confirmed = await ConfirmedDaysAsync(eligibleEnd, cancellationToken)
             .ConfigureAwait(false);
-        HashSet<TapeKey> confirmedKeys = confirmed.Select(day => day.Key).ToHashSet();
-        List<SkippedDay> skipped = await SkippedDaysAsync(eligibleEnd, confirmedKeys, cancellationToken)
+        Dictionary<TapeKey, int> sources = await CountConfirmedSourcesAsync(eligibleEnd, cancellationToken)
+            .ConfigureAwait(false);
+        List<ExportedDay> stable = [];
+        int countChanged = 0;
+        foreach (ExportedDay day in confirmed)
+        {
+            int source = sources.GetValueOrDefault(day.Key);
+            // Zero means the rows are already gone. That is not a late row, and it is not a
+            // reason to withdraw a receipt whose delete already ran.
+            if (source == day.RowCount || source == 0)
+            {
+                if (source == day.RowCount)
+                {
+                    stable.Add(day);
+                }
+
+                continue;
+            }
+
+            if (await WithdrawReceiptAsync(day, source, cancellationToken).ConfigureAwait(false))
+            {
+                countChanged++;
+            }
+        }
+
+        if (countChanged > 0)
+        {
+            _telemetry.TapePruneSkipped(countChanged, TapePruneReason.SourceCountChanged);
+        }
+
+        // A withdrawn receipt still explains the rows, so that key is not "no receipt".
+        // Only a matching count is deletable, and only those keys make a chunk fully exported.
+        HashSet<TapeKey> receiptKeys = confirmed.Select(day => day.Key).ToHashSet();
+        foreach (TapeKey awaiting in await AwaitingExportKeysAsync(eligibleEnd, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            receiptKeys.Add(awaiting);
+        }
+
+        HashSet<TapeKey> stableKeys = stable.Select(day => day.Key).ToHashSet();
+        List<SkippedDay> skipped = await SkippedDaysAsync(eligibleEnd, receiptKeys, cancellationToken)
             .ConfigureAwait(false);
         foreach (SkippedDay day in skipped)
         {
@@ -235,21 +306,27 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
 
         _telemetry.TapePruneSkipped(skipped.Count, TapePruneReason.NoReceipt);
         bool hypertable = await TradesIsHypertableAsync(cancellationToken).ConfigureAwait(false);
-        (DateTimeOffset? droppedUntil, int chunksDropped) = await DropExportedPrefixAsync(
-            holdsLease, eligibleEnd, hypertable, confirmedKeys, cancellationToken).ConfigureAwait(false);
+        (DateTimeOffset? droppedUntil, int chunksDropped, string? dropRefused) =
+            await DropExportedPrefixAsync(
+                holdsLease, eligibleEnd, hypertable, stableKeys, cancellationToken)
+            .ConfigureAwait(false);
         if (droppedUntil is null && hypertable && !holdsLease())
         {
-            return LeaseLost(0, 0, skipped.Count, cutoff, chunksDropped, droppedUntil);
+            return LeaseLost(
+                0, 0, skipped.Count, cutoff, chunksDropped, droppedUntil, countChanged, 0, dropRefused);
         }
 
         long rows = 0;
         int batches = 0;
-        foreach (ExportedDay day in confirmed)
+        int lateRows = 0;
+        foreach (ExportedDay day in stable)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!holdsLease())
             {
-                return LeaseLost(rows, batches, skipped.Count, cutoff, chunksDropped, droppedUntil);
+                return LeaseLost(
+                    rows, batches, skipped.Count, cutoff, chunksDropped, droppedUntil,
+                    countChanged, lateRows, dropRefused);
             }
 
             DateTimeOffset dayStart = DayStart(day.Day);
@@ -295,7 +372,8 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
                 if (!holdsLease())
                 {
                     return LeaseLost(
-                        rows, batches, skipped.Count, cutoff, chunksDropped, droppedUntil);
+                        rows, batches, skipped.Count, cutoff, chunksDropped, droppedUntil,
+                        countChanged, lateRows, dropRefused);
                 }
 
                 int deleted = await DeleteBatchAsync(day, dayStart, dayEnd, cancellationToken)
@@ -308,9 +386,31 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
                 batches++;
                 rows += deleted;
             }
+
+            int remaining = await CountOneAsync(day, dayStart, dayEnd, cancellationToken)
+                .ConfigureAwait(false);
+            if (remaining > 0)
+            {
+                lateRows += remaining;
+                _logger.LogWarning(
+                    "Tape retention left {LateRows} rows on {Day:yyyy-MM-dd} {Venue} {Instrument} "
+                    + "{Contract}: recorded after the receipt. The receipt stays uploaded.",
+                    remaining,
+                    day.Day,
+                    day.Venue,
+                    day.Instrument,
+                    day.ContractId);
+            }
         }
 
-        return Finish(rows, batches, skipped.Count, false, cutoff, chunksDropped, droppedUntil);
+        if (lateRows > 0)
+        {
+            _telemetry.TapePruneSkipped(lateRows, TapePruneReason.LateRow);
+        }
+
+        return Finish(
+            rows, batches, skipped.Count, false, cutoff, chunksDropped, droppedUntil,
+            countChanged, lateRows, dropRefused);
     }
 
     private TapeRetentionRun Finish(
@@ -320,7 +420,10 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
         bool stopped,
         DateTimeOffset cutoff,
         int chunksDropped = 0,
-        DateTimeOffset? chunksDroppedUntil = null)
+        DateTimeOffset? chunksDroppedUntil = null,
+        int sourceCountChanged = 0,
+        int lateRows = 0,
+        string? dropRefused = null)
     {
         _logger.LogInformation(
             "Tape retention removed {Rows} Trades rows in {Batches} delete batches "
@@ -333,7 +436,16 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
             cutoff);
         _telemetry.TapePruned(rows);
         return new TapeRetentionRun(
-            rows, batches, skipped, stopped, cutoff, chunksDropped, chunksDroppedUntil);
+            rows,
+            batches,
+            skipped,
+            stopped,
+            cutoff,
+            chunksDropped,
+            chunksDroppedUntil,
+            sourceCountChanged,
+            lateRows,
+            dropRefused);
     }
 
     private TapeRetentionRun LeaseLost(
@@ -342,10 +454,15 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
         int skipped,
         DateTimeOffset cutoff,
         int chunksDropped = 0,
-        DateTimeOffset? chunksDroppedUntil = null)
+        DateTimeOffset? chunksDroppedUntil = null,
+        int sourceCountChanged = 0,
+        int lateRows = 0,
+        string? dropRefused = null)
     {
         _telemetry.TapePruneLeaseLost();
-        return Finish(rows, batches, skipped, true, cutoff, chunksDropped, chunksDroppedUntil);
+        return Finish(
+            rows, batches, skipped, true, cutoff, chunksDropped, chunksDroppedUntil,
+            sourceCountChanged, lateRows, dropRefused);
     }
 
     private static string Outcome(TapeRetentionRun run)
@@ -360,10 +477,15 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
             return TapeRetentionOutcome.Pruned;
         }
 
+        if (run.SourceCountChanged > 0)
+        {
+            return TapeRetentionOutcome.SourceCountChanged;
+        }
+
         return run.DaysSkipped > 0 ? TapeRetentionOutcome.Skipped : TapeRetentionOutcome.Idle;
     }
 
-    private async Task<(DateTimeOffset? Until, int Count)> DropExportedPrefixAsync(
+    private async Task<(DateTimeOffset? Until, int Count, string? Refused)> DropExportedPrefixAsync(
         Func<bool> holdsLease,
         DateTimeOffset eligibleEnd,
         bool hypertable,
@@ -372,7 +494,7 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
     {
         if (!hypertable)
         {
-            return (null, 0);
+            return (null, 0, null);
         }
 
         List<ChunkBounds> chunks = await ChunksEndingBeforeAsync(eligibleEnd, cancellationToken)
@@ -382,7 +504,7 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
         {
             if (!holdsLease())
             {
-                return (null, 0);
+                return (null, 0, null);
             }
 
             if (!await ChunkIsFullyExportedAsync(chunk.Start, chunk.End, confirmed, cancellationToken)
@@ -396,12 +518,12 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
 
         if (prefixEnd is not DateTimeOffset olderThan)
         {
-            return (null, 0);
+            return (null, 0, null);
         }
 
         if (!holdsLease())
         {
-            return (null, 0);
+            return (null, 0, null);
         }
 
         string timeout = ((int)_dropLockTimeout.TotalMilliseconds).ToString(
@@ -417,6 +539,54 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
                         $"""SELECT set_config('lock_timeout', {timeout}, true) AS "Value" """)
                     .ToListAsync(cancellationToken)
                     .ConfigureAwait(false);
+                _ = await _database.Database.SqlQuery<string>(
+                        $"""SELECT set_config('statement_timeout', {timeout}, true) AS "Value" """)
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                List<string> refused = await _database.Database.SqlQuery<string>(
+                        $"""
+                        -- retention-drop-guard
+                        SELECT CASE
+                                 WHEN r."Day" IS NULL THEN 'no_receipt'
+                                 ELSE 'late_row'
+                               END AS "Value"
+                        FROM timescaledb_information.chunks AS c
+                        JOIN "Trades" AS t
+                          ON t."TradeTimeUtc" >= c.range_start
+                         AND t."TradeTimeUtc" < c.range_end
+                        LEFT JOIN "TapeExportReceipts" AS r
+                          ON r."Day" = (t."TradeTimeUtc" AT TIME ZONE 'UTC')::date
+                         AND r."Kind" = 'trades'
+                         AND r."Format" = 'csv.gz'
+                         AND r."Venue" = t."Venue"
+                         AND r."Instrument" = t."Instrument"
+                         AND r."ContractId" = t."ContractId"
+                         AND r."UploadState" = 'uploaded'
+                         AND r."Sha256" <> ''
+                        WHERE c.hypertable_schema = 'public'
+                          AND c.hypertable_name = 'Trades'
+                          AND c.range_end <= {olderThan}
+                          AND (r."Day" IS NULL OR t."RecordedAt" > r."ExportedAtUtc")
+                        LIMIT 1
+                        """)
+                    .ToListAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (refused.Count > 0)
+                {
+                    string reason = refused[0];
+                    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                    _logger.LogWarning(
+                        "Tape retention did not drop chunks ending at or before {OlderThan:u} ({Reason}).",
+                        olderThan,
+                        reason);
+                    if (TapePruneReason.All.Contains(reason))
+                    {
+                        _telemetry.TapePruneSkipped(1, reason);
+                    }
+
+                    return (null, 0, reason);
+                }
+
                 List<string> names = await _database.Database.SqlQuery<string>(
                         $"""
                         SELECT drop_chunks(
@@ -428,7 +598,8 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
                 droppedCount = names.Count;
                 dropped = true;
             }
-            catch (Exception exception) when (IsLockTimeout(exception))
+            catch (Exception exception) when (IsDropTimeout(exception)
+                && !cancellationToken.IsCancellationRequested)
             {
                 await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
                 _logger.LogWarning(
@@ -440,7 +611,7 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
 
         if (!dropped)
         {
-            return (null, 0);
+            return (null, 0, null);
         }
 
         _logger.LogInformation(
@@ -448,7 +619,7 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
             droppedCount,
             olderThan);
         _telemetry.TapeChunksDropped(droppedCount);
-        return (olderThan, droppedCount);
+        return (olderThan, droppedCount, null);
     }
 
     private async Task<int> DeleteBatchAsync(
@@ -465,8 +636,138 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
             new("dayStart", dayStart),
             new("dayEnd", dayEnd),
             new("batch", _batchSize),
+            new("exportedAt", day.ExportedAtUtc),
         ];
         return await _database.Database.ExecuteSqlRawAsync(DeleteBatchSql, parameters, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Sets the trades receipt back to pending and clears its hash. One update, so a later pass
+    /// does not log the same withdrawal again. Pending is not a finished export, so the next
+    /// export rediscovers the day.
+    /// </summary>
+    /// <returns>True when this call changed the receipt.</returns>
+    private async Task<bool> WithdrawReceiptAsync(
+        ExportedDay day,
+        int source,
+        CancellationToken cancellationToken)
+    {
+        int updated = await _database.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                UPDATE "TapeExportReceipts"
+                SET "UploadState" = {TapeExportReceipt.StatePending},
+                    "Sha256" = '',
+                    "FailureType" = {TapePruneReason.SourceCountChanged}
+                WHERE "Day" = {day.Day}
+                  AND "Kind" = {TapeExportArchive.TradesDirectory}
+                  AND "Format" = {TapeExportArchive.CsvGzFormat}
+                  AND "Venue" = {day.Venue}
+                  AND "Instrument" = {day.Instrument}
+                  AND "ContractId" = {day.ContractId}
+                  AND "ResolutionMinutes" = 0
+                  AND "UploadState" = {TapeExportReceipt.StateUploaded}
+                """,
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (updated == 0)
+        {
+            return false;
+        }
+
+        _logger.LogWarning(
+            "Tape retention kept {Day:yyyy-MM-dd} {Venue} {Instrument} {Contract}: "
+            + "source has {SourceRows} rows and the receipt says {ReceiptRows}. "
+            + "The receipt is pending so the next export can write the day.",
+            day.Day,
+            day.Venue,
+            day.Instrument,
+            day.ContractId,
+            source,
+            day.RowCount);
+        return true;
+    }
+
+    private async Task<Dictionary<TapeKey, int>> CountConfirmedSourcesAsync(
+        DateTimeOffset eligibleEnd,
+        CancellationToken cancellationToken)
+    {
+        DateOnly firstKept = DateOnly.FromDateTime(eligibleEnd.UtcDateTime);
+        Dictionary<TapeKey, int> counts = [];
+        await _database.Database.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using DbCommand command = _database.Database.GetDbConnection().CreateCommand();
+            command.CommandText =
+                """
+                SELECT r."Day", r."Venue", r."Instrument", r."ContractId",
+                       COUNT(t."Sequence")::int
+                FROM "TapeExportReceipts" AS r
+                LEFT JOIN "Trades" AS t
+                  ON t."Venue" = r."Venue"
+                 AND t."Instrument" = r."Instrument"
+                 AND t."ContractId" = r."ContractId"
+                 AND t."TradeTimeUtc" >= (r."Day"::timestamp AT TIME ZONE 'UTC')
+                 AND t."TradeTimeUtc" < ((r."Day" + 1)::timestamp AT TIME ZONE 'UTC')
+                WHERE r."Kind" = 'trades'
+                  AND r."Format" = 'csv.gz'
+                  AND r."UploadState" = 'uploaded'
+                  AND r."Sha256" <> ''
+                  AND r."Day" < @firstKept
+                GROUP BY r."Day", r."Venue", r."Instrument", r."ContractId"
+                """;
+            Add(command, "firstKept", firstKept);
+            await using DbDataReader reader = await command.ExecuteReaderAsync(cancellationToken)
+                .ConfigureAwait(false);
+            while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+            {
+                counts[new TapeKey(
+                    reader.GetFieldValue<DateOnly>(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3))] = reader.GetInt32(4);
+            }
+        }
+        finally
+        {
+            await _database.Database.CloseConnectionAsync().ConfigureAwait(false);
+        }
+
+        return counts;
+    }
+
+    private async Task<int> CountOneAsync(
+        ExportedDay day,
+        DateTimeOffset dayStart,
+        DateTimeOffset dayEnd,
+        CancellationToken cancellationToken) =>
+        await _database.Trades.AsNoTracking()
+            .CountAsync(
+                row => row.Venue == day.Venue
+                    && row.Instrument == day.Instrument
+                    && row.ContractId == day.ContractId
+                    && row.TradeTimeUtc >= dayStart
+                    && row.TradeTimeUtc < dayEnd,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+    private async Task<List<TapeKey>> AwaitingExportKeysAsync(
+        DateTimeOffset eligibleEnd,
+        CancellationToken cancellationToken)
+    {
+        DateOnly firstKept = DateOnly.FromDateTime(eligibleEnd.UtcDateTime);
+        return await _database.TapeExportReceipts.AsNoTracking()
+            .Where(receipt => receipt.Kind == TapeExportArchive.TradesDirectory
+                && receipt.Format == TapeExportArchive.CsvGzFormat
+                && receipt.UploadState == TapeExportReceipt.StatePending
+                && receipt.FailureType == TapePruneReason.SourceCountChanged
+                && receipt.Day < firstKept)
+            .Select(receipt => new TapeKey(
+                receipt.Day,
+                receipt.Venue,
+                receipt.Instrument,
+                receipt.ContractId))
+            .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -489,7 +790,8 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
                 receipt.Venue,
                 receipt.Instrument,
                 receipt.ContractId,
-                receipt.RowCount))
+                receipt.RowCount,
+                receipt.ExportedAtUtc))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
@@ -714,12 +1016,13 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
         return new DateTimeOffset(DateTime.SpecifyKind(value, DateTimeKind.Utc));
     }
 
-    private static bool IsLockTimeout(Exception exception)
+    private static bool IsDropTimeout(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)
         {
             if (current is PostgresException postgres
-                && postgres.SqlState == PostgresErrorCodes.LockNotAvailable)
+                && (postgres.SqlState == PostgresErrorCodes.LockNotAvailable
+                    || postgres.SqlState == PostgresErrorCodes.QueryCanceled))
             {
                 return true;
             }
@@ -743,7 +1046,8 @@ public sealed class TapeRetentionPass : ITapeRetentionPass
         string Venue,
         string Instrument,
         string ContractId,
-        int RowCount)
+        int RowCount,
+        DateTimeOffset ExportedAtUtc)
     {
         public TapeKey Key => new(Day, Venue, Instrument, ContractId);
     }

@@ -1,6 +1,7 @@
 using System.Data.Common;
 using System.Diagnostics;
 using System.Text;
+using System.Threading;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -10,6 +11,7 @@ using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 using Npgsql;
@@ -102,6 +104,274 @@ public sealed class TapeRetentionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Prune_WhenTheSourceCountChanged_KeepsThatDayAndDeletesTheMatch()
+    {
+        DateOnly oldDay = new(2026, 7, 2);
+        await InsertTradeAsync(DayStart(oldDay).AddHours(1), sequence: 1, contract: "late");
+        await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 2, contract: "late");
+        await InsertTradeAsync(DayStart(oldDay).AddHours(1), sequence: 3, contract: "match");
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "late", rowCount: 1);
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "match", rowCount: 1);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> skipped = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.TapePruneSkippedInstrument);
+        CapturingLogger<TapeRetentionPass> logs = new();
+        List<Activity> spans = [];
+        using ActivityListener listener = RetentionSpans(telemetry, spans);
+
+        TapeRetentionRun run = await PruneAsync(telemetry, logs, batchSize: 10);
+
+        run.Rows.Should().Be(1);
+        run.DaysSkipped.Should().Be(0);
+        run.SourceCountChanged.Should().Be(1);
+        (await SequencesAsync()).Should().Equal(1L, 2L);
+        skipped.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], TapePruneReason.SourceCountChanged)
+            && measurement.Value == 1);
+        skipped.GetMeasurementSnapshot().Should().NotContain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], TapePruneReason.NoReceipt));
+        logs.Warnings.Should().Contain(message =>
+            message.Contains("late", StringComparison.Ordinal)
+            && message.Contains("source has 2", StringComparison.Ordinal));
+        logs.Messages.Should().NotContain(message =>
+            message.Contains("no uploaded trades receipt", StringComparison.Ordinal)
+            && message.Contains("late", StringComparison.Ordinal));
+        Activity span = spans.Should().ContainSingle(candidate => candidate.OperationName == "tape.retention")
+            .Subject;
+        span.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(TapeRetentionOutcome.Pruned);
+        span.GetTagItem(TapeRetentionOutcome.SourceCountChanged).Should().Be(1);
+        TapeExportReceipt withdrawn = await TradesReceiptAsync("late");
+        withdrawn.UploadState.Should().Be(TapeExportReceipt.StatePending);
+        withdrawn.Sha256.Should().BeEmpty();
+        withdrawn.FailureType.Should().Be(TapePruneReason.SourceCountChanged);
+        (await new EfRecorderHealthStore(_database).TapeDaysKeptAsync(CancellationToken.None)).Should().Be(1);
+
+        CapturingLogger<TapeRetentionPass> again = new();
+        TapeRetentionRun second = await PruneAsync(telemetry, again, batchSize: 10);
+
+        second.Rows.Should().Be(0);
+        second.SourceCountChanged.Should().Be(0);
+        again.Warnings.Should().BeEmpty();
+        (await SequencesAsync()).Should().Equal(1L, 2L);
+    }
+
+    [Fact]
+    public async Task Prune_WhenOnlyTheSourceCountChanged_SetsTheMismatchOutcome()
+    {
+        DateOnly oldDay = new(2026, 7, 2);
+        await InsertTradeAsync(DayStart(oldDay).AddHours(1), sequence: 1);
+        await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 2);
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, rowCount: 1);
+        using HostTelemetry telemetry = new();
+        List<Activity> spans = [];
+        using ActivityListener listener = RetentionSpans(telemetry, spans);
+
+        TapeRetentionRun run = await PruneAsync(telemetry, new(), batchSize: 10);
+
+        run.Rows.Should().Be(0);
+        run.SourceCountChanged.Should().Be(1);
+        (await SequencesAsync()).Should().Equal(1L, 2L);
+        Activity span = spans.Should().ContainSingle(candidate => candidate.OperationName == "tape.retention")
+            .Subject;
+        span.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(TapeRetentionOutcome.SourceCountChanged);
+        span.GetTagItem(TapeRetentionOutcome.SourceCountChanged).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Prune_WhenARowArrivesBeforeTheDelete_KeepsThatDay()
+    {
+        DateOnly oldDay = new(2026, 7, 2);
+        await InsertTradeAsync(DayStart(oldDay).AddHours(1), sequence: 1);
+        await InsertTradeAsync(DayStart(oldDay).AddHours(1), sequence: 2, contract: "other");
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, rowCount: 1);
+        InsertBeforeCommand extra = new(
+            _fixture.ConnectionString,
+            "\"RecordedAt\" <= @exportedAt",
+            DayStart(oldDay).AddHours(3),
+            sequence: 3,
+            contract: Contract,
+            recordedAt: _now.AddHours(1));
+        await using TopstepXDbContext database = _fixture.CreateContext(extra);
+
+        TapeRetentionRun run = await new TapeRetentionPass(
+                database,
+                Options.Create(new TapeRetentionOptions()),
+                new FakeTimeProvider(_now),
+                new CapturingLogger<TapeRetentionPass>(),
+                new HostTelemetry(),
+                batchSize: 10)
+            .PruneAsync(static () => true, CancellationToken.None);
+
+        extra.Inserts.Should().Be(1);
+        run.Rows.Should().Be(1);
+        run.SourceCountChanged.Should().Be(0);
+        run.LateRows.Should().Be(1);
+        (await SequencesAsync()).Should().Equal(2L, 3L);
+        (await TradesReceiptAsync(Contract)).UploadState.Should().Be(TapeExportReceipt.StateUploaded);
+    }
+
+    [Fact]
+    public async Task Prune_WhenTheDayHasMoreRowsThanOneBatch_DeletesThemAll()
+    {
+        DateOnly oldDay = new(2026, 7, 2);
+        for (int sequence = 1; sequence <= 15; sequence++)
+        {
+            await InsertTradeAsync(DayStart(oldDay).AddMinutes(sequence), sequence);
+        }
+
+        await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 99, contract: "other");
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, rowCount: 15);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> skipped = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.TapePruneSkippedInstrument);
+
+        TapeRetentionRun run = await PruneAsync(telemetry, new(), batchSize: 10);
+
+        run.Rows.Should().Be(15);
+        run.Batches.Should().Be(2);
+        run.SourceCountChanged.Should().Be(0);
+        (await SequencesAsync()).Should().Equal(99L);
+        (await TradesReceiptAsync(Contract)).UploadState.Should().Be(TapeExportReceipt.StateUploaded);
+        skipped.GetMeasurementSnapshot().Should().NotContain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], TapePruneReason.SourceCountChanged));
+    }
+
+    [Fact]
+    public async Task Prune_WhenARowArrivesBetweenBatches_KeepsThatRowAndTheReceipt()
+    {
+        DateOnly oldDay = new(2026, 7, 2);
+        for (int sequence = 1; sequence <= 15; sequence++)
+        {
+            await InsertTradeAsync(DayStart(oldDay).AddMinutes(sequence), sequence);
+        }
+
+        await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 99, contract: "other");
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, rowCount: 15);
+        InsertBeforeCommand extra = new(
+            _fixture.ConnectionString,
+            "\"RecordedAt\" <= @exportedAt",
+            DayStart(oldDay).AddHours(4),
+            sequence: 50,
+            contract: Contract,
+            recordedAt: _now.AddHours(1),
+            skip: 1);
+        await using TopstepXDbContext database = _fixture.CreateContext(extra);
+        using HostTelemetry telemetry = new();
+        List<Activity> spans = [];
+        using ActivityListener listener = RetentionSpans(telemetry, spans);
+
+        TapeRetentionRun run = await new TapeRetentionPass(
+                database,
+                Options.Create(new TapeRetentionOptions()),
+                new FakeTimeProvider(_now),
+                new CapturingLogger<TapeRetentionPass>(),
+                telemetry,
+                batchSize: 10)
+            .PruneAsync(static () => true, CancellationToken.None);
+
+        extra.Inserts.Should().Be(1);
+        run.Rows.Should().Be(15);
+        run.SourceCountChanged.Should().Be(0);
+        run.LateRows.Should().Be(1);
+        (await SequencesAsync()).Should().Equal(50L, 99L);
+        (await TradesReceiptAsync(Contract)).UploadState.Should().Be(TapeExportReceipt.StateUploaded);
+        (await new EfRecorderHealthStore(_database).TapeLateRowsAsync(CancellationToken.None)).Should().Be(1);
+        spans.Should().Contain(span =>
+            span.OperationName == "tape.retention"
+            && (int?)span.GetTagItem(TapeRetentionOutcome.LateRows) == 1);
+    }
+
+    [Fact]
+    public async Task Prune_WhenARowArrivesBeforeTheChunkDrop_KeepsTheChunk()
+    {
+        DateTimeOffset old = new(2026, 1, 6, 15, 0, 0, TimeSpan.Zero);
+        await InsertTradeAsync(old, sequence: 1);
+        await InsertReceiptAsync(DateOnly.FromDateTime(old.UtcDateTime), TapeExportReceipt.StateUploaded);
+        (await ChunksCoveringAsync(old, old)).Should().Be(1);
+        InsertBeforeCommand extra = new(
+            _fixture.ConnectionString,
+            "retention-drop-guard",
+            old.AddMinutes(1),
+            sequence: 2,
+            contract: Contract,
+            recordedAt: _now.AddHours(1));
+        await using TopstepXDbContext database = _fixture.CreateContext(extra);
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> skipped = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.TapePruneSkippedInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = RetentionSpans(telemetry, spans);
+        CapturingLogger<TapeRetentionPass> logs = new();
+
+        TapeRetentionRun run = await new TapeRetentionPass(
+                database,
+                Options.Create(new TapeRetentionOptions()),
+                new FakeTimeProvider(_now),
+                logs,
+                telemetry,
+                batchSize: 10)
+            .PruneAsync(static () => true, CancellationToken.None);
+
+        extra.Inserts.Should().Be(1);
+        run.ChunksDropped.Should().Be(0);
+        run.DropRefused.Should().Be(TapePruneReason.LateRow);
+        run.SourceCountChanged.Should().Be(0);
+        (await ChunksCoveringAsync(old, old)).Should().Be(1);
+        (await SequencesAsync()).Should().Equal(2L);
+        (await TradesReceiptAsync(Contract)).UploadState.Should().Be(TapeExportReceipt.StateUploaded);
+        skipped.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.ReasonTag], TapePruneReason.LateRow));
+        logs.Warnings.Should().Contain(message => message.Contains("late_row", StringComparison.Ordinal));
+        spans.Should().Contain(span =>
+            span.OperationName == "tape.retention"
+            && (string?)span.GetTagItem(HostTelemetry.ReasonTag) == TapePruneReason.LateRow);
+    }
+
+    [Fact]
+    public async Task Prune_WhenTheSourceCountChanged_DeletesOnlyAfterTheDayIsExportedAgain()
+    {
+        DateOnly oldDay = new(2026, 7, 2);
+        string destination = Path.Combine(
+            Path.GetTempPath(), "tape-retention-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(destination);
+        try
+        {
+            await InsertTradeAsync(DayStart(oldDay).AddHours(1), sequence: 1);
+            await ExportAsync(destination);
+            (await TradesReceiptAsync(Contract)).RowCount.Should().Be(1);
+
+            await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 2);
+            TapeRetentionRun kept = await PruneAsync(batchSize: 10);
+
+            kept.Rows.Should().Be(0);
+            (await SequencesAsync()).Should().Equal(1L, 2L);
+            TapeExportReceipt withdrawn = await TradesReceiptAsync(Contract);
+            withdrawn.UploadState.Should().Be(TapeExportReceipt.StatePending);
+            withdrawn.Sha256.Should().BeEmpty();
+
+            await ExportAsync(destination);
+            TapeExportDay exported = await TapeExportArchive.ReadDayAsync(
+                destination, oldDay, CancellationToken.None);
+            exported.Trades.Select(row => row.Sequence).Should().Equal(1L, 2L);
+            TapeExportReceipt again = await TradesReceiptAsync(Contract);
+            again.UploadState.Should().Be(TapeExportReceipt.StateUploaded);
+            again.RowCount.Should().Be(2);
+
+            TapeRetentionRun deleted = await PruneAsync(batchSize: 10);
+
+            deleted.SourceCountChanged.Should().Be(0);
+            (await SequencesAsync()).Should().BeEmpty();
+        }
+        finally
+        {
+            if (Directory.Exists(destination))
+            {
+                Directory.Delete(destination, recursive: true);
+            }
+        }
+    }
+
+    [Fact]
     public async Task Prune_WhenOnlySomeDaysHaveReceipts_DeletesThoseDays()
     {
         DateOnly exported = new(2026, 6, 1);
@@ -143,7 +413,7 @@ public sealed class TapeRetentionTests : IAsyncLifetime
         await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 2, contract: "A");
         await InsertTradeAsync(DayStart(oldDay).AddHours(3), sequence: 3, contract: "A");
         await InsertTradeAsync(DayStart(oldDay).AddHours(4), sequence: 4, contract: "B");
-        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "A");
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "A", rowCount: 3);
 
         TapeRetentionPass pass = CreatePass(
             new HostTelemetry(), new CapturingLogger<TapeRetentionPass>(), 1);
@@ -271,7 +541,7 @@ public sealed class TapeRetentionTests : IAsyncLifetime
         await InsertTradeAsync(DayStart(oldDay).AddHours(2), sequence: 2, contract: "A");
         await InsertTradeAsync(DayStart(oldDay).AddHours(3), sequence: 3, contract: "A");
         await InsertTradeAsync(DayStart(oldDay).AddHours(4), sequence: 4, contract: "B");
-        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "A");
+        await InsertReceiptAsync(oldDay, TapeExportReceipt.StateUploaded, contract: "A", rowCount: 3);
         using HostTelemetry telemetry = new();
         using MetricCollector<long> lost = new(
             telemetry, HostTelemetry.Name, HostTelemetry.TapePruneLeaseLostInstrument);
@@ -364,6 +634,7 @@ public sealed class TapeRetentionTests : IAsyncLifetime
         command.Parameters.AddWithValue("dayStart", DayStart(oldDay));
         command.Parameters.AddWithValue("dayEnd", DayStart(oldDay).AddDays(1));
         command.Parameters.AddWithValue("batch", 2);
+        command.Parameters.AddWithValue("exportedAt", _now);
 
         StringBuilder plan = new();
         await using (NpgsqlDataReader reader = await command.ExecuteReaderAsync())
@@ -525,7 +796,62 @@ public sealed class TapeRetentionTests : IAsyncLifetime
             .ToListAsync();
     }
 
+    private async Task<TapeExportReceipt> TradesReceiptAsync(string contract)
+    {
+        _database.ChangeTracker.Clear();
+        return await _database.TapeExportReceipts.AsNoTracking().SingleAsync(row =>
+            row.Kind == TapeExportArchive.TradesDirectory
+            && row.Format == TapeExportArchive.CsvGzFormat
+            && row.ContractId == contract);
+    }
+
+    private async Task ExportAsync(string destination)
+    {
+        await new TapeExportPass(
+                _database,
+                Options.Create(new TapeExportOptions
+                {
+                    Enabled = true,
+                    Path = destination,
+                    Schedule = TapeExportOptions.DefaultSchedule,
+                    Format = TapeExportOptions.DefaultFormat,
+                }),
+                new FakeTimeProvider(_now),
+                new HostTelemetry(),
+                new AcceptingUploader(),
+                NullLogger<TapeExportPass>.Instance)
+            .ExportAsync(null, CancellationToken.None);
+    }
+
+    private static ActivityListener RetentionSpans(HostTelemetry telemetry, List<Activity> into)
+    {
+        ActivityListener listener = new()
+        {
+            ShouldListenTo = source => ReferenceEquals(source, telemetry.Activities),
+            Sample = static (ref ActivityCreationOptions<ActivityContext> _) =>
+                ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = into.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+        return listener;
+    }
+
     private static DateTimeOffset DayStart(DateOnly day) => new(day, TimeOnly.MinValue, TimeSpan.Zero);
+
+    private sealed class AcceptingUploader : ITapeDriveUploader
+    {
+        public bool IsEnabled => true;
+
+        public Task<TapeDriveUploadResult> UploadAsync(
+            TapeDriveUpload upload,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new TapeDriveUploadResult(
+                TapeDriveUploadStatus.Uploaded,
+                "drive-file",
+                1,
+                null,
+                null));
+    }
 }
 
 /// <summary>
@@ -607,6 +933,92 @@ public sealed class TapeRetentionPlainPostgresTests : IAsyncLifetime
                 ({day}, {"trades"}, {"csv.gz"}, {"test"}, {"ES"}, {"CON.F.US.EP.Z26"}, {0},
                  {"trades/test/ES/x.csv.gz"}, {"abc123"}, {1}, {_now}, {"uploaded"})
             """);
+    }
+}
+
+/// <summary>Inserts one trade on another connection just before the marked command runs.</summary>
+sealed class InsertBeforeCommand : DbCommandInterceptor
+{
+    private readonly string _connectionString;
+    private readonly string _marker;
+    private readonly DateTimeOffset _time;
+    private readonly long _sequence;
+    private readonly string _contract;
+    private readonly DateTimeOffset _recordedAt;
+    private readonly int _skip;
+    private int _seen;
+
+    public InsertBeforeCommand(
+        string connectionString,
+        string marker,
+        DateTimeOffset time,
+        long sequence,
+        string contract,
+        DateTimeOffset? recordedAt = null,
+        int skip = 0)
+    {
+        _connectionString = connectionString;
+        _marker = marker;
+        _time = time;
+        _sequence = sequence;
+        _contract = contract;
+        _recordedAt = recordedAt ?? time;
+        _skip = skip;
+    }
+
+    public int Inserts { get; private set; }
+
+    /// <inheritdoc />
+    public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        InsertIfMatch(command);
+        return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public override ValueTask<InterceptionResult<int>> NonQueryExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<int> result,
+        CancellationToken cancellationToken = default)
+    {
+        InsertIfMatch(command);
+        return base.NonQueryExecutingAsync(command, eventData, result, cancellationToken);
+    }
+
+    private void InsertIfMatch(DbCommand command)
+    {
+        if (!command.CommandText.Contains(_marker, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (_seen++ < _skip || _seen > _skip + 1)
+        {
+            return;
+        }
+
+        using NpgsqlConnection connection = new(_connectionString);
+        connection.Open();
+        using NpgsqlCommand insert = new(
+            """
+            INSERT INTO "Trades"
+                ("Venue", "Instrument", "ContractId", "TradeTimeUtc", "Sequence",
+                 "Price", "Size", "Direction", "RecordedAt")
+            VALUES
+                ('test', 'ES', @contract, @time, @sequence, 5000, 1, 1, @recorded)
+            """,
+            connection);
+        insert.Parameters.AddWithValue("contract", _contract);
+        insert.Parameters.AddWithValue("time", _time);
+        insert.Parameters.AddWithValue("recorded", _recordedAt);
+        insert.Parameters.AddWithValue("sequence", _sequence);
+        insert.ExecuteNonQuery();
+        Inserts++;
     }
 }
 

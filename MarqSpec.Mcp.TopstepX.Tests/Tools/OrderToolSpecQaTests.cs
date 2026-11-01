@@ -1,3 +1,4 @@
+using System.Data.Common;
 using System.Diagnostics;
 using System.Reflection;
 using FluentAssertions;
@@ -1107,6 +1108,15 @@ public sealed class OrderToolSpecQaTests
                 OrderId: Interlocked.Increment(ref _nextId));
     }
 
+    /// <summary>A store fault, not a programming error. The re-check must refuse, not throw.</summary>
+    private sealed class StoreFaultException : DbException
+    {
+        public StoreFaultException()
+            : base("the trading store did not answer")
+        {
+        }
+    }
+
     /// <summary>Thread-safe in-memory audit store; uniqueness mirrors the partial unique index.</summary>
     private sealed class QaAudit : ITradingAuditLogWriter
     {
@@ -1162,7 +1172,7 @@ public sealed class OrderToolSpecQaTests
                 if (_faultsLeft > 0)
                 {
                     _faultsLeft--;
-                    throw new InvalidOperationException("audit write failed during the writer-lock re-check");
+                    throw new StoreFaultException();
                 }
 
                 _rows.Add(request);

@@ -260,9 +260,19 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    `IX_TradingAuditLog_FinaliseId_Outcome` on `(FinaliseId, Outcome)`, where `FinaliseId` is not
    null, is what keeps that to one reversal and one `Refused` row per attempt
    (`20261101114605_AddTradingAuditFinaliseId`). If both attempts fail,
-   nothing new is written. The pre-send claim stays `Unknown`, a cap
+   the gate reads the store for that `FinaliseId`. A `Refused` row there is that refusal. When the
+   lookup also fails — connection refused or broken, a command timeout, or an `NpgsqlException` or
+   `DbException` from the store — the caller still gets the writer refusal
+   (`account_writer_unavailable` or `account_writer_held`) and no exception (gh#958).
+   Nothing new is written. The pre-send claim stays `Unknown`, a cap
    charge that already committed stays charged, a same-key retry replays `OutcomeUnknown`, and the
-   caller needs a fresh idempotency key. Nothing was sent. A drop during that call is the
+   caller needs a fresh idempotency key. Nothing was sent. The same store faults on an earlier gate
+   read or write (the daily-cap lock, the cap total, the claim, a preview row, or a refusal audit)
+   return `error` when the outage is why the call cannot continue, or the refusal already decided
+   when only its audit row failed. The fault is logged by type. Caller cancellation and a
+   programming error (`ArgumentException`, `InvalidOperationException`) still propagate. A store
+   fault after the send has started stays `OutcomeUnknown`. An outage never becomes an allow.
+   A drop during that call is the
    window that remains: the send may already be in flight, and the next write must take the lock
    again. Reads and the recorder do not take the lock. The lock is released on shutdown. A dropped
    connection drops the lock; the next write looks up `pg_locks` for this backend (`objsubid` 2)
@@ -295,7 +305,8 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    none. The kill switch, stage, allowlist, denylist, caps, a blank key, an idempotency conflict,
    `account_writer_held`, `account_writer_unavailable`, a gateway
    refusal, and a `trading_disabled` that lands after the claim write a `Refused` row. A preview writes
-   `Preview`. The pre-send `Unknown` claim is the only `Unknown` row for a keyed send.
+   `Preview`. The pre-send `Unknown` claim is the only `Unknown` row for a keyed send. A store outage
+   before the send still refuses when that audit row cannot be written (gh#958).
 10. **HTTP OAuth** — when `Mcp__Auth__Mode=OAuth`, trading tools require a **write scope**
    distinct from read (gh#719). Stdio/local deployments rely on process boundary + enable flag.
 

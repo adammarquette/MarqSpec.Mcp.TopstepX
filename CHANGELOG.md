@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A database outage on the trading gate refuses instead of throwing** (gh#958, ADR-0024).
+  A connection failure, a command timeout, or a store exception before the send returns the
+  fail-closed refusal. When both writer-lock saves fail and the following lookup fails too, the
+  caller still gets `account_writer_unavailable` or `account_writer_held`. An audit write that
+  fails is logged and the refusal is still returned. Caller cancellation still throws. Nothing
+  is sent.
 - **Expected tape-volume prepare logs are not Errors** (gh#894).
 - **Required-store review follow-ups** (gh#843, #864). The cold-start termination test
   waits until the applying command has started, without polling pg_stat_activity.

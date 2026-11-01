@@ -57,6 +57,69 @@ public sealed class LatestQuoteStoreTests(SeriesStoreFixture fixture) : IAsyncLi
     }
 
     [Fact]
+    public async Task Find_ReturnsTheRowAndItsDatabaseAge()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        LatestQuoteStore store = new(database);
+        await store.UpsertAsync([Draft(bid: 5m)], CancellationToken.None);
+
+        LatestQuoteRow? row = await store.FindAsync("projectx", "CON.F.US.EP.Z26", CancellationToken.None);
+
+        row.Should().NotBeNull();
+        row!.Bid.Should().Be(5m);
+        row.Volume.Should().Be(3L);
+        row.AgeSeconds.Should().BeGreaterThanOrEqualTo(0);
+        row.AgeSeconds.Should().BeLessThan(60);
+        (await store.FindAsync("projectx", "CON.F.US.EP.H27", CancellationToken.None)).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Find_AgesAPlantedOldReceipt()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        LatestQuoteStore store = new(database);
+        await store.UpsertAsync([Draft(bid: 5m)], CancellationToken.None);
+        await database.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE "LatestQuotes"
+            SET "ReceivedAt" = clock_timestamp() - interval '1 minute'
+            WHERE "ContractId" = {0}
+            """,
+            "CON.F.US.EP.Z26");
+
+        LatestQuoteRow? row = await store.FindAsync("projectx", "CON.F.US.EP.Z26", CancellationToken.None);
+
+        row!.AgeSeconds.Should().BeGreaterThan(30);
+    }
+
+    [Fact]
+    public async Task FindFront_ReturnsTheNewestRowForTheInstrument()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        LatestQuoteStore store = new(database);
+        await store.UpsertAsync(
+            [
+                Draft(bid: 1m, contract: "CON.F.US.EP.U26"),
+                Draft(bid: 2m, contract: "CON.F.US.EP.Z26"),
+            ],
+            CancellationToken.None);
+        await database.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE "LatestQuotes"
+            SET "ReceivedAt" = clock_timestamp() - interval '1 hour'
+            WHERE "ContractId" = {0}
+            """,
+            "CON.F.US.EP.U26");
+
+        LatestQuoteFront? front = await store.FindFrontAsync("ES", CancellationToken.None);
+
+        front.Should().NotBeNull();
+        front!.Venue.Should().Be("projectx");
+        front.ContractId.Should().Be("CON.F.US.EP.Z26");
+        (await store.FindFrontAsync("NQ", CancellationToken.None)).Should().BeNull();
+    }
+
+    [Fact]
     public async Task TheStamp_IsTheDatabaseClock()
     {
         await using TopstepXDbContext database = _fixture.CreateContext();

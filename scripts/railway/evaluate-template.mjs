@@ -388,6 +388,12 @@ if (server) {
     fail(`[static-token-no-oauth] server: ${k} must not be set beside Mcp__Auth__Mode=StaticToken (McpOptions refuses it)`);
   if (literal(env.ASPNETCORE_FORWARDEDHEADERS_ENABLED) !== "true") fail("server: behind Railway's edge, ASPNETCORE_FORWARDEDHEADERS_ENABLED must be true");
   if (literal(env.MarketData__RecordTape) !== "false") fail("server: MarketData__RecordTape must be false; the recorder owns the tape");
+  // The server lists get_quote. It must not write quotes: that would open a hub beside the recorder.
+  if (literal(env.MarketData__RecordLatestQuotes) !== "false") {
+    fail(
+      "[server-records-quotes] server: MarketData__RecordLatestQuotes must be the "
+      + "literal \"false\"; the server reads quotes and never writes them");
+  }
   // gh#772: two sessions or replicas trading one account is undecided, so exactly one server replica, stated
   // explicitly (an omitted count would leave it to Railway's dashboard), in one region. SDK 3.16.0 expresses scale
   // only as deploy.numReplicas / deploy.region / deploy.multiRegionConfig (from replicas/regions); it has no
@@ -409,6 +415,46 @@ if (recorder) {
   if (d.numReplicas !== 1 || d.multiRegionConfig) fail(`recorder: exactly one replica (ADR-0016 one recorder), got ${JSON.stringify(d.numReplicas ?? d.multiRegionConfig)}`);
   if (d.overlapSeconds !== 0) fail("recorder: overlapSeconds must be 0 to shorten the two-recorder window");
   if (!(d.drainingSeconds >= 10)) fail("recorder: drainingSeconds must give the lease time to release (>= 10)");
+}
+
+// .NET binds a bool case-insensitively and trims, so "True" and " true" turn the
+// tool on. literal() is undefined for a shared or variable reference, which the
+// old tie then treated as off. Only the exact literals "true" and "false", or
+// absence (the code default, false), are accepted.
+function quoteSwitch(env, key, service) {
+  if (!Object.prototype.hasOwnProperty.call(env, key)) return "absent";
+  const value = env[key];
+  const text = literal(value);
+  if (text === "true" || text === "false") return text;
+  fail(
+    `[quote-switch] ${service}: ${key} must be the literal "true" or "false", `
+    + `or absent; got ${JSON.stringify(value)}`);
+  return "invalid";
+}
+
+// get_quote is listed only when the recorder is writing, and the recorder writes
+// only when the tool is listed. Both off is a coherent "feature not deployed".
+// One side on is not. "On" is the exact literal "true". The server's own write
+// switch is pinned above and is not this pair.
+if (server && recorder) {
+  const serverEnv = server.variables ?? {};
+  const recorderEnv = recorder.variables ?? {};
+  const quoteTool = quoteSwitch(serverEnv, "MarketData__GetQuoteEnabled", "server");
+  const quoteWrite = quoteSwitch(recorderEnv, "MarketData__RecordLatestQuotes", "recorder");
+  quoteSwitch(recorderEnv, "MarketData__GetQuoteEnabled", "recorder");
+  const toolOn = quoteTool === "true";
+  const writeOn = quoteWrite === "true";
+  if (quoteTool !== "invalid" && quoteWrite !== "invalid" && toolOn !== writeOn) {
+    if (toolOn) {
+      fail(
+        "[get-quote-without-recorder] server: MarketData__GetQuoteEnabled is \"true\" "
+        + "but the recorder's MarketData__RecordLatestQuotes is not");
+    } else {
+      fail(
+        "[quotes-recorded-unread] recorder: MarketData__RecordLatestQuotes is \"true\" "
+        + "but the server's MarketData__GetQuoteEnabled is not");
+    }
+  }
 }
 
 // ---- tape export (gh#755) -------------------------------------------------------------------------------

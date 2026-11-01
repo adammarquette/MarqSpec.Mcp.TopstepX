@@ -108,13 +108,24 @@ public sealed class TapeRetentionWorkerTests
         clock.Advance(TapeRetentionWorker.StartupDelay);
         await pass.Called.WaitAsync(TimeSpan.FromSeconds(5));
         // Called is signalled before the throw, so the worker's catch can log after this wait.
-        using (CancellationTokenSource logged = new(TimeSpan.FromSeconds(5)))
+        using CancellationTokenSource logged = new(TimeSpan.FromSeconds(5));
+        try
         {
             while (!logs.Messages.ToArray().Any(
                 message => message.Contains("disk full", StringComparison.Ordinal)))
             {
                 await Task.Delay(1, logged.Token);
             }
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken == logged.Token)
+        {
+            string seen = string.Join(Environment.NewLine, logs.Messages);
+            throw new InvalidOperationException(
+                seen.Length == 0
+                    ? "Expected a log line containing \"disk full\". No log lines were recorded."
+                    : "Expected a log line containing \"disk full\". Saw:"
+                        + Environment.NewLine
+                        + seen);
         }
 
         pass.Calls.Should().Be(1);
@@ -131,9 +142,17 @@ public sealed class TapeRetentionWorkerTests
     private static async Task WaitUntilArmed(TapeRetentionWorker worker, int count)
     {
         using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
-        while (worker.DelaysArmed < count)
+        try
         {
-            await Task.Delay(1, timeout.Token);
+            while (worker.DelaysArmed < count)
+            {
+                await Task.Delay(1, timeout.Token);
+            }
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken == timeout.Token)
+        {
+            throw new InvalidOperationException(
+                $"Tape retention armed {worker.DelaysArmed} delay(s); expected {count}.");
         }
     }
 

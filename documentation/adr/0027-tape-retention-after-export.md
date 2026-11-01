@@ -39,13 +39,16 @@ stay. Nothing for that key is deleted. The withdrawal is counted once, under tha
 reason. Pending is not a finished export, so the next export writes the whole day
 through the kept Drive file id. Drive is never replaced with a shorter day.
 
-`ExportedAtUtc` is the database `now()` taken inside the export's repeatable-read
-snapshot, not the application clock at the start of the pass. A live print stores
+`ExportedAtUtc` is Postgres `now()` from the export's repeatable-read transaction.
+`now()` is that transaction's start time. The pass reads the value after it has
+listed the keys and before it commits, then it streams the rows. It is not the
+wall clock at the `SELECT`, and it is not a snapshot of the rows in the file. It
+is not the application clock at the start of the pass. A live print stores
 `RecordedAt` as `ReceivedAt`, and that value is committed later, through the recorder
-channel. A print received before the snapshot and committed after it can carry a
-`RecordedAt` at or before `ExportedAtUtc` even though the file did not contain it.
-The source-count check withdraws that day before any delete. `RecordedAt` stays
-`ReceivedAt`.
+channel. A print received before the transaction started and committed after it can
+carry a `RecordedAt` at or before `ExportedAtUtc` even though the file did not
+contain it. The source-count check withdraws that day before any delete.
+`RecordedAt` stays `ReceivedAt`.
 
 `import-tape` inserts the file's `RecordedAt`. Imported rows therefore compare as if
 they were already exported. That is safe, because those rows came from an export.

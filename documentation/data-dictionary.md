@@ -749,8 +749,10 @@ Index: `(Instrument, Session, Indicator, Period, BucketStart)` — the shape of 
 
 One row for **every** trading attempt that passes validation — preview, refusal, or live — before the
 outcome is returned (ADR-0024 §5, gh#707 / gh#709 / gh#750). A size, price, non-positive partial-close, or
-over-long-key refusal writes no row, and neither does `trading_disabled` before the claim. The kill switch,
-stage, allowlist, denylist, caps, a blank key, an idempotency conflict, a gateway refusal, and
+over-long-key refusal writes no row, and neither does `trading_disabled` before the claim. The kill switch
+on a new order or a modify, a second trading writer (`account_writer_held` or
+`account_writer_unavailable`), stage, allowlist, denylist,
+caps, a blank key, an idempotency conflict, a gateway refusal, and
 `trading_disabled` after the claim write `Refused`. The idempotency claim **is** a row in this table: one
 `Unknown` row inserted before the send, unique on `(AccountId, Tool, IdempotencyKey)` where
 `Outcome = 'Unknown'` and the key is not empty. The migration `AddTradingAuditIdempotencyClaim` that creates

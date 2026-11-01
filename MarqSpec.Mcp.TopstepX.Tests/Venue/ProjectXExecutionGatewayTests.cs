@@ -25,7 +25,28 @@ public sealed class ProjectXExecutionGatewayTests
     public static IEnumerable<object[]> GateRefusalCases =>
         from verb in Enum.GetValues<WriteVerb>()
         from scenario in Enum.GetValues<GateScenario>()
+        where scenario != GateScenario.KillSwitch || verb is WriteVerb.Place or WriteVerb.Modify
         select new object[] { verb, scenario };
+
+    [Theory]
+    [InlineData(WriteVerb.Cancel)]
+    [InlineData(WriteVerb.Close)]
+    [InlineData(WriteVerb.PartialClose)]
+    public async Task CancelAndClose_CallTheClient_WhenTheKillSwitchIsEngaged(WriteVerb verb)
+    {
+        (ExecutionOrderClient fake, IProjectXApiClient client) = ExecutionOrderClient.Create();
+        IExecutionGateway gateway = Gateway(
+            client,
+            [PracticeAccount()],
+            enabled: true,
+            killSwitchEngaged: true);
+
+        ExecutionWriteResult result = await InvokeAsync(gateway, verb, PracticeAccountId);
+
+        ClientCalls(fake, verb).Should().Be(1);
+        result.Outcome.Should().Be(ExecutionWriteOutcome.BrokerAcknowledged);
+        result.GateRefusal.Should().BeNull();
+    }
 
     [Theory]
     [MemberData(nameof(GateRefusalCases))]

@@ -130,10 +130,21 @@ public sealed class TapeRetentionWorkerTests
 
     private static async Task WaitUntilArmed(TapeRetentionWorker worker, int count)
     {
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
-        while (worker.DelaysArmed < count)
+        // The next delay is armed on the continuation of the previous one, a thread-pool
+        // hop. 15s is the same bound the recorder tests use for that hop. A miss throws
+        // an assertion, not the cancellation that used to escape from Task.Delay.
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+        try
         {
-            await Task.Delay(1, timeout.Token);
+            while (worker.DelaysArmed < count)
+            {
+                await Task.Delay(1, timeout.Token);
+            }
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken == timeout.Token)
+        {
+            throw new InvalidOperationException(
+                $"Tape retention armed {worker.DelaysArmed} delay(s); expected {count}.");
         }
     }
 

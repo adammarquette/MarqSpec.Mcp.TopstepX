@@ -362,10 +362,17 @@ public sealed class TapeRetentionTests : IAsyncLifetime
                 sequence: 2,
                 recordedAt: _now.AddHours(1));
 
-            TapeRetentionRun kept = await PruneAsync(batchSize: 10);
+            using HostTelemetry telemetry = new();
+            List<Activity> spans = [];
+            using ActivityListener listener = RetentionSpans(telemetry, spans);
+            TapeRetentionRun kept = await PruneAsync(telemetry, new(), 10);
 
             kept.Rows.Should().Be(0);
             kept.LateRows.Should().Be(1);
+            spans.Should().Contain(span =>
+                span.OperationName == "tape.retention"
+                && (string?)span.GetTagItem(HostTelemetry.OutcomeTag) == TapeRetentionOutcome.LateRows
+                && Equals(span.GetTagItem(TapeRetentionOutcome.LateRows), 1));
             kept.SourceCountChanged.Should().Be(0);
             (await SequencesAsync()).Should().Equal(1L, 2L);
             TapeExportReceipt withdrawn = await TradesReceiptAsync(Contract);
@@ -781,6 +788,8 @@ public sealed class TapeRetentionTests : IAsyncLifetime
         using HostTelemetry telemetry = new();
         using MetricCollector<long> failures = new(
             telemetry, HostTelemetry.Name, HostTelemetry.TapePruneFailuresInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = RetentionSpans(telemetry, spans);
         await using TopstepXDbContext database = _fixture.CreateContext(new CancelDropOnce());
 
         TapeRetentionRun run = await new TapeRetentionPass(
@@ -801,6 +810,10 @@ public sealed class TapeRetentionTests : IAsyncLifetime
             Equals(measurement.Tags[HostTelemetry.ReasonTag], TapePruneReason.StatementTimeout));
         failures.GetMeasurementSnapshot().Should().NotContain(measurement =>
             Equals(measurement.Tags[HostTelemetry.ReasonTag], TapePruneReason.LockTimeout));
+        spans.Should().Contain(span =>
+            span.OperationName == "tape.retention"
+            && (string?)span.GetTagItem(HostTelemetry.OutcomeTag) == TapeRetentionOutcome.Pruned
+            && (string?)span.GetTagItem(HostTelemetry.ReasonTag) == TapePruneReason.StatementTimeout);
     }
 
     [Fact]

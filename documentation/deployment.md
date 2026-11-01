@@ -75,8 +75,43 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 | Service | Image | Role |
 |---|---|---|
 | `postgres` | `timescale/timescaledb-ha:pg17@sha256:cae37881…` (ADR-0004), digest-pinned | `PGDATA=/home/postgres/pgdata/data`; no domain, no TCP proxy. **Volume in production only** (below) |
-| `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **StaticToken** on `MCP_HTTP_BEARER_TOKEN` in every environment (ADR-0021 exception, temporary), `RecordTape=false` |
-| `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
+| `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **StaticToken** on `MCP_HTTP_BEARER_TOKEN` in every environment (ADR-0021 exception, temporary), `RecordTape=false`, `RecordLatestQuotes=false`, `GetQuoteEnabled=true` |
+| `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, `RecordLatestQuotes=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
+
+### Promoting latest quotes (gh#351)
+
+The recorder writes latest quotes. `MarketData__RecordLatestQuotes` there is the literal
+`true`. The server lists `get_quote`. `MarketData__GetQuoteEnabled` there is the literal
+`true`, and `RecordLatestQuotes` is the literal `false`, so the server does not open a
+hub. The recorder does not set `GetQuoteEnabled`, so it does not list the tool. Each of
+the server's `GetQuoteEnabled`, the recorder's `RecordLatestQuotes`, and the recorder's
+`GetQuoteEnabled` must be the literal `true`, the literal `false`, or absent. `True`, a
+padded `true`, and a shared or variable reference are rejected (`quote-switch`). The
+server write switch is only the literal `false` (`server-records-quotes`). The tool and
+the recorder's write switch are on together or off together. Compose and the code
+defaults stay off. Staging and production share this file (ADR-0016).
+
+**Load.** The recorder adds one price subscription per front contract on the single
+TopstepX session it already holds, beside the trade subscriptions. Quotes tick more
+often than trades, so the hub carries more messages, and the recorder writes at most
+one `LatestQuotes` batch per second. A refused subscribe backs off that contract only
+and does not stop the tape. Watch `get_recorder_health` first: `hubReconnects` and
+`lastTickAgeSeconds` are the signal until a telemetry backend exists. Production sets
+no OTLP endpoint ([architecture](architecture.md), [ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)),
+so the `mcp.quote.writes`, `mcp.quote.failures` and `mcp.quote.reads` counters go
+nowhere today. Postgres write load is that one batch a second. `LatestQuotes` is not
+a tape and it is not pruned.
+
+**Migration.** The Postgres service config does not change. The `LatestQuotes` table
+comes from migration `20261101034408_AddLatestQuotes`, which landed with gh#911. Both
+processes apply migrations at startup (`MigrateAsync`, called from `Program` before the
+host listens). The promoted image must contain that migration and the reader. An older
+image ignores the new switches and does not create the table.
+
+**Rollback.** Set the recorder's `MarketData__RecordLatestQuotes` and the server's
+`MarketData__GetQuoteEnabled` to the literal `false` together in this file. Apply to
+staging, then promote. The tie rejects flipping just one. A dashboard-only edit is
+overwritten the next time staging or production applies this file.
 
 `Deployment__ImageDigest` is derived from `SERVER_IMAGE`, never typed separately, and `/health` reports
 it as `digest`. `version` is the informational version stamped into that image at build

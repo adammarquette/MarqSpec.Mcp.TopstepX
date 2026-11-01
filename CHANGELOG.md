@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The recorder can store the latest quote per contract** (gh#351). `LatestQuotes` is one row
   per contract, upserted from the hub the tape recorder already holds. Volume is `bigint`.
   `ReceivedAt` is the database clock. `MarketData__RecordLatestQuotes` defaults off and does
-  not open a hub. Railway does not turn the switch on, so the feature is inert in production
-  until the deployment slice. Flushes are at most once per `MarketData__LatestQuoteFlush`
+  not open a hub. The Railway recorder sets it to the literal `true`; the Railway server
+  keeps the literal `false`. `True`, padding, and a shared reference are rejected.
+  Flushes are at most once per `MarketData__LatestQuoteFlush`
   (one second). A refused subscribe retries only that contract, on
   `MarketData__LatestQuoteSubscribeBackoff`. Fronts are resolved again on
   `MarketData__LatestQuoteFrontRefresh`. A volume that does not fit in `bigint` is skipped.
@@ -28,9 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   registered unless `MarketData__GetQuoteEnabled` is on, which defaults off. When it is on,
   the front is the newest stored row for the instrument. It returns bid, ask, last, age and
   whether the row is past `MarketData__LatestQuoteStaleAfter`. A missing row and an unknown
-  symbol are results. An unknown symbol is `unknown_symbol`, not the `R-5.3` error. A store
-  failure is `failed`, not `missing`. The call does not open a market hub and does not search
-  the venue. PR 3 turns the switch on with the recorder.
+  symbol are results. An unknown symbol is `unknown_symbol`, not the `R-5.3` error
+  (ADR-0016). A store failure is `failed`, not `missing`. The call does not open a market
+  hub and does not search the venue. The Railway server sets `MarketData__GetQuoteEnabled`
+  on. Around a roll the answer stays on the old contract until the new one ticks, named
+  and then stale (gh#922).
 - **Tape retention after a confirmed export (gh#763, ADR-0027).** The recorder deletes a UTC
   day of `Trades` only when an `uploaded` `csv.gz` trades receipt exists for that day, venue,
   instrument and contract. `TapeRetention__Days` defaults to 90 (accepted 7 through 3650).

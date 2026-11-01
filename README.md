@@ -650,11 +650,12 @@ process start, so listing them needs a restart. A reload does change, without a 
 `Trading__MaxContractsPerDay`. A reload into a configuration that fails validation refuses the call and does
 not keep the last good values.
 
-`get_quote` is registered only when `MarketData__GetQuoteEnabled` is on, which defaults off, so
-the tool is absent until that switch and the recorder's `MarketData__RecordLatestQuotes` are
-turned on together. It reads the latest stored bid and ask. It does not open a market hub.
-ProjectX publishes no REST quote endpoint; live bid/ask is SignalR-only, and the recorder is
-what writes the row. The HTTP
+`get_quote` is registered only when `MarketData__GetQuoteEnabled` is on. The code default
+is off. The Railway server sets it on and keeps `MarketData__RecordLatestQuotes` false.
+The recorder sets `MarketData__RecordLatestQuotes` on and does not list the tool. The call
+reads the latest stored bid and ask. It does not open a market hub. ProjectX publishes no
+REST quote endpoint; live bid/ask is SignalR-only, and the recorder is what writes the row.
+The HTTP
 transport can opt in to recording the trade tape (`MarketData__RecordTape`), which is prints and volume, not
 quotes. Whenever the venue client is configured, the process keeps the held TopstepX session fresh with
 `POST /api/Auth/validate` and does not call `loginKey` on a timer. That renewal is not tied to the recorder.

@@ -39,9 +39,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instrument and contract. `TapeRetention__Days` defaults to 90 (accepted 7 through 3650).
   Zero and a negative number are refused. No receipt, including `drive_disabled`, means the
   rows stay, and the pass logs and counts the skipped days. A chunk is dropped only when it
-  ends before the cutoff and every row in it has that receipt. A partly exported compressed
-  chunk is left. `LatestQuotes` is not pruned. Timescale `policy_retention` stays empty.
+  ends before the cutoff and every key in it has that receipt with a matching source count.
+  A partly exported compressed chunk is left. `LatestQuotes` is not pruned. Timescale
+  `policy_retention` stays empty.
   The Railway template is not edited; the code default applies where the key is absent.
+
+### Changed
+
+- **A tape day whose source count no longer matches is exported again** (gh#795).
+  The export checks gzip row counts before it records a receipt. A fresh day is written
+  at most twice in one pass. A generation already on disk counts as the first write, so
+  that pass writes it at most once more. Retention deletes an uploaded day only when the
+  current source count equals the receipt `RowCount`. A difference logs once, counts
+  `reason=source_count_changed`, and sets the receipt back to `pending`. The next export
+  writes the day with the true count. `get_recorder_health` reports how many of those
+  receipts are still waiting, as `tapeDaysKept`.
 
 ### Fixed
 

@@ -1084,7 +1084,7 @@ an end-of-day job. The same payload is served to a monitor at `GET /health/recor
 gate. `/health` stays the unauthenticated liveness probe and does not open a database connection.
 
 Returns `{ asOfUtc, feedConnected, feed, database, hubReconnects, session?, contracts, gaps?,
-cachedAtUtc?, ageMs? }`.
+cachedAtUtc?, ageMs?, tapeDaysKept? }`.
 
 `feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
 subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
@@ -1103,7 +1103,10 @@ later than `asOfUtc` is outside this report's window and is omitted. A reply reu
 five-second memo keeps that age against the cached `asOfUtc`. `hubReconnects`
 counts a successful market-hub connect after a connection was lost or a connect attempt failed.
 A clean first connect is zero, and zero is a real count. It is not the export-only
-`mcp.tape.reconnects` series.
+`mcp.tape.reconnects` series. `tapeDaysKept` counts trades receipts retention set back to
+pending because the source count no longer matched, still waiting for a new export. One
+receipt is one day, venue, instrument and contract. Zero is a real count. The field is
+omitted when the database probe did not connect.
 
 `session` is the product session in progress, or the one that most recently closed when the market is shut.
 It is omitted when the calendar cannot name one. A declared early close (`MarketData__EarlyCloses`) applies

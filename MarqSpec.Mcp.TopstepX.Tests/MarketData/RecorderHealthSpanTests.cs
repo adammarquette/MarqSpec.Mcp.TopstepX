@@ -113,6 +113,9 @@ public sealed class RecorderHealthSpanTests
             CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ContractLastTick>>([]);
 
+        public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(0);
+
         public Task<IReadOnlyList<CoverageSlice>> CoverageAsync(
             IReadOnlyCollection<string> instruments,
             DateTimeOffset windowStart,

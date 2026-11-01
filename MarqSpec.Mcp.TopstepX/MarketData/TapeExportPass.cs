@@ -115,6 +115,12 @@ public sealed class TapeExportPass(
     internal ITapeIdentitySession? IdentitySession { get; set; }
 
     /// <summary>
+    /// Runs after the manifest is published and before it is verified. Tests corrupt a file here.
+    /// Production leaves it unset.
+    /// </summary>
+    internal Action<DateOnly>? AfterManifestPublished { get; set; }
+
+    /// <summary>
     /// Span tag on <c>tape.upload</c> when a lock outcome replaces a Drive failure. Not a counter tag:
     /// a failure-type dimension would multiply <c>mcp.tape.uploads</c>.
     /// </summary>
@@ -225,19 +231,10 @@ public sealed class TapeExportPass(
                 using Activity? exportSpan = _telemetry.Activities.StartActivity("tape.export", ActivityKind.Internal);
                 exportSpan?.SetTag("tape.day", day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
-                TapeExportVerification written;
+                PreparedDay prepared;
                 try
                 {
-                    TapeExportVerification existing = await TapeExportArchive.VerifyAsync(_options.Path, day, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (existing.Verified)
-                    {
-                        written = existing;
-                    }
-                    else
-                    {
-                        written = await StreamDayAsync(day, now, cancellationToken).ConfigureAwait(false);
-                    }
+                    prepared = await PrepareDayAsync(day, now, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -246,26 +243,35 @@ public sealed class TapeExportPass(
                 catch (Exception exception)
                 {
                     exportSpan?.SetStatus(ActivityStatusCode.Error);
-                    _telemetry.TapeExport(TapeExportOutcome.ExportFailed, 1);
+                    exportSpan?.SetTag(HostTelemetry.OutcomeTag, TapeExportOutcome.ExportFailed);
+                    exportSpan?.SetTag(HostTelemetry.ExceptionTag, exception.GetType().Name);
+                    _telemetry.TapeExportFailed(exception.GetType().Name);
                     daysRefused++;
                     _logger.LogError(
+                        exception,
                         "Tape export of {Day} failed ({ExceptionType}). Local rows were left in place.",
                         day,
                         exception.GetType().Name);
                     continue;
                 }
 
-                if (!written.Verified)
+                if (prepared.Failure is string failure)
                 {
                     exportSpan?.SetStatus(ActivityStatusCode.Error);
-                    _telemetry.TapeExport(TapeExportOutcome.VerificationFailed, 1);
+                    exportSpan?.SetTag(HostTelemetry.OutcomeTag, TapeExportOutcome.VerificationFailed);
+                    exportSpan?.SetTag(HostTelemetry.ReasonTag, failure);
+                    _telemetry.TapeExport(TapeExportOutcome.VerificationFailed, 1, failure);
                     daysRefused++;
                     _logger.LogError(
-                        "Tape export of {Day} did not verify ({Reason}). Local rows were left in place.",
+                        "Tape export of {Day} refused the receipt ({Reason}: {Detail}). "
+                        + "Local rows were left in place.",
                         day,
-                        written.Reason);
+                        failure,
+                        prepared.Detail);
                     continue;
                 }
+
+                TapeExportVerification written = prepared.Written;
 
                 if (gate is null && _drive.IsEnabled)
                 {
@@ -335,6 +341,122 @@ public sealed class TapeExportPass(
             daysRefused);
 
         return new TapeExportReport(daysExported, daysRefused, rowsExported, 0);
+    }
+
+    /// <summary>
+    /// How many times one pass writes a day whose source count disagrees. The second is the last.
+    /// </summary>
+    private const int SourceCountWrites = 2;
+
+    /// <summary>
+    /// Files for one day, or why they were refused. <see cref="Failure"/> is null when they may upload.
+    /// </summary>
+    /// <param name="Written">The verified files. Empty when <paramref name="Failure"/> is set.</param>
+    /// <param name="Failure">
+    /// <see cref="TapeExportVerificationReason.Manifest"/> or
+    /// <see cref="TapeExportVerificationReason.SourceCount"/>. Null when the files match the source.
+    /// </param>
+    /// <param name="Detail">
+    /// The first check that failed. Empty when <paramref name="Failure"/> is null.
+    /// </param>
+    private readonly record struct PreparedDay(
+        TapeExportVerification Written,
+        string? Failure,
+        string Detail);
+
+    /// <summary>
+    /// Reuses a verified generation only when its row counts still match the source. A mismatch discards
+    /// that manifest and writes the day again, once. The count is not held in the file-write transaction:
+    /// a day that is still receiving rows is already excluded, and holding <c>REPEATABLE READ</c> across
+    /// the gzip write would pin that snapshot for the disk IO.
+    /// </summary>
+    private async Task<PreparedDay> PrepareDayAsync(
+        DateOnly day,
+        DateTimeOffset exportedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        TapeExportVerification existing = await TapeExportArchive.VerifyAsync(
+                _options.Path, day, cancellationToken)
+            .ConfigureAwait(false);
+        // A verified generation already on disk is the first write. This pass adds at most one retry.
+        int writes = SourceCountWrites;
+        if (existing.Verified)
+        {
+            string? reused = await SourceCountMismatchAsync(day, existing, cancellationToken)
+                .ConfigureAwait(false);
+            if (reused is null)
+            {
+                return new PreparedDay(existing, null, string.Empty);
+            }
+
+            DiscardFiles(day, existing);
+            writes = 1;
+            _logger.LogWarning(
+                "Tape export of {Day} will not reuse files the source count rejected ({Reason}).",
+                day,
+                reused);
+        }
+
+        for (int attempt = 1; attempt <= writes; attempt++)
+        {
+            TapeExportVerification written = await StreamDayAsync(day, exportedAtUtc, cancellationToken)
+                .ConfigureAwait(false);
+            if (!written.Verified)
+            {
+                return new PreparedDay(written, TapeExportVerificationReason.Manifest, written.Reason);
+            }
+
+            string? mismatch = await SourceCountMismatchAsync(day, written, cancellationToken)
+                .ConfigureAwait(false);
+            if (mismatch is null)
+            {
+                return new PreparedDay(written, null, string.Empty);
+            }
+
+            DiscardFiles(day, written);
+            if (attempt == writes)
+            {
+                _logger.LogWarning(
+                    "Tape export of {Day} is stuck after {Attempts} writes ({Reason}). "
+                    + "Those files were deleted.",
+                    day,
+                    attempt,
+                    mismatch);
+                _telemetry.TapeExportStuck(TapeExportVerificationReason.SourceCount);
+                return new PreparedDay(
+                    written,
+                    TapeExportVerificationReason.SourceCount,
+                    mismatch);
+            }
+
+            _logger.LogWarning(
+                "Tape export of {Day} source count disagreed ({Reason}). Writing the day again.",
+                day,
+                mismatch);
+        }
+
+        throw new InvalidOperationException(
+            "Tape export exhausted its source-count writes without a result.");
+    }
+
+    private void DiscardFiles(DateOnly day, TapeExportVerification files)
+    {
+        string manifest = TapeExportArchive.ManifestPath(_options.Path, day);
+        if (File.Exists(manifest))
+        {
+            File.Delete(manifest);
+        }
+
+        foreach (TapeExportStoredFile file in files.Files ?? [])
+        {
+            string absolute = Path.Combine(
+                _options.Path,
+                file.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(absolute))
+            {
+                File.Delete(absolute);
+            }
+        }
     }
 
     private async Task<TapeExportVerification> StreamDayAsync(
@@ -472,6 +594,7 @@ public sealed class TapeExportPass(
             new TapeExportDraft(generation, files),
             exportedAtUtc,
             cancellationToken).ConfigureAwait(false);
+        AfterManifestPublished?.Invoke(day);
         return await TapeExportArchive.VerifyAsync(_options.Path, day, cancellationToken).ConfigureAwait(false);
     }
 
@@ -1356,6 +1479,114 @@ public sealed class TapeExportPass(
         {
             throw new InvalidOperationException(string.Join(" ", results.Select(result => result.ErrorMessage)));
         }
+    }
+
+    /// <summary>
+    /// SQL comment on the source-count statements. A test inserts a row when it sees this, so the
+    /// count can disagree with the file that was just written.
+    /// </summary>
+    internal const string SourceCountSqlMarker = "tape-export-source-count";
+
+    private async Task<string?> SourceCountMismatchAsync(
+        DateOnly day,
+        TapeExportVerification written,
+        CancellationToken cancellationToken)
+    {
+        (DateTimeOffset start, DateTimeOffset end) = Bounds(day);
+        foreach (TapeExportStoredFile file in written.Files ?? [])
+        {
+            // Parquet carries the same rows as the gzip. The gzip count is the one compared to the source.
+            if (!string.Equals(file.Format, TapeExportArchive.CsvGzFormat, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (file.Kind is not "trades" and not "tape-coverage" and not "footprint")
+            {
+                return file.RelativePath + " kind " + file.Kind + " is not counted";
+            }
+
+            int source = await CountSourceRowsAsync(file, start, end, cancellationToken)
+                .ConfigureAwait(false);
+            if (source != file.Rows)
+            {
+                return file.RelativePath + " has " + file.Rows.ToString(CultureInfo.InvariantCulture)
+                    + " rows and the source has " + source.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<int> CountSourceRowsAsync(
+        TapeExportStoredFile file,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken cancellationToken)
+    {
+        // The marker is a comment. It does not change the count. The test that refuses a receipt
+        // watches for it and commits one extra source row before this statement runs.
+        if (file.Kind == "trades")
+        {
+            return await ScalarAsync(
+                $"""
+                -- tape-export-source-count
+                SELECT COUNT(*)::int AS "Value"
+                FROM "Trades" AS t
+                WHERE t."Venue" = {file.Venue}
+                  AND t."Instrument" = {file.Instrument}
+                  AND t."ContractId" = {file.ContractId}
+                  AND t."TradeTimeUtc" >= {start}
+                  AND t."TradeTimeUtc" < {end}
+                """,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (file.Kind == "tape-coverage")
+        {
+            DateTimeOffset stillListening = TapeCoverageRecord.StillListeningEnd;
+            return await ScalarAsync(
+                $"""
+                -- tape-export-source-count
+                SELECT COUNT(*)::int AS "Value"
+                FROM "TapeCoverage" AS c
+                WHERE c."Venue" = {file.Venue}
+                  AND c."Instrument" = {file.Instrument}
+                  AND c."ContractId" = {file.ContractId}
+                  AND c."RangeStart" >= {start}
+                  AND c."RangeStart" < {end}
+                  AND c."RangeEnd" <> {stillListening}
+                """,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (file.Kind == "footprint")
+        {
+            return await ScalarAsync(
+                $"""
+                -- tape-export-source-count
+                SELECT COUNT(*)::int AS "Value"
+                FROM "FootprintCells" AS f
+                WHERE f."Venue" = {file.Venue}
+                  AND f."Instrument" = {file.Instrument}
+                  AND f."ResolutionMinutes" = {file.ResolutionMinutes}
+                  AND f."BucketStart" >= {start}
+                  AND f."BucketStart" < {end}
+                """,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return -1;
+    }
+
+    private async Task<int> ScalarAsync(
+        FormattableString sql,
+        CancellationToken cancellationToken)
+    {
+        List<int> values = await _database.Database.SqlQuery<int>(sql)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return values.Count == 0 ? 0 : values[0];
     }
 
     private static (DateTimeOffset Start, DateTimeOffset End) Bounds(DateOnly day)

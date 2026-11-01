@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Unknown account stage is visible on the writes counter** (gh#732, ADR-0024).
+  The tag and the unwired alert are specified in
+  [deployment.md](documentation/deployment.md#unknown-account-stage-gh732).
 - **The recorder can store the latest quote per contract** (gh#351). `LatestQuotes` is one row
   per contract, upserted from the hub the tape recorder already holds. Volume is `bigint`.
   `ReceivedAt` is the database clock. `MarketData__RecordLatestQuotes` defaults off and does

@@ -190,20 +190,14 @@ public sealed class TradingExecutionGate(
     }
 
     /// <summary>
-    /// Refuses when the parsed stage is not <see cref="AccountStage.Practice"/>. Unknown stages also invoke
-    /// <paramref name="unknownStageSignal"/> for future metrics (gh#732).
+    /// Refuses when the parsed stage is not <see cref="AccountStage.Practice"/>. The writes counter
+    /// records an unknown stage (gh#732).
     /// </summary>
     /// <param name="stage">Stage from a fresh account row.</param>
     /// <param name="accountId">The venue account id.</param>
-    /// <param name="unknownStageSignal">Hook for unknown-stage observability.</param>
     /// <returns>A refusal, or <see langword="null"/> when the stage is practice.</returns>
-    public TradingExecutionRefusal? RefuseIfStageBlocksWrite(
-        AccountStage stage,
-        int accountId,
-        ITradingUnknownStageRefusalSignal unknownStageSignal)
+    public TradingExecutionRefusal? RefuseIfStageBlocksWrite(AccountStage stage, int accountId)
     {
-        ArgumentNullException.ThrowIfNull(unknownStageSignal);
-
         if (stage == AccountStage.Practice)
         {
             return null;
@@ -211,7 +205,6 @@ public sealed class TradingExecutionGate(
 
         if (stage == AccountStage.Unknown)
         {
-            unknownStageSignal.UnknownStageWriteRefused(accountId);
             return TradingExecutionRefusal.UnknownAccountStage(accountId);
         }
 
@@ -223,19 +216,16 @@ public sealed class TradingExecutionGate(
     /// </summary>
     /// <param name="accountId">The account the write targets.</param>
     /// <param name="marketData">Read seam used to re-fetch account rows (ADR-0024 §2).</param>
-    /// <param name="unknownStageSignal">Hook when stage parses as unknown.</param>
     /// <param name="cancellationToken">Cancellation.</param>
     /// <param name="resolvedAccount">When the risk gate already fetched this account, pass it to skip a second list call.</param>
     /// <returns>A refusal, or <see langword="null"/> when a venue write may proceed to the adapter.</returns>
     public async Task<TradingExecutionRefusal?> RefuseWriteUnlessPermittedAsync(
         int accountId,
         IMarketDataGateway marketData,
-        ITradingUnknownStageRefusalSignal unknownStageSignal,
         CancellationToken cancellationToken,
         VenueAccount? resolvedAccount = null)
     {
         ArgumentNullException.ThrowIfNull(marketData);
-        ArgumentNullException.ThrowIfNull(unknownStageSignal);
 
         TradingExecutionRefusal? disabled = RefuseIfDisabledOrHalted();
         if (disabled is not null)
@@ -263,6 +253,6 @@ public sealed class TradingExecutionGate(
         }
 
         AccountStage stage = _stageResolver.ResolveFromFreshVenueAccount(account);
-        return RefuseIfStageBlocksWrite(stage, accountId, unknownStageSignal);
+        return RefuseIfStageBlocksWrite(stage, accountId);
     }
 }

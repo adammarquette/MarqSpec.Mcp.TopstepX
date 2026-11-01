@@ -839,9 +839,10 @@ the recorder subscribed, and reports that age. It does not search the venue. A r
 `MarketData__LatestQuoteStaleAfter` is marked stale and still returned. The tool is registered
 only when `MarketData__GetQuoteEnabled` is on, which defaults off.
 A failure counter names the CLR type on `exception.type`, not the message.
-An older receipt cannot replace a newer one. This table is not subject to retention: gh#763
-will exclude it. A rolled contract's row stays until a later slice deletes it. Older quotes
-are not kept. This is not the tape. Not a hypertable.
+An older receipt cannot replace a newer one. This table is not subject to retention
+(gh#763, ADR-0027). The prune pass does not delete it. A rolled contract's row stays
+until a later slice deletes it. Older quotes are not kept. This is not the tape.
+Not a hypertable.
 
 No extra index. The key is `(Venue, ContractId)`.
 

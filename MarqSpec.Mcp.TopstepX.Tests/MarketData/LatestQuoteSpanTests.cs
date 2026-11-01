@@ -174,6 +174,12 @@ public sealed class LatestQuoteSpanTests
             IReadOnlyList<LatestQuoteDraft> quotes,
             CancellationToken cancellationToken) =>
             Task.FromResult(quotes.Count);
+
+        public Task<LatestQuoteRow?> FindAsync(
+            string venue,
+            string contractId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<LatestQuoteRow?>(null);
     }
 
     private sealed class ThrowingStore : ILatestQuoteStore
@@ -182,5 +188,11 @@ public sealed class LatestQuoteSpanTests
             IReadOnlyList<LatestQuoteDraft> quotes,
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("db down");
+
+        public Task<LatestQuoteRow?> FindAsync(
+            string venue,
+            string contractId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<LatestQuoteRow?>(null);
     }
 }

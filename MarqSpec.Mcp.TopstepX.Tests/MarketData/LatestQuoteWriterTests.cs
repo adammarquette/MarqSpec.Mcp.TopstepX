@@ -256,7 +256,7 @@ public sealed class LatestQuoteWriterTests
 
         resolves.Should().Be(2);
         logger.Warnings.Should().ContainSingle();
-        logger.Warnings[0].Exception.Should().BeOfType<InvalidOperationException>();
+        logger.Warnings[0].Exception.Should().BeNull();
         logger.Warnings[0].Text.Should().Contain(nameof(InvalidOperationException));
 
         await Task.Delay(30);
@@ -278,8 +278,32 @@ public sealed class LatestQuoteWriterTests
         await WaitUntil(() => hub.PriceSubscribeThrowCount >= 3);
         resolves.Should().Be(2);
         logger.Warnings.Should().HaveCount(3);
-        logger.Warnings[0].Exception.Should().NotBeNull();
-        logger.Warnings.Skip(1).Should().OnlyContain(warning => warning.Exception == null);
+        logger.Warnings.Should().OnlyContain(warning => warning.Exception == null);
+        logger.Warnings[0].Text.Should().Contain(nameof(InvalidOperationException));
+
+        await writer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ASubscribePassThatThrows_IsRetriedWithoutWaitingForTheFrontRefresh()
+    {
+        RecordingStore store = new();
+        (LatestQuoteWriter writer, FakeMarketHub hub, FakeTimeProvider clock) = BuildClock(
+            McpTransport.Http,
+            recordTape: true,
+            recordQuotes: true,
+            store,
+            frontRefresh: TimeSpan.FromHours(1));
+        hub.SimulateMarketReconnect();
+        hub.ThrowOnMarketHubStateRead = 2;
+
+        await writer.StartAsync(CancellationToken.None);
+        await Task.Delay(30);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await WaitUntil(() => hub.PriceSubscriptionIds.Contains(EsContract));
+
+        hub.MarketConnects.Should().Be(0);
+        writer.ExecuteTask!.IsFaulted.Should().BeFalse();
 
         await writer.StopAsync(CancellationToken.None);
     }
@@ -502,6 +526,12 @@ public sealed class LatestQuoteWriterTests
             Batches.Add(quotes);
             return Task.FromResult(quotes.Count);
         }
+
+        public Task<LatestQuoteRow?> FindAsync(
+            string venue,
+            string contractId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<LatestQuoteRow?>(null);
     }
 
     private sealed class ThrowingStore : ILatestQuoteStore
@@ -527,6 +557,12 @@ public sealed class LatestQuoteWriterTests
             Batches.Add(quotes);
             return Task.FromResult(quotes.Count);
         }
+
+        public Task<LatestQuoteRow?> FindAsync(
+            string venue,
+            string contractId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<LatestQuoteRow?>(null);
     }
 
     private sealed record Warning(string Text, Exception? Exception);

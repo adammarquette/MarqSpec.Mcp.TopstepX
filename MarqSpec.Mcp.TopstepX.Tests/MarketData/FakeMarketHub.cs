@@ -94,7 +94,31 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
     /// </summary>
     public int AutoResubscribes { get; private set; }
 
-    public ConnectionState MarketHubState { get; set; } = ConnectionState.Disconnected;
+    private ConnectionState _marketHubState = ConnectionState.Disconnected;
+
+    /// <summary>
+    /// When positive, that many reads of <see cref="MarketHubState"/> succeed and the next throws.
+    /// </summary>
+    public int ThrowOnMarketHubStateRead { get; set; }
+
+    public ConnectionState MarketHubState
+    {
+        get
+        {
+            if (ThrowOnMarketHubStateRead > 0)
+            {
+                ThrowOnMarketHubStateRead--;
+                if (ThrowOnMarketHubStateRead == 0)
+                {
+                    throw new InvalidOperationException("market hub state");
+                }
+            }
+
+            return _marketHubState;
+        }
+
+        set => _marketHubState = value;
+    }
 
     public ConnectionState UserHubState { get; set; } = ConnectionState.Disconnected;
 

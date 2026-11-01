@@ -5,7 +5,32 @@ using NpgsqlTypes;
 
 namespace MarqSpec.Mcp.TopstepX.MarketData;
 
-/// <summary>The latest-quote table. One upsert statement for a batch.</summary>
+/// <summary>One stored quote. Age is <c>clock_timestamp() - ReceivedAt</c>, in seconds.</summary>
+/// <param name="Venue">The venue id.</param>
+/// <param name="Instrument">The normalised symbol.</param>
+/// <param name="ContractId">The venue contract id.</param>
+/// <param name="Bid">Best bid.</param>
+/// <param name="Ask">Best ask.</param>
+/// <param name="Last">Last trade.</param>
+/// <param name="Volume">Session volume, in contracts.</param>
+/// <param name="QuoteTimeUtc">The venue stamp, when the payload had one.</param>
+/// <param name="ReceivedAt">Database <c>clock_timestamp()</c> at upsert.</param>
+/// <param name="AgeSeconds">
+/// Seconds since <paramref name="ReceivedAt"/>, on the database clock, at least zero.
+/// </param>
+public sealed record LatestQuoteRow(
+    string Venue,
+    string Instrument,
+    string ContractId,
+    decimal Bid,
+    decimal Ask,
+    decimal Last,
+    long Volume,
+    DateTimeOffset? QuoteTimeUtc,
+    DateTimeOffset ReceivedAt,
+    double AgeSeconds);
+
+/// <summary>The latest-quote table. One upsert statement for a batch, then a read by contract.</summary>
 public interface ILatestQuoteStore
 {
     /// <summary>Inserts or replaces each quote. One statement for the whole batch.</summary>
@@ -13,12 +38,19 @@ public interface ILatestQuoteStore
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>How many rows the statement reports it wrote or revised.</returns>
     Task<int> UpsertAsync(IReadOnlyList<LatestQuoteDraft> quotes, CancellationToken cancellationToken);
+
+    /// <summary>The stored row for one contract, or null when this contract has none.</summary>
+    /// <param name="venue">The venue id.</param>
+    /// <param name="contractId">The contract id.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>The row and its database-clock age, or null.</returns>
+    Task<LatestQuoteRow?> FindAsync(string venue, string contractId, CancellationToken cancellationToken);
 }
 
 /// <summary>Postgres implementation of <see cref="ILatestQuoteStore"/>.</summary>
 /// <remarks>
-/// The read that reports age is the next slice. This type only writes.
-/// <c>ReceivedAt</c> is <c>clock_timestamp()</c>, and an older receipt cannot replace a newer one.
+/// <c>ReceivedAt</c> is <c>clock_timestamp()</c>. <see cref="FindAsync"/> ages on that same clock.
+/// An older receipt cannot replace a newer one.
 /// </remarks>
 public sealed class LatestQuoteStore(TopstepXDbContext database) : ILatestQuoteStore
 {
@@ -42,6 +74,15 @@ public sealed class LatestQuoteStore(TopstepXDbContext database) : ILatestQuoteS
             "QuoteTimeUtc" = excluded."QuoteTimeUtc",
             "ReceivedAt" = excluded."ReceivedAt"
         WHERE "LatestQuotes"."ReceivedAt" <= excluded."ReceivedAt"
+        """;
+
+    private const string FindSql = """
+        SELECT "Venue", "Instrument", "ContractId", "Bid", "Ask", "Last", "Volume",
+               "QuoteTimeUtc", "ReceivedAt",
+               GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - "ReceivedAt")), 0)::float8
+                   AS "AgeSeconds"
+        FROM "LatestQuotes"
+        WHERE "Venue" = {0} AND "ContractId" = {1}
         """;
 
     /// <inheritdoc />
@@ -78,9 +119,64 @@ public sealed class LatestQuoteStore(TopstepXDbContext database) : ILatestQuoteS
             .ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public async Task<LatestQuoteRow?> FindAsync(
+        string venue,
+        string contractId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contractId);
+
+        LatestQuoteSqlRow? row = await _database.Database
+            .SqlQueryRaw<LatestQuoteSqlRow>(FindSql, venue, contractId)
+            .SingleOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        if (row is null)
+        {
+            return null;
+        }
+
+        return new LatestQuoteRow(
+            row.Venue,
+            row.Instrument,
+            row.ContractId,
+            row.Bid,
+            row.Ask,
+            row.Last,
+            row.Volume,
+            row.QuoteTimeUtc,
+            row.ReceivedAt,
+            row.AgeSeconds);
+    }
+
     private static NpgsqlParameter TextArray(string name, IEnumerable<string> values) =>
         new(name, NpgsqlDbType.Array | NpgsqlDbType.Varchar) { Value = values.ToArray() };
 
     private static NpgsqlParameter NumericArray(string name, IEnumerable<decimal> values) =>
         new(name, NpgsqlDbType.Array | NpgsqlDbType.Numeric) { Value = values.ToArray() };
+
+    private sealed class LatestQuoteSqlRow
+    {
+        public string Venue { get; set; } = string.Empty;
+
+        public string Instrument { get; set; } = string.Empty;
+
+        public string ContractId { get; set; } = string.Empty;
+
+        public decimal Bid { get; set; }
+
+        public decimal Ask { get; set; }
+
+        public decimal Last { get; set; }
+
+        public long Volume { get; set; }
+
+        public DateTimeOffset? QuoteTimeUtc { get; set; }
+
+        public DateTimeOffset ReceivedAt { get; set; }
+
+        public double AgeSeconds { get; set; }
+    }
 }

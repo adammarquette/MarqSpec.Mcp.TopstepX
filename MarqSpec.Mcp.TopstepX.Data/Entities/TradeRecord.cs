@@ -18,10 +18,12 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// <c>(instrument, contract)</c> — not a venue value.
 /// </para>
 /// <para>
-/// This table is a record rather than a pipeline: it carries <b>no retention policy</b>, and it is
-/// the store's first compression policy. It is also <b>original data, not a cache</b> — there is no
-/// market-tape REST backfill, so losing the store loses prints that cannot be refetched (ADR-0004,
-/// ADR-0016). Compression shrinks the chunks without deleting them.
+/// This table carries <b>no Timescale retention policy</b>, and it is the store's first compression
+/// policy. It is <b>original data, not a cache</b> — there is no market-tape REST backfill, so
+/// losing the store loses prints that cannot be refetched (ADR-0004, ADR-0016). Compression
+/// shrinks chunks without deleting them. ADR-0027 lets the recorder delete a UTC day only after
+/// an uploaded trades receipt for that day and contract. <c>LatestQuotes</c> is not this table
+/// and is not pruned.
 /// </para>
 /// </remarks>
 public sealed class TradeRecord

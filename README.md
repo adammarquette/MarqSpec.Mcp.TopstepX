@@ -586,7 +586,9 @@ create the volume. `TapeExport__Format` is `csv.gz+parquet`. A UTC day is copied
 ended, and only when the manifest sha256 and row counts match. Local rows are not deleted.
 Drive (`TapeExport__Drive__FolderId` and a service-account JSON or path) is a second copy and is off
 when those are empty; a repeat replaces the file, and a failed upload leaves the local copy.
-`Retention__*` is not read; dropping raw tape needs its own ADR (gh#758). Import inserts with
+The export does not delete rows. ADR-0027 deletes a UTC day of `Trades` only after an `uploaded`
+trades receipt for that day and contract (`TapeRetention__Days`, default 90, gh#763). No receipt
+means no delete. `Retention__*` is not a key. Import inserts with
 `ON CONFLICT DO NOTHING` and inserts nothing for a day that fails verification. Loading the files
 with DuckDB or pandas is [documentation/tape-export-reload.md](documentation/tape-export-reload.md).
 

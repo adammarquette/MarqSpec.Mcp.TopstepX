@@ -5,9 +5,11 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is a status ledger, not a copy of the tape and not a retention policy. A later decision to
-/// drop raw tape would read it; this process does not. Timescale <c>policy_retention</c> is not
-/// applied here. The row is replaced on the next pass of the same file
+/// This is a status ledger, not a copy of the tape. The recorder's prune (ADR-0027) reads this
+/// row and will not delete a day without <see cref="StateUploaded"/> on the trades file.
+/// <see cref="StateDriveDisabled"/>, <see cref="StatePending"/> and <see cref="StateFailed"/> are
+/// not confirmation. No row means no delete. Timescale <c>policy_retention</c> is not applied
+/// here. The row is replaced on the next pass of the same file
 /// (<c>ON CONFLICT DO UPDATE</c>), so a retried upload does not insert a second status.
 /// </para>
 /// <para>

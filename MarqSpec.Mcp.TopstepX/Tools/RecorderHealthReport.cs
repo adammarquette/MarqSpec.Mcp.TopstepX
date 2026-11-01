@@ -54,6 +54,9 @@ public static class RecorderHealthReport
     /// Trades receipts retention set back to pending because the source count no longer matched,
     /// still waiting for a new export. Zero is a real count. Omitted when the database probe did not connect.
     /// </param>
+    /// <param name="BarBackfill">
+    /// The last bar-backfill pass this process finished. Omitted when it has not finished one.
+    /// </param>
     public sealed record Report(
         DateTimeOffset AsOfUtc,
         bool FeedConnected,
@@ -65,7 +68,21 @@ public static class RecorderHealthReport
         int HubReconnects,
         DateTimeOffset? CachedAtUtc = null,
         long? AgeMs = null,
-        int? TapeDaysKept = null);
+        int? TapeDaysKept = null,
+        BarBackfill? BarBackfill = null);
+
+    /// <summary>The last bar-backfill pass this process finished (gh#899).</summary>
+    /// <param name="StartedUtc">When the pass started, UTC.</param>
+    /// <param name="EndedUtc">When it finished, UTC.</param>
+    /// <param name="StopReason">A closed tag, not a sentence.</param>
+    /// <param name="Pages">Pages the cache was asked for. Zero is a real count.</param>
+    /// <param name="Errors">Failures counted for the pass. Zero is a real count.</param>
+    public sealed record BarBackfill(
+        DateTimeOffset StartedUtc,
+        DateTimeOffset EndedUtc,
+        string StopReason,
+        int Pages,
+        int Errors);
 
     /// <summary>The product session the gaps were measured against.</summary>
     /// <param name="TradeDate">The trade date the calendar assigns.</param>

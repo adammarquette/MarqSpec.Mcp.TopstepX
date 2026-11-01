@@ -261,4 +261,213 @@ public sealed class VenueRequestPacerTests
 
         build.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    [Fact]
+    public void BackfillKeepsTwentyPerWindow_AndLeavesTheRestForLive()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = VenueRequestPacer.ForHistory(clock);
+
+        for (int i = 0; i < VenueRequestPacer.BackfillRequestsPerWindow; i++)
+        {
+            pacer.ReserveBackfillSlot().Should().Be(_start);
+        }
+
+        DateTimeOffset blocked = pacer.ReserveBackfillSlot();
+        blocked.Should().Be(_start + VenueRequestPacer.HistoryWindow + VenueRequestPacer.BoundaryMargin);
+
+        int liveRoom = VenueRequestPacer.HistoryRequestsPerWindow
+            - VenueRequestPacer.BackfillRequestsPerWindow;
+        for (int i = 0; i < liveRoom; i++)
+        {
+            pacer.ReserveSlot().Should().Be(
+                _start,
+                "live waits only for the backfill requests already sent");
+        }
+
+        pacer.ReserveSlot().Should().BeAfter(_start);
+    }
+
+    [Fact]
+    public void BackfillStopsWhenLiveRowsAlreadyFillTheWindow()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = VenueRequestPacer.ForHistory(clock);
+        int liveFirst = VenueRequestPacer.HistoryRequestsPerWindow
+            - VenueRequestPacer.BackfillRequestsPerWindow;
+        for (int i = 0; i < liveFirst + 10; i++)
+        {
+            pacer.ReserveSlot().Should().Be(_start);
+        }
+
+        int slack = VenueRequestPacer.HistoryRequestsPerWindow - (liveFirst + 10);
+        for (int i = 0; i < slack; i++)
+        {
+            pacer.ReserveBackfillSlot().Should().Be(_start);
+        }
+
+        pacer.ReserveBackfillSlot().Should().BeAfter(_start);
+        pacer.ReserveSlot().Should().BeAfter(
+            _start,
+            "forty live rows plus ten backfill rows already fill the window of fifty");
+    }
+
+    [Fact]
+    public async Task AWaitingLiveReadIsNotQueuedBehindBackfill()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = new(1, TimeSpan.FromSeconds(30), clock);
+        pacer.ReserveSlot().Should().Be(_start);
+
+        Task<TimeSpan> waiting = pacer.WaitForSlotAsync(CancellationToken.None).AsTask();
+        waiting.IsCompleted.Should().BeFalse();
+
+        DateTimeOffset backfill = pacer.ReserveBackfillSlot();
+        backfill.Should().BeOnOrAfter(_start + TimeSpan.FromSeconds(30));
+
+        clock.Advance(TimeSpan.FromSeconds(30) + VenueRequestPacer.BoundaryMargin);
+        await waiting.WaitAsync(TimeSpan.FromSeconds(5));
+        waiting.IsCompletedSuccessfully.Should().BeTrue();
+    }
+
+    [Fact]
+    public void RetiringABackfillDoesNotFreeALiveSlotAtTheSameInstant()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = VenueRequestPacer.ForHistory(clock);
+        const int liveFirst = 10;
+        for (int i = 0; i < liveFirst; i++)
+        {
+            pacer.ReserveSlot().Should().Be(_start);
+        }
+
+        for (int i = 0; i < VenueRequestPacer.BackfillRequestsPerWindow; i++)
+        {
+            pacer.ReserveBackfillSlot().Should().Be(_start);
+        }
+
+        pacer.ReserveBackfillSlot().Should().BeAfter(_start);
+
+        int more = VenueRequestPacer.HistoryRequestsPerWindow
+            - liveFirst
+            - VenueRequestPacer.BackfillRequestsPerWindow;
+        for (int i = 0; i < more; i++)
+        {
+            pacer.ReserveSlot().Should().Be(_start);
+        }
+
+        pacer.ReserveSlot().Should().BeAfter(
+            _start,
+            "refusing the next backfill must not drop a live row at the same instant");
+    }
+
+    [Fact]
+    public void BackfillAfterAgedLiveRowsDoesNotPushTheWindowPastFifty()
+    {
+        // Critique's scenario: 50 live at t=0, 20 backfill at t=100, 49 live at t=131,
+        // then backfill at t=131.5 may take the one free slot and no more.
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = VenueRequestPacer.ForHistory(clock);
+        for (int i = 0; i < VenueRequestPacer.HistoryRequestsPerWindow; i++)
+        {
+            pacer.ReserveSlot().Should().Be(_start);
+        }
+
+        clock.Advance(TimeSpan.FromSeconds(100));
+        DateTimeOffset atHundred = clock.GetUtcNow();
+        for (int i = 0; i < VenueRequestPacer.BackfillRequestsPerWindow; i++)
+        {
+            pacer.ReserveBackfillSlot().Should().Be(atHundred);
+        }
+
+        clock.Advance(TimeSpan.FromSeconds(31));
+        DateTimeOffset atOneThirtyOne = clock.GetUtcNow();
+        for (int i = 0; i < VenueRequestPacer.HistoryRequestsPerWindow - 1; i++)
+        {
+            pacer.ReserveSlot().Should().Be(atOneThirtyOne);
+        }
+
+        clock.Advance(TimeSpan.FromMilliseconds(500));
+        DateTimeOffset atProbe = clock.GetUtcNow();
+        pacer.ReserveBackfillSlot().Should().Be(atProbe);
+        pacer.ReserveBackfillSlot().Should().BeAfter(atProbe);
+    }
+
+    [Fact]
+    public void MixedGrantsStayInsideBothCaps()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = VenueRequestPacer.ForHistory(clock);
+        Random random = new(899);
+        List<DateTimeOffset> sent = [];
+        List<DateTimeOffset> backfillSent = [];
+        for (int step = 0; step < 500; step++)
+        {
+            if (random.Next(4) == 0)
+            {
+                clock.Advance(TimeSpan.FromMilliseconds(random.Next(0, 8_000)));
+            }
+
+            DateTimeOffset now = clock.GetUtcNow();
+            if (random.Next(2) == 0)
+            {
+                DateTimeOffset at = pacer.ReserveBackfillSlot();
+                if (at <= now)
+                {
+                    sent.Add(at);
+                    backfillSent.Add(at);
+                }
+            }
+            else
+            {
+                sent.Add(pacer.ReserveSlot());
+            }
+        }
+
+        WindowPeak(sent, VenueRequestPacer.HistoryWindow).Should().BeLessThanOrEqualTo(
+            VenueRequestPacer.HistoryRequestsPerWindow);
+        WindowPeak(backfillSent, VenueRequestPacer.HistoryWindow).Should().BeLessThanOrEqualTo(
+            VenueRequestPacer.BackfillRequestsPerWindow);
+    }
+
+    [Fact]
+    public async Task YieldingToALiveReadIsNotReportedAsRatePacing()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = new(1, TimeSpan.FromSeconds(30), clock);
+        pacer.ReserveSlot().Should().Be(_start);
+        Task<TimeSpan> live = pacer.WaitForSlotAsync(CancellationToken.None).AsTask();
+        Task<TimeSpan> backfill = pacer.WaitForBackfillSlotAsync(CancellationToken.None).AsTask();
+        live.IsCompleted.Should().BeFalse();
+        backfill.IsCompleted.Should().BeFalse();
+
+        TimeSpan window = TimeSpan.FromSeconds(30) + VenueRequestPacer.BoundaryMargin;
+        clock.Advance(window);
+        (await live.WaitAsync(TimeSpan.FromSeconds(5))).Should().Be(window);
+        clock.Advance(window);
+        (await backfill.WaitAsync(TimeSpan.FromSeconds(5))).Should().Be(window);
+    }
+
+    private static int WindowPeak(List<DateTimeOffset> sent, TimeSpan window)
+    {
+        if (sent.Count == 0)
+        {
+            return 0;
+        }
+
+        List<DateTimeOffset> ordered = [.. sent.OrderBy(at => at)];
+        int peak = 0;
+        int start = 0;
+        for (int i = 0; i < ordered.Count; i++)
+        {
+            while (ordered[start] <= ordered[i] - window)
+            {
+                start++;
+            }
+
+            peak = Math.Max(peak, i - start + 1);
+        }
+
+        return peak;
+    }
 }

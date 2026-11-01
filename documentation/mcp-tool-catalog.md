@@ -1084,7 +1084,12 @@ an end-of-day job. The same payload is served to a monitor at `GET /health/recor
 gate. `/health` stays the unauthenticated liveness probe and does not open a database connection.
 
 Returns `{ asOfUtc, feedConnected, feed, database, hubReconnects, session?, contracts, gaps?,
-cachedAtUtc?, ageMs?, tapeDaysKept? }`.
+cachedAtUtc?, ageMs?, tapeDaysKept?, barBackfill? }`.
+
+`barBackfill` is the last bar-backfill pass this process finished (gh#899): `startedUtc`,
+`endedUtc`, `stopReason`, `pages`, and `errors`. It is omitted when no pass has finished.
+`stopReason` is a closed tag. Production exports no OTLP, so this field and the log line are
+what an operator sees.
 
 `feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
 subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.

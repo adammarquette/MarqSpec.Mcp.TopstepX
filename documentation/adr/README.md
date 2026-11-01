@@ -51,6 +51,7 @@ retrospective justification is a press release. The useful ones name the option 
 | [0025](0025-railway-as-the-deploy-target.md) | **Railway as the deploy target** — image-sourced, `.railway/railway.ts` in the repo, Railway swappable | **Proposed** (draft) · fills the gap [0023](0023-aws-deployment-topology.md) left · gh#758 |
 | [0026](0026-drive-file-scope-for-tape-export.md) | **Tape export Drive uses the drive.file scope** | Accepted · `R-10.6` · gh#755 · PR #765 |
 | [0027](0027-tape-retention-after-export.md) | **Tape retention deletes only a day with an uploaded export** | Accepted · gh#763 · answers the export-first question [0025](0025-railway-as-the-deploy-target.md) left open |
+| [0028](0028-bar-backfill-yields-to-live-reads.md) | **Bar backfill yields to live reads** | Accepted · gh#899 · one HTTP pass, advisory lock, live queue is not charged for a backfill booking |
 
 *Adding a record? Add its row here in the same PR, and a routing entry in [`../README.md`](../README.md) if
 the corpus shape changes.*

@@ -960,7 +960,7 @@ public static class Program
 
         // Latest quotes. The writer returns immediately unless HTTP, RecordTape, and
         // RecordLatestQuotes are all on, and it never connects a hub of its own (gh#351).
-        // The read path is the next slice. No tool reads the table yet.
+        // get_quote is registered below, only when MarketData__GetQuoteEnabled is on.
         services.AddScoped<ILatestQuoteStore, LatestQuoteStore>();
         services.AddSingleton<LatestQuoteWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<LatestQuoteWriter>());
@@ -1083,6 +1083,18 @@ public static class Program
         if (trading.Enabled)
         {
             server.WithTools<TradingOrderTools>();
+        }
+
+        // get_quote has no [McpServerToolType], for the same reason as the order tools: the assembly
+        // scan would publish it on every server. The recorder's write switch is not visible here.
+        // PR 3 turns this on together with MarketData__RecordLatestQuotes.
+        MarketDataOptions quotes = new();
+        builder.Configuration.GetSection(MarketDataOptions.SectionName).Bind(quotes);
+        if (quotes.GetQuoteEnabled)
+        {
+            services.AddScoped<LatestQuoteReader>();
+            services.AddScoped<QuoteTools>();
+            server.WithTools<QuoteTools>();
         }
 
         // The store-fault boundary (gh#89). ON THE SERVER, NOT ON A TOOL: every tools/call goes through

@@ -81,6 +81,9 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A latest-quote flush, subscribe, or front lookup that did not succeed.</summary>
     public const string QuoteFailuresInstrument = "mcp.quote.failures";
 
+    /// <summary>One latest-quote read, by what it found.</summary>
+    public const string QuoteReadsInstrument = "mcp.quote.reads";
+
     /// <summary>A market-hub connection transition.</summary>
     public const string TapeReconnectsInstrument = "mcp.tape.reconnects";
 
@@ -208,6 +211,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapeTicks;
     private readonly Counter<long> _quoteWrites;
     private readonly Counter<long> _quoteFailures;
+    private readonly Counter<long> _quoteReads;
     private readonly Counter<long> _tapeReconnects;
     private readonly Counter<long> _tapeLeaseChanges;
     private readonly Counter<long> _recorderHealthReads;
@@ -277,6 +281,11 @@ public sealed class HostTelemetry : IDisposable
             QuoteFailuresInstrument,
             unit: "{failure}",
             description: "Latest-quote flushes, subscribes, or front lookups that did not succeed.");
+
+        _quoteReads = _meter.CreateCounter<long>(
+            QuoteReadsInstrument,
+            unit: "{read}",
+            description: "Latest-quote reads, by whether the row was fresh, stale, missing, or unknown.");
 
         _tapeReconnects = _meter.CreateCounter<long>(
             TapeReconnectsInstrument,
@@ -593,6 +602,33 @@ public sealed class HostTelemetry : IDisposable
             new KeyValuePair<string, object?>(ReasonTag, reason),
             new KeyValuePair<string, object?>(ExceptionTag, exceptionType));
     }
+
+    /// <summary>Counts one latest-quote read.</summary>
+    /// <param name="outcome">What the read found, from <see cref="QuoteReadOutcome"/>.</param>
+    public void QuoteRead(string outcome)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outcome);
+        _quoteReads.Add(1, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+    }
+
+    /// <summary>Counts a latest-quote read that failed, with the reason and the exception type.</summary>
+    /// <param name="reason">From <see cref="QuoteReadFailure"/>.</param>
+    /// <param name="exceptionType">The CLR type name. Not the message.</param>
+    public void QuoteReadFailed(string reason, string exceptionType)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        ArgumentException.ThrowIfNullOrWhiteSpace(exceptionType);
+        _quoteReads.Add(
+            1,
+            new KeyValuePair<string, object?>(OutcomeTag, QuoteReadOutcome.ReadFailed),
+            new KeyValuePair<string, object?>(ReasonTag, reason),
+            new KeyValuePair<string, object?>(ExceptionTag, exceptionType));
+    }
+
+    /// <summary>A span for one latest-quote read.</summary>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    public Activity? StartQuoteRead() =>
+        Activities.StartActivity("quote.read", ActivityKind.Internal);
 
     /// <summary>A span for one latest-quote flush.</summary>
     /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
@@ -1324,6 +1360,41 @@ public static class RecorderHealthOutcome
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Ok, Degraded, Unavailable, Timeout];
+}
+
+/// <summary>What a latest-quote read found. The <c>outcome</c> tag on <c>mcp.quote.reads</c>.</summary>
+public static class QuoteReadOutcome
+{
+    /// <summary>The row is within <c>LatestQuoteStaleAfter</c>.</summary>
+    public const string Fresh = "quote_fresh";
+
+    /// <summary>The row is older than <c>LatestQuoteStaleAfter</c>. It is still returned.</summary>
+    public const string Stale = "quote_stale";
+
+    /// <summary>The instrument has no stored quote.</summary>
+    public const string Miss = "quote_miss";
+
+    /// <summary>The symbol is not one this server serves.</summary>
+    public const string Unknown = "quote_unknown";
+
+    /// <summary>The read did not answer. Not a miss. See <see cref="QuoteReadFailure"/>.</summary>
+    public const string ReadFailed = "quote_read_failed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Fresh, Stale, Miss, Unknown, ReadFailed];
+}
+
+/// <summary>Why a latest-quote read failed. The <c>reason</c> tag beside <c>quote_read_failed</c>.</summary>
+public static class QuoteReadFailure
+{
+    /// <summary>The query that names the stored front did not answer.</summary>
+    public const string FrontLookupFailed = "front_lookup_failed";
+
+    /// <summary>The query that loads the quote row did not answer.</summary>
+    public const string StoreFailed = "store_failed";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [FrontLookupFailed, StoreFailed];
 }
 
 /// <summary>

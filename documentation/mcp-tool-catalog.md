@@ -283,6 +283,36 @@ the boundary (gh#110).
 
 ## Market data
 
+### `get_quote(symbol)`
+
+Read-only, idempotent. The latest stored bid, ask and last for one symbol (gh#351, `R-5.2`,
+`R-5.7`, `R-5.10`).
+
+The tool is not registered unless `MarketData__GetQuoteEnabled` is on. That switch defaults
+off. This process cannot see the recorder's `MarketData__RecordLatestQuotes`, so a listed tool
+would answer as if the market had no quote. Until both switches are on, `get_quote` is absent
+from the list.
+
+The front is the newest `LatestQuotes` row for the instrument, the contract the recorder
+subscribed. The call does not search the venue and does not open a market hub.
+
+Returns `{ symbol, status, contractId, bid, ask, last, volume, quoteTimeUtc, ageSeconds, stale, reason }`.
+Prices are raw decimals in the contract's price units (`R-5.2`). `volume` is session volume, in
+contracts. `ageSeconds` is how long ago the database accepted the row. `stale` is true when that
+age is past `MarketData__LatestQuoteStaleAfter` (shipped as 15 seconds). A stale row is still
+returned.
+
+`status` is `ok`, `missing`, `unknown_symbol`, or `failed`. `missing` means the symbol is served
+and the table has no row for it. `unknown_symbol` means the symbol is not served. `failed` means
+the store did not answer. `reason` is then `front_lookup_failed` or `store_failed`, and a raw
+database error is not returned (`R-5.7`). That is not a miss. None of those throw. The read span
+`quote.read` and the counter `mcp.quote.reads` carry the outcome (`R-5.10`). Fields that do not
+apply are omitted.
+
+`R-5.3` says an unknown instrument is an error. This tool returns `unknown_symbol` instead,
+because a quote probe is a result the caller branches on. The quote itself is specified by
+gh#351. There is no separate quote requirement id.
+
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
 

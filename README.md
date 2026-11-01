@@ -637,7 +637,7 @@ signatures: [the tool catalogue](documentation/mcp-tool-catalog.md).
 | Group | Tools |
 |---|---|
 | Reference & session | `list_instruments` · `search_contracts` · `get_market_session` |
-| Market data | `get_bars` · `get_latest_bars` · `get_session_bars` · `get_latest_session_bars` · `get_indicators` · `get_indicator_at` · `get_session_indicators` · `get_session_indicator_at` · `get_key_levels` · `get_footprint` · `get_volume_profile` · `get_contract_roll` |
+| Market data | `get_quote` · `get_bars` · `get_latest_bars` · `get_session_bars` · `get_latest_session_bars` · `get_indicators` · `get_indicator_at` · `get_session_indicators` · `get_session_indicator_at` · `get_key_levels` · `get_footprint` · `get_volume_profile` · `get_contract_roll` |
 | Account (read) | `list_accounts` · `get_positions` · `get_orders` · `get_trades` |
 | Composed | `get_market_snapshot` — bars, indicators, levels and session state in one call |
 | Observations | `record_observation` · `search_observations` — writes to *this* database, never the venue |
@@ -650,7 +650,11 @@ process start, so listing them needs a restart. A reload does change, without a 
 `Trading__MaxContractsPerDay`. A reload into a configuration that fails validation refuses the call and does
 not keep the last good values.
 
-**There is no `get_quote`.** ProjectX publishes no REST quote endpoint; live bid/ask is SignalR-only. The HTTP
+`get_quote` is registered only when `MarketData__GetQuoteEnabled` is on, which defaults off, so
+the tool is absent until that switch and the recorder's `MarketData__RecordLatestQuotes` are
+turned on together. It reads the latest stored bid and ask. It does not open a market hub.
+ProjectX publishes no REST quote endpoint; live bid/ask is SignalR-only, and the recorder is
+what writes the row. The HTTP
 transport can opt in to recording the trade tape (`MarketData__RecordTape`), which is prints and volume, not
 quotes. Whenever the venue client is configured, the process keeps the held TopstepX session fresh with
 `POST /api/Auth/validate` and does not call `loginKey` on a timer. That renewal is not tied to the recorder.

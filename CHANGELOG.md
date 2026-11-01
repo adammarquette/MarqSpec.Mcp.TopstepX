@@ -23,7 +23,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (one second). A refused subscribe retries only that contract, on
   `MarketData__LatestQuoteSubscribeBackoff`. Fronts are resolved again on
   `MarketData__LatestQuoteFrontRefresh`. A volume that does not fit in `bigint` is skipped.
-  No tool reads the table yet.
+  No tool reads the table until `MarketData__GetQuoteEnabled` is on.
+- **`get_quote` reads that stored row** (gh#351, `R-5.2`, `R-5.7`, `R-5.10`). It is not
+  registered unless `MarketData__GetQuoteEnabled` is on, which defaults off. When it is on,
+  the front is the newest stored row for the instrument. It returns bid, ask, last, age and
+  whether the row is past `MarketData__LatestQuoteStaleAfter`. A missing row and an unknown
+  symbol are results. An unknown symbol is `unknown_symbol`, not the `R-5.3` error. A store
+  failure is `failed`, not `missing`. The call does not open a market hub and does not search
+  the venue. PR 3 turns the switch on with the recorder.
 - **Tape retention after a confirmed export (gh#763, ADR-0027).** The recorder deletes a UTC
   day of `Trades` only when an `uploaded` `csv.gz` trades receipt exists for that day, venue,
   instrument and contract. `TapeRetention__Days` defaults to 90 (accepted 7 through 3650).

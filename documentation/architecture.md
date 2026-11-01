@@ -1329,7 +1329,9 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
   instrument is listening. A read that is actually returned with `live` false is counted. A refusal is not. The recorder resolves the
   scoped venue client per operation; it does not extend `IMarketDataGateway`. Depth recording
   stays out of this phase. `get_quote` is registered only when `MarketData__GetQuoteEnabled`
-  is on, which defaults off, and it reads the stored row rather than opening a hub.
+  is on. The code default is off. The Railway server sets it on and keeps
+  `MarketData__RecordLatestQuotes` false, so the server reads the stored row and does not
+  open a hub. The recorder is the process that writes the row (ADR-0016, gh#351).
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
   in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).

@@ -289,12 +289,21 @@ Read-only, idempotent. The latest stored bid, ask and last for one symbol (gh#35
 `R-5.7`, `R-5.10`).
 
 The tool is not registered unless `MarketData__GetQuoteEnabled` is on. That switch defaults
-off. This process cannot see the recorder's `MarketData__RecordLatestQuotes`, so a listed tool
-would answer as if the market had no quote. Until both switches are on, `get_quote` is absent
-from the list.
+off. The Railway server sets it on, and sets `MarketData__RecordLatestQuotes` false, so the
+server lists the tool and does not write quotes. The recorder sets
+`MarketData__RecordLatestQuotes` on and does not set `GetQuoteEnabled`, so it does not
+list the tool. The template accepts only the literals `true` and `false`, or absence,
+for those switches. Compose leaves both off.
+This process cannot see the recorder's switch, which is why the two keys are separate.
 
 The front is the newest `LatestQuotes` row for the instrument, the contract the recorder
 subscribed. The call does not search the venue and does not open a market hub.
+
+Around a roll that row is still the old contract until the new one ticks. The answer names
+that `contractId` and goes stale once `ageSeconds` passes `MarketData__LatestQuoteStaleAfter`.
+The front itself can be as late as `MarketData__LatestQuoteFrontRefresh` (fifteen minutes).
+If the old unsubscribe fails, both contracts can keep ticking and the answer can move
+between them (gh#922, ADR-0016).
 
 Returns `{ symbol, status, contractId, bid, ask, last, volume, quoteTimeUtc, ageSeconds, stale, reason }`.
 Prices are raw decimals in the contract's price units (`R-5.2`). `volume` is session volume, in

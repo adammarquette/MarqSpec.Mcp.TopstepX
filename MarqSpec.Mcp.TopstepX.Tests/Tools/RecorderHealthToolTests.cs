@@ -736,7 +736,8 @@ public sealed class RecorderHealthToolTests
                 BarSessionCalendar.Parse("16:00", holidays ?? [], earlyCloses: earlyCloses ?? []),
                 clock,
                 telemetry,
-                memo);
+                memo,
+                new BarBackfillStatus());
             return new Fixture(new RecorderHealthTools(service), service, telemetry, tape, store, clock);
         }
     }

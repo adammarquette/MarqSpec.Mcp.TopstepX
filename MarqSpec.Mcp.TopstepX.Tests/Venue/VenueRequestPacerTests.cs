@@ -261,4 +261,118 @@ public sealed class VenueRequestPacerTests
 
         build.Should().Throw<ArgumentOutOfRangeException>();
     }
+
+    [Fact]
+    public void BackfillKeepsTwentyPerWindow_AndLeavesTheRestForLive()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = VenueRequestPacer.ForHistory(clock);
+
+        for (int i = 0; i < VenueRequestPacer.BackfillRequestsPerWindow; i++)
+        {
+            pacer.ReserveBackfillSlot().Should().Be(_start);
+        }
+
+        DateTimeOffset blocked = pacer.ReserveBackfillSlot();
+        blocked.Should().Be(_start + VenueRequestPacer.HistoryWindow + VenueRequestPacer.BoundaryMargin);
+
+        for (int i = 0; i < VenueRequestPacer.HistoryRequestsPerWindow; i++)
+        {
+            pacer.ReserveSlot().Should().Be(
+                _start,
+                "a released backfill page is not a booking the live queue waits behind");
+        }
+
+        pacer.ReserveSlot().Should().BeAfter(_start);
+    }
+
+    [Fact]
+    public void MixedLoad_LiveTimesMatchAPacerThatSawNoBackfill()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer mixed = VenueRequestPacer.ForHistory(clock);
+        VenueRequestPacer liveOnly = VenueRequestPacer.ForHistory(clock);
+
+        for (int i = 0; i < 60; i++)
+        {
+            if (i % 3 == 0)
+            {
+                mixed.ReserveBackfillSlot();
+                continue;
+            }
+
+            mixed.ReserveSlot().Should().Be(liveOnly.ReserveSlot());
+        }
+    }
+
+    [Fact]
+    public void BackfillStopsWhenLiveRowsAlreadyFillTheWindow()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = VenueRequestPacer.ForHistory(clock);
+        int liveFirst = VenueRequestPacer.HistoryRequestsPerWindow
+            - VenueRequestPacer.BackfillRequestsPerWindow;
+        for (int i = 0; i < liveFirst + 10; i++)
+        {
+            pacer.ReserveSlot().Should().Be(_start);
+        }
+
+        int slack = VenueRequestPacer.HistoryRequestsPerWindow - (liveFirst + 10);
+        for (int i = 0; i < slack; i++)
+        {
+            pacer.ReserveBackfillSlot().Should().Be(_start);
+        }
+
+        pacer.ReserveBackfillSlot().Should().BeAfter(_start);
+        pacer.ReserveSlot().Should().Be(
+            _start,
+            "the backfill grant does not take a live slot");
+    }
+
+    [Fact]
+    public async Task AWaitingLiveReadIsNotQueuedBehindBackfill()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = new(1, TimeSpan.FromSeconds(30), clock);
+        pacer.ReserveSlot().Should().Be(_start);
+
+        Task<TimeSpan> waiting = pacer.WaitForSlotAsync(CancellationToken.None).AsTask();
+        waiting.IsCompleted.Should().BeFalse();
+
+        DateTimeOffset backfill = pacer.ReserveBackfillSlot();
+        backfill.Should().BeOnOrAfter(_start + TimeSpan.FromSeconds(30));
+
+        clock.Advance(TimeSpan.FromSeconds(30) + VenueRequestPacer.BoundaryMargin);
+        await waiting.WaitAsync(TimeSpan.FromSeconds(5));
+        waiting.IsCompletedSuccessfully.Should().BeTrue();
+    }
+
+    [Fact]
+    public void RetiringABackfillDoesNotFreeALiveSlotAtTheSameInstant()
+    {
+        FakeTimeProvider clock = new(_start);
+        VenueRequestPacer pacer = VenueRequestPacer.ForHistory(clock);
+        const int liveFirst = 10;
+        for (int i = 0; i < liveFirst; i++)
+        {
+            pacer.ReserveSlot().Should().Be(_start);
+        }
+
+        for (int i = 0; i < VenueRequestPacer.BackfillRequestsPerWindow; i++)
+        {
+            pacer.ReserveBackfillSlot().Should().Be(_start);
+        }
+
+        pacer.ReserveBackfillSlot().Should().BeAfter(_start);
+
+        int more = VenueRequestPacer.HistoryRequestsPerWindow - liveFirst;
+        for (int i = 0; i < more; i++)
+        {
+            pacer.ReserveSlot().Should().Be(_start);
+        }
+
+        pacer.ReserveSlot().Should().BeAfter(
+            _start,
+            "retiring a backfill row must not drop a live row that shares its timestamp");
+    }
 }

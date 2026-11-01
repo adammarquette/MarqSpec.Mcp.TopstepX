@@ -834,6 +834,12 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.quote.writes` | counter | `outcome` = quote_written \| quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_subscribed \| quote_volume_rejected | `LatestQuoteWriter` (gh#351). Spans `quote.flush` and `quote.subscribe` carry the same `outcome` |
 | `mcp.quote.reads` | counter | `outcome` = quote_fresh \| quote_stale \| quote_miss \| quote_unknown \| quote_read_failed · `reason` = front_lookup_failed \| store_failed · `exception.type` = the CLR type name, not the message | `LatestQuoteReader` (gh#351). Span `quote.read` carries the same `outcome`. `quote_read_failed` sets Error and is not a miss. `reason` and `exception.type` are set only then. `quote_stale` is still a row |
 | `mcp.quote.failures` | counter | `reason` = quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_volume_rejected \| quote_unsubscribe_failed \| quote_shutdown_failed · `exception.type` = the CLR type name, not the message | `LatestQuoteWriter`. `quote_failed` is a store flush. Unsubscribe and shutdown are their own reasons |
+| `mcp.bars.backfill.pages` | counter, pages | (none) | `BarBackfillWorker` (gh#899) |
+| `mcp.bars.backfill.bars` | counter, bars | (none) | bars the pass wrote |
+| `mcp.bars.backfill.empty` | counter, pages | (none) | empty venue pages |
+| `mcp.bars.backfill.rate_limited` | counter | (none) | passes that stopped on HTTP 429 |
+| `mcp.bars.backfill.errors` | counter | `exception.type` = the CLR type name, not the message | a thrown pass |
+| `mcp.bars.backfill.stops` | counter | `reason` = the `BarBackfillStop` vocabulary | every finished pass. Span `bars.backfill` carries `outcome` |
 
 `mcp.recorder.health.reads` reuses the `outcome` tag key. Its values are `ok`, `degraded`, `unavailable` and
 `timeout`, not the cache `hit` / `miss` / `partial` set. `ok` means the hub is up, every reported contract is
@@ -1149,6 +1155,30 @@ around the tape changeover — every resolution together, so two contracts on di
 cannot hide as `SingleContract` — or omitted when the tape cannot prove a flip. The gateway pick
 is live only; a historical `asOfUtc` omits `gatewayContractId` and `agree` rather than
 dating today's pick. It does not fetch bars and does not write a roll row.
+
+## Bar backfill — one HTTP pass, behind live reads
+
+`BarBackfillWorker` is a `BackgroundService`. It runs when `Backfill__Enabled` is true and the
+transport is HTTP, the same transport gate `TapeExportWorker` uses, so a stdio child does not
+backfill. The server and the recorder are both HTTP. The pass takes `pg_try_advisory_lock` on a
+connection with pooling off (`0x08990001`, object `899`). A second process finds the lock held
+and stops with `backfill_lock_held`.
+
+The driver asks `BarCacheService` for uncovered ranges. It does not write bars itself. Pages stay
+at 1,000 bars. A window is 5,000 bars. Minute bars stop at 63 days and hour bars at 365 days,
+both sim-tier measurements (gh#494). The live tier is not measured. While the pass is on the
+stack, `BarBackfillLane` is set on an `AsyncLocal`, and `ProjectXMarketDataGateway` takes
+`WaitForBackfillSlotAsync` instead of `WaitForSlotAsync`. Live reads keep the original slot.
+Backfill is capped at 20 of the 50 history requests per 30 seconds, is not granted while a live
+read is waiting, and is not inserted into the live queue. A live read is therefore not delayed
+by a backfill booking. An already released backfill page can still be in flight beside a later
+live burst. That overlap is bounded by the 20.
+
+Empty answers use the cache's coverage rule: a range ending within 2 days expires after 15
+minutes, and an older empty range is permanent until its `BarCoverage` rows are deleted.
+Production exports no OTLP ([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)), so the pass
+is visible on the `bars.backfill` span, the counters above, the log line, and `barBackfill` on
+`get_recorder_health`. The decision is [ADR-0028](adr/0028-bar-backfill-yields-to-live-reads.md).
 
 ## The tape export — a copy that outlives the container
 

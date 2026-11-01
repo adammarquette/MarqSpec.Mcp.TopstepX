@@ -38,6 +38,12 @@ public sealed class VenueRequestPacer
     /// <summary>Requests the vendor allows against <c>History/retrieveBars</c> per <see cref="HistoryWindow"/>.</summary>
     public const int HistoryRequestsPerWindow = 50;
 
+    /// <summary>
+    /// How many of those history requests a backfill may take in one <see cref="HistoryWindow"/>.
+    /// The rest stay available for a live read (gh#899).
+    /// </summary>
+    public const int BackfillRequestsPerWindow = 20;
+
     /// <summary>The window <see cref="HistoryRequestsPerWindow"/> is counted over.</summary>
     public static readonly TimeSpan HistoryWindow = TimeSpan.FromSeconds(30);
 
@@ -69,6 +75,20 @@ public sealed class VenueRequestPacer
     /// sit in the future — it is the instant the request is <i>allowed to go</i>, not when it was asked for.
     /// </remarks>
     private readonly Queue<DateTimeOffset> _reserved = new();
+
+    /// <summary>
+    /// Backfill reservations that have been released. Separate from <see cref="_reserved"/> so a
+    /// live read is never queued behind one. Each row has its own id.
+    /// </summary>
+    private readonly Queue<BackfillReservation> _backfill = new();
+
+    /// <summary>Live reads blocked in <see cref="WaitForSlotAsync"/>.</summary>
+    private int _liveWaiters;
+
+    /// <summary>Bumped when a live read starts waiting, so a pending backfill booking is dropped.</summary>
+    private int _backfillEpoch;
+
+    private long _nextBackfillId;
 
     /// <summary>Creates a pacer.</summary>
     /// <param name="capacity">The most requests allowed in any <paramref name="window"/>.</param>
@@ -166,7 +186,195 @@ public sealed class VenueRequestPacer
             return TimeSpan.Zero;
         }
 
-        await Task.Delay(wait, _clock, cancellationToken).ConfigureAwait(false);
-        return wait;
+        EnterLiveWait();
+        try
+        {
+            await Task.Delay(wait, _clock, cancellationToken).ConfigureAwait(false);
+            return wait;
+        }
+        finally
+        {
+            LeaveLiveWait();
+        }
+    }
+
+    /// <summary>
+    /// Takes a backfill slot. A live read that is waiting is not charged, and the slot is not granted.
+    /// </summary>
+    /// <returns>
+    /// Now when the backfill cap and the shared cap both have room and no live read is waiting.
+    /// Otherwise the later release, without a place in the live queue.
+    /// </returns>
+    /// <remarks>
+    /// Released backfill rows are not inserted into <see cref="_reserved"/>. A later live read therefore
+    /// keeps the schedule it would have had with no backfill. The backfill cap stays
+    /// <see cref="BackfillRequestsPerWindow"/> of <see cref="HistoryRequestsPerWindow"/>. A grant also
+    /// refuses when live rows plus released backfill rows already fill <see cref="Capacity"/>.
+    /// </remarks>
+    public DateTimeOffset ReserveBackfillSlot()
+    {
+        lock (_sync)
+        {
+            return ReserveBackfillSlotUnlocked();
+        }
+    }
+
+    /// <summary>Takes a backfill slot. The caller holds <see cref="_sync"/>.</summary>
+    private DateTimeOffset ReserveBackfillSlotUnlocked()
+    {
+        DateTimeOffset now = _clock.GetUtcNow();
+        if (_liveWaiters > 0)
+        {
+            return DeferToLive(now);
+        }
+
+        DateTimeOffset backfillAt = EarliestBackfill(now);
+        DateTimeOffset sharedAt = EarliestShared(backfillAt);
+        DateTimeOffset at = sharedAt > backfillAt ? sharedAt : backfillAt;
+        if (at > now)
+        {
+            return at;
+        }
+
+        CommitBackfill(at);
+        return at;
+    }
+
+    /// <summary>Takes a backfill slot and waits for it. A pre-empted booking is taken again.</summary>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>How long the caller was held.</returns>
+    public async ValueTask<TimeSpan> WaitForBackfillSlotAsync(CancellationToken cancellationToken)
+    {
+        TimeSpan waited = TimeSpan.Zero;
+        while (true)
+        {
+            int epoch;
+            DateTimeOffset at;
+            lock (_sync)
+            {
+                epoch = _backfillEpoch;
+                at = ReserveBackfillSlotUnlocked();
+            }
+
+            TimeSpan wait = at - _clock.GetUtcNow();
+            if (wait <= TimeSpan.Zero)
+            {
+                return waited;
+            }
+
+            waited += wait;
+            await Task.Delay(wait, _clock, cancellationToken).ConfigureAwait(false);
+            lock (_sync)
+            {
+                if (_backfillEpoch != epoch)
+                {
+                    continue;
+                }
+            }
+        }
+    }
+
+    private DateTimeOffset EarliestBackfill(DateTimeOffset now)
+    {
+        if (_backfill.Count < BackfillRequestsPerWindow)
+        {
+            return now;
+        }
+
+        DateTimeOffset ready = _backfill.Peek().At + _window + BoundaryMargin;
+        return ready > now ? ready : now;
+    }
+
+    private DateTimeOffset EarliestShared(DateTimeOffset notBefore)
+    {
+        if (_reserved.Count + _backfill.Count < _capacity)
+        {
+            return notBefore;
+        }
+
+        DateTimeOffset oldest = _reserved.Count == 0
+            ? _backfill.Peek().At
+            : _backfill.Count == 0
+                ? _reserved.Peek()
+                : _reserved.Peek() <= _backfill.Peek().At ? _reserved.Peek() : _backfill.Peek().At;
+        DateTimeOffset ready = oldest + _window + BoundaryMargin;
+        return ready > notBefore ? ready : notBefore;
+    }
+
+    private DateTimeOffset DeferToLive(DateTimeOffset now)
+    {
+        DateTimeOffset at = now + BoundaryMargin;
+        if (_reserved.Count == _capacity)
+        {
+            DateTimeOffset ready = _reserved.Peek() + _window + BoundaryMargin;
+            if (ready > at)
+            {
+                at = ready;
+            }
+        }
+
+        if (at <= now)
+        {
+            at = now + BoundaryMargin;
+        }
+
+        return at;
+    }
+
+    private void CommitBackfill(DateTimeOffset at)
+    {
+        if (_backfill.Count >= BackfillRequestsPerWindow)
+        {
+            RemoveOne(_backfill.Peek().Id);
+        }
+
+        _backfill.Enqueue(new BackfillReservation(++_nextBackfillId, at));
+    }
+
+    /// <summary>
+    /// Drops the backfill row with this id. A live reservation at the same instant is not in this
+    /// queue and is not removed. The row is retired because the cap is full, not because it has aged
+    /// out of the window.
+    /// </summary>
+    private void RemoveOne(long id)
+    {
+        int count = _backfill.Count;
+        for (int i = 0; i < count; i++)
+        {
+            BackfillReservation slot = _backfill.Dequeue();
+            if (slot.Id == id)
+            {
+                return;
+            }
+
+            _backfill.Enqueue(slot);
+        }
+    }
+
+    private void EnterLiveWait()
+    {
+        lock (_sync)
+        {
+            _liveWaiters++;
+            _backfillEpoch++;
+        }
+    }
+
+    private void LeaveLiveWait()
+    {
+        lock (_sync)
+        {
+            if (_liveWaiters > 0)
+            {
+                _liveWaiters--;
+            }
+        }
+    }
+
+    private sealed class BackfillReservation(long id, DateTimeOffset at)
+    {
+        public long Id { get; } = id;
+
+        public DateTimeOffset At { get; } = at;
     }
 }

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -9,6 +10,7 @@ using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
+using ModelContextProtocol;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
 
@@ -68,7 +70,32 @@ public sealed class RecorderHealthServiceTests : IDisposable
         report.Gaps.Should().Contain(new RecorderHealthReport.Gap("ES", Es, stopped, _tuesday));
     }
 
-    private RecorderHealthService Service(bool listening)
+    [Fact]
+    public async Task ReadAsync_CarriesTheLastBackfillPass_AndOmitsItWhenNoneHasFinished()
+    {
+        RecorderHealthReport.Report empty = await Service(listening: true).ReadAsync(CancellationToken.None);
+        empty.BarBackfill.Should().BeNull();
+        JsonDocument.Parse(JsonSerializer.Serialize(empty, McpJsonUtilities.DefaultOptions))
+            .RootElement.TryGetProperty("barBackfill", out _).Should().BeFalse();
+
+        BarBackfillStatus status = new();
+        DateTimeOffset started = _tuesday.AddMinutes(-5);
+        status.Record(new BarBackfillStatus.Snapshot(
+            started, _tuesday, BarBackfillStop.LockHeld, 3, 1));
+        RecorderHealthReport.Report report = await Service(listening: true, status)
+            .ReadAsync(CancellationToken.None);
+
+        report.BarBackfill.Should().Be(new RecorderHealthReport.BarBackfill(
+            started, _tuesday, BarBackfillStop.LockHeld, 3, 1));
+        JsonElement wire = JsonDocument.Parse(
+            JsonSerializer.Serialize(report, McpJsonUtilities.DefaultOptions)).RootElement;
+        wire.GetProperty("barBackfill").GetProperty("pages").GetInt32().Should().Be(3);
+        wire.GetProperty("barBackfill").GetProperty("errors").GetInt32().Should().Be(1);
+        wire.GetProperty("barBackfill").GetProperty("stopReason").GetString()
+            .Should().Be(BarBackfillStop.LockHeld);
+    }
+
+    private RecorderHealthService Service(bool listening, BarBackfillStatus? backfill = null)
     {
         TapeAvailabilityHolder tape = new();
         tape.Set(TapeAvailability.ConnectedButNotSubscribed());
@@ -93,7 +120,8 @@ public sealed class RecorderHealthServiceTests : IDisposable
             BarSessionCalendar.Parse("16:00", []),
             new FakeTimeProvider(_tuesday),
             telemetry,
-            new RecorderHealthMemo());
+            new RecorderHealthMemo(),
+            backfill ?? new BarBackfillStatus());
     }
 
     private async Task PrintAsync(DateTimeOffset when, long sequence)

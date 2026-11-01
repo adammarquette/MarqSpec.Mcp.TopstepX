@@ -8,7 +8,8 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 
 /// <summary>
 /// Runs <see cref="ITapeExportPass"/> at <see cref="TapeExportOptions.Schedule"/> when this process
-/// holds a recorder lease (gh#755). A restart does not export before the next schedule.
+/// holds a recorder lease (gh#755). A restart does not export before the next schedule, and stopping
+/// the host does not export either (gh#795).
 /// </summary>
 /// <remarks>
 /// <para>

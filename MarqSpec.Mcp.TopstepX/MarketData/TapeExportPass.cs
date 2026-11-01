@@ -267,6 +267,20 @@ public sealed class TapeExportPass(
                     continue;
                 }
 
+                string? mismatch = await SourceCountMismatchAsync(day, written, cancellationToken)
+                    .ConfigureAwait(false);
+                if (mismatch is not null)
+                {
+                    exportSpan?.SetStatus(ActivityStatusCode.Error);
+                    _telemetry.TapeExport(TapeExportOutcome.VerificationFailed, 1);
+                    daysRefused++;
+                    _logger.LogError(
+                        "Tape export of {Day} refused the receipt ({Reason}). Local rows were left in place.",
+                        day,
+                        mismatch);
+                    continue;
+                }
+
                 if (gate is null && _drive.IsEnabled)
                 {
                     gate = await IdentityGate.OpenAsync(_database, _logger, cancellationToken).ConfigureAwait(false);
@@ -1356,6 +1370,113 @@ public sealed class TapeExportPass(
         {
             throw new InvalidOperationException(string.Join(" ", results.Select(result => result.ErrorMessage)));
         }
+    }
+
+    /// <summary>
+    /// SQL comment on the source-count statements. A test inserts a row when it sees this, so the
+    /// count can disagree with the file that was just written.
+    /// </summary>
+    internal const string SourceCountSqlMarker = "tape-export-source-count";
+
+    private async Task<string?> SourceCountMismatchAsync(
+        DateOnly day,
+        TapeExportVerification written,
+        CancellationToken cancellationToken)
+    {
+        (DateTimeOffset start, DateTimeOffset end) = Bounds(day);
+        foreach (TapeExportStoredFile file in written.Files ?? [])
+        {
+            if (string.IsNullOrEmpty(file.Sha256))
+            {
+                return file.RelativePath + " has no sha256";
+            }
+
+            if (!string.Equals(file.Format, TapeExportArchive.CsvGzFormat, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            int source = await CountSourceRowsAsync(file, start, end, cancellationToken)
+                .ConfigureAwait(false);
+            if (source != file.Rows)
+            {
+                return file.RelativePath + " has " + file.Rows.ToString(CultureInfo.InvariantCulture)
+                    + " rows and the source has " + source.ToString(CultureInfo.InvariantCulture);
+            }
+        }
+
+        return null;
+    }
+
+    private async Task<int> CountSourceRowsAsync(
+        TapeExportStoredFile file,
+        DateTimeOffset start,
+        DateTimeOffset end,
+        CancellationToken cancellationToken)
+    {
+        // The marker is a comment. It does not change the count. The test that refuses a receipt
+        // watches for it and commits one extra source row before this statement runs.
+        if (file.Kind == "trades")
+        {
+            return await ScalarAsync(
+                $"""
+                -- tape-export-source-count
+                SELECT COUNT(*)::int AS "Value"
+                FROM "Trades" AS t
+                WHERE t."Venue" = {file.Venue}
+                  AND t."Instrument" = {file.Instrument}
+                  AND t."ContractId" = {file.ContractId}
+                  AND t."TradeTimeUtc" >= {start}
+                  AND t."TradeTimeUtc" < {end}
+                """,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (file.Kind == "tape-coverage")
+        {
+            DateTimeOffset stillListening = TapeCoverageRecord.StillListeningEnd;
+            return await ScalarAsync(
+                $"""
+                -- tape-export-source-count
+                SELECT COUNT(*)::int AS "Value"
+                FROM "TapeCoverage" AS c
+                WHERE c."Venue" = {file.Venue}
+                  AND c."Instrument" = {file.Instrument}
+                  AND c."ContractId" = {file.ContractId}
+                  AND c."RangeStart" >= {start}
+                  AND c."RangeStart" < {end}
+                  AND c."RangeEnd" <> {stillListening}
+                """,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        if (file.Kind == "footprint")
+        {
+            return await ScalarAsync(
+                $"""
+                -- tape-export-source-count
+                SELECT COUNT(*)::int AS "Value"
+                FROM "FootprintCells" AS f
+                WHERE f."Venue" = {file.Venue}
+                  AND f."Instrument" = {file.Instrument}
+                  AND f."ResolutionMinutes" = {file.ResolutionMinutes}
+                  AND f."BucketStart" >= {start}
+                  AND f."BucketStart" < {end}
+                """,
+                cancellationToken).ConfigureAwait(false);
+        }
+
+        return file.Rows;
+    }
+
+    private async Task<int> ScalarAsync(
+        FormattableString sql,
+        CancellationToken cancellationToken)
+    {
+        List<int> values = await _database.Database.SqlQuery<int>(sql)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return values.Count == 0 ? 0 : values[0];
     }
 
     private static (DateTimeOffset Start, DateTimeOffset End) Bounds(DateOnly day)

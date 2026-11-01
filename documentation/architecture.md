@@ -1154,7 +1154,8 @@ dating today's pick. It does not fetch bars and does not write a roll row.
 can put back (`R-10`, gh#755). `TapeExportWorker` is a `BackgroundService` registered beside the recorder.
 It runs only when the transport is HTTP **and** `TapeExport__Enabled` is true (default false). It waits
 until `TapeExport__Schedule` (default `06:00` UTC, exact `HH:mm`) and runs only while this process holds
-a recorder lease. A restart does not export before the next schedule. `export-tape` and `import-tape`
+a recorder lease. A restart does not export before the next schedule, and stopping the host does
+not export (gh#795). `export-tape` and `import-tape`
 call the same pass and do not read `Enabled`.
 
 **Where the files go.** Exports write to a mounted volume at `TapeExport__Path`, default
@@ -1167,6 +1168,8 @@ Trades and closed coverage are one pair per contract per day,
 `footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.vN.csv.gz` and `.parquet`. The manifest is
 `manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`), written last by a temp file, fsync, and rename, and
 it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
+Before a receipt is marked `uploaded`, those counts are checked against the source rows. A mismatch
+refuses the receipt and counts `verification_failed` (gh#795).
 An older generation is left on disk.
 The image user is uid 64198. Railway allows one volume per service and mounts it as root at `/data`.
 Since gh#767 the image `ENTRYPOINT` is `scripts/prepare-tape-volume.sh`

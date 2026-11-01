@@ -67,7 +67,8 @@ public sealed class OrderToolSpecQaTests
 
     /// <summary>
     /// Every tool crossed with each outcome whose telemetry and side effects are not pinned per tool elsewhere.
-    /// trading_disabled and kill_switch are left out: #769's gate tests already pin both for all five tools.
+    /// trading_disabled is left out: #769 pins it for all five tools. The kill switch blocks place and
+    /// modify only (gh#770); cancel and close under a halt are pinned below.
     /// </summary>
     public static TheoryData<string, string> ToolByScenario()
     {
@@ -355,25 +356,88 @@ public sealed class OrderToolSpecQaTests
         _daily.HeldNow.Should().Be(0, "the lease is released even when its dispose faults");
     }
 
-    // ---------------- Spec gaps ----------------
-    [Fact(Skip = "SpecGap #770: v1 refuses cancel_order and close_position under the kill switch (ADR-0024 s5.1-5.2, pinned by #769); a carve-out letting a halt still flatten positions is pending Adam.")]
-    public void TradingOrderTools_KillSwitch_CancelAndClose_SpecUnconfirmed()
+    // ---------------- gh#770: the kill switch blocks new orders and modifies only ----------------
+    [Fact]
+    public async Task TradingOrderTools_KillSwitch_CancelAndClose_StillSend()
     {
-        // If the carve-out is rejected: drop this skip, since TradingOrderToolGateTests already pins v1. If it is
-        // adopted: engage the kill switch, call cancel_order and close_position, and assert one send each plus
-        // the Live audit row and telemetry.
+        _kill.IsEngaged = true;
+        using HostTelemetry telemetry = new();
+
+        ToolPayloads.TradingWriteResult cancel =
+            await Call(Tools(telemetry, On()), TradingMcpTools.CancelOrderOperation, "halt-cancel");
+        ToolPayloads.TradingWriteResult close =
+            await Call(Tools(telemetry, On()), TradingMcpTools.ClosePositionOperation, "halt-close");
+        ToolPayloads.TradingWriteResult partial =
+            await Call(Tools(telemetry, On()), TradingMcpTools.PartialClosePositionOperation, "halt-partial");
+        ToolPayloads.TradingWriteResult place =
+            await Call(Tools(telemetry, On()), TradingMcpTools.PlaceOrderOperation, "halt-place");
+        ToolPayloads.TradingWriteResult modify =
+            await Call(Tools(telemetry, On()), TradingMcpTools.ModifyOrderOperation, "halt-modify");
+
+        cancel.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        close.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        partial.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        _gateway.LastClose.Should().Be(new ExecutionClosePositionCommand(Practice, Mes));
+        _gateway.LastPartialClose.Should().Be(new ExecutionPartialClosePositionCommand(Practice, Mes, 1));
+        place.RefusalCode.Should().Be(ExecutionWriteRefusal.KillSwitch);
+        modify.RefusalCode.Should().Be(ExecutionWriteRefusal.KillSwitch);
+        _gateway.Place.Should().Be(0);
+        _gateway.Total.Should().Be(3);
     }
 
-    [Fact(Skip = "SpecGap #771: no venue-side client order id; customTag is not exposed (ADR-0008), so a lost ack plus a fresh key relies on OutcomeUnknown and reconcile only.")]
-    public void TradingOrderTools_VenueSideClientOrderId_Unspecified()
+    // ---------------- gh#771: no client order id. OutcomeUnknown plus reconcile is v1. ----------------
+    [Fact]
+    public void TradingOrderTools_HasNoClientOrderId()
     {
-        // Once specified: a lost ack retried with a fresh key must be found by its client order id, not resent.
+        string[] forbidden = ["clientOrderId", "clientId", "customTag"];
+        foreach (System.Reflection.MethodInfo method in typeof(TradingOrderTools).GetMethods())
+        {
+            method.GetParameters()
+                .Select(parameter => parameter.Name)
+                .Should()
+                .NotContain(forbidden);
+        }
     }
 
-    [Fact(Skip = "SpecGap #772: session conflicts (two MCP sessions or replicas on one account, or an order into a closed session) are not specified beyond the per-key claim and the account-day cap lock.")]
-    public void TradingOrderTools_SessionConflicts_Unspecified()
+    // ---------------- gh#772: one trading writer per account ----------------
+    [Fact]
+    public async Task TradingOrderTools_SessionConflicts_SecondReplicaRefusesUntilTheLockIsReleased()
     {
-        // Once specified: two gates on one account with different keys, and an order outside the session.
+        AccountWriters writers = new();
+        using HostTelemetry telemetry = new();
+
+        ToolPayloads.TradingWriteResult held = await Call(
+            Tools(telemetry, On(), writers.For(replica: 1)),
+            TradingMcpTools.PlaceOrderOperation,
+            "writer-a");
+        ToolPayloads.TradingWriteResult blocked = await Call(
+            Tools(telemetry, On(), writers.For(replica: 2)),
+            TradingMcpTools.PlaceOrderOperation,
+            "writer-b");
+        ToolPayloads.TradingWriteResult otherAccount = await Tools(telemetry, On(), writers.For(replica: 2))
+            .SubmitPlace(
+            OtherPractice,
+            Mes,
+            ExecutionOrderType.Limit,
+            VenueSide.Buy,
+            size: 1,
+            "writer-c",
+            limitPrice: 6800m);
+
+        held.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        blocked.Status.Should().Be(nameof(TradingAttemptOutcome.Refused));
+        blocked.RefusalCode.Should().Be(ExecutionWriteRefusal.AccountWriterHeld);
+        blocked.RetrySafety.Should().Be(ToolPayloads.TradingRetrySafety.SafeToRetry);
+        otherAccount.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        _gateway.Place.Should().Be(2);
+
+        writers.Release(replica: 1);
+        TradingOrderTools after = Tools(telemetry, On(), writers.For(replica: 2));
+        ToolPayloads.TradingWriteResult freed =
+            await Call(after, TradingMcpTools.CancelOrderOperation, "writer-d");
+
+        freed.Status.Should().Be(nameof(TradingAttemptOutcome.Live));
+        _gateway.Total.Should().Be(3);
     }
 
     // ===================== helpers =====================
@@ -464,7 +528,10 @@ public sealed class OrderToolSpecQaTests
     }
 
     /// <summary>The gate serves one operation, so each call needs a new gate; the doubles behind it are shared.</summary>
-    private TradingOrderTools Tools(HostTelemetry telemetry, TradingExecutionOptions options) =>
+    private TradingOrderTools Tools(
+        HostTelemetry telemetry,
+        TradingExecutionOptions options,
+        ITradingAccountWriterLock? writer = null) =>
         new(new TradingRiskGate(
             new TradingExecutionGate(TradingOptionsMonitors.Fixed(options), _kill, _stage),
             _gateway,
@@ -474,7 +541,8 @@ public sealed class OrderToolSpecQaTests
             _audit,
             new TradingContractDenylist(Options.Create(options), _registry),
             new TradingWriteVenueAccountCache(),
-            telemetry));
+            telemetry,
+            writer));
 
     private static Task<ToolPayloads.TradingWriteResult> Call(
         TradingOrderTools tools,
@@ -491,6 +559,39 @@ public sealed class OrderToolSpecQaTests
             TradingMcpTools.PartialClosePositionOperation => tools.SubmitPartialClose(account, Mes, size, key),
             _ => throw new ArgumentOutOfRangeException(nameof(op)),
         };
+
+    private sealed class AccountWriters
+    {
+        private readonly Dictionary<int, int> _owner = [];
+
+        public ITradingAccountWriterLock For(int replica) => new Replica(this, replica);
+
+        public void Release(int replica)
+        {
+            int[] held = [.. _owner.Where(pair => pair.Value == replica).Select(pair => pair.Key)];
+            foreach (int accountId in held)
+            {
+                _owner.Remove(accountId);
+            }
+        }
+
+        private bool Try(int replica, int accountId)
+        {
+            if (_owner.TryGetValue(accountId, out int owner))
+            {
+                return owner == replica;
+            }
+
+            _owner[accountId] = replica;
+            return true;
+        }
+
+        private sealed class Replica(AccountWriters owners, int replica) : ITradingAccountWriterLock
+        {
+            public Task<bool> TryHoldAsync(int accountId, CancellationToken cancellationToken) =>
+                Task.FromResult(owners.Try(replica, accountId));
+        }
+    }
 
     private sealed class QaKill : ITradingKillSwitch
     {

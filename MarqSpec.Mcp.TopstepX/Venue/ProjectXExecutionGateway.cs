@@ -102,12 +102,15 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken,
         Func<CancellationToken, Task<ExecutionWriteResult>> transmit)
     {
+        bool killSwitchBlocks = operation is ExecutionOperation.PlaceOrderOperation
+            or ExecutionOperation.ModifyOrderOperation;
         TradingExecutionRefusal? refusal = await _gate
             .RefuseWriteUnlessPermittedAsync(
                 accountId,
                 _marketData,
                 cancellationToken,
-                _accountCache.TryGet(accountId))
+                _accountCache.TryGet(accountId),
+                killSwitchBlocks)
             .ConfigureAwait(false);
 
         if (refusal is TradingExecutionRefusal gateRefusal)

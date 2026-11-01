@@ -999,6 +999,15 @@ public static class Program
         services.AddScoped<ITapeExportPass>(sp => sp.GetRequiredService<TapeExportPass>());
         services.AddHostedService<TapeExportWorker>();
 
+        // Tape retention (gh#763, ADR-0027). Always registered. ExecuteAsync returns immediately
+        // unless the transport is HTTP and MarketData__RecordTape is on. It deletes only while
+        // this process holds a recorder lease, and only days with an uploaded trades receipt.
+        // The pass is scoped because it takes the DbContext.
+        services.AddScoped<TapeRetentionPass>();
+        services.AddScoped<ITapeRetentionPass>(sp => sp.GetRequiredService<TapeRetentionPass>());
+        services.AddSingleton<ITapeRetentionLease, RecorderTapeRetentionLease>();
+        services.AddHostedService<TapeRetentionWorker>();
+
         // Scoped, and the lifetime is load-bearing rather than conventional: this service memoises which
         // series it has already found complete, and the scope is one request. A singleton would remember the
         // answer past the fill that invalidated it (gh#246).

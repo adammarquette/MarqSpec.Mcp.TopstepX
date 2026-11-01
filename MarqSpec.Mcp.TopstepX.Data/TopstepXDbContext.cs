@@ -384,6 +384,12 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
                 .IsUnique()
                 .HasDatabaseName("IX_TradingAuditLog_AccountId_Tool_IdempotencyKey_Unknown")
                 .HasFilter("\"Outcome\" = 'Unknown' AND \"IdempotencyKey\" <> ''");
+
+            // One reversal and one Refused row per lock-failure attempt. Other rows leave this null.
+            entity.HasIndex(a => new { a.FinaliseId, a.Outcome })
+                .IsUnique()
+                .HasDatabaseName("IX_TradingAuditLog_FinaliseId_Outcome")
+                .HasFilter("\"FinaliseId\" IS NOT NULL");
         });
 
         // pgvector only maps under Npgsql. Configuring this unconditionally breaks every provider-agnostic

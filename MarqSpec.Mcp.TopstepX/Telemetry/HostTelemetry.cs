@@ -1425,6 +1425,12 @@ public static class ExecutionWriteRefusal
     /// <summary>A partial close asked for more contracts than the open position holds.</summary>
     public const string PartialCloseExceedsPosition = "partial_close_exceeds_position";
 
+    /// <summary>Another replica holds the session lock for this account (gh#772).</summary>
+    public const string AccountWriterHeld = "account_writer_held";
+
+    /// <summary>The writer lock could not be confirmed, so the write was not sent (gh#772).</summary>
+    public const string AccountWriterUnavailable = "account_writer_unavailable";
+
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } =
         [
@@ -1454,6 +1460,8 @@ public static class ExecutionWriteRefusal
             PriceRequired,
             PriceNotPositive,
             PartialCloseExceedsPosition,
+            AccountWriterHeld,
+            AccountWriterUnavailable,
         ];
 }
 

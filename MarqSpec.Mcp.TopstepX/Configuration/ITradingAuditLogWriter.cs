@@ -9,6 +9,49 @@ public interface ITradingAuditLogWriter
     Task WriteAsync(TradingAuditWriteRequest request, CancellationToken cancellationToken);
 
     /// <summary>
+    /// Reads whether this attempt already stored the cap reversal and the <c>Refused</c> row.
+    /// Only rows with <paramref name="finaliseId"/> count, so another unkeyed refusal cannot match.
+    /// The gate calls this on the retry, not on the first attempt. The default is "neither".
+    /// </summary>
+    /// <param name="finaliseId">The id stamped on this attempt's reversal and refusal.</param>
+    /// <param name="refusalCode">The refusal code stored on those rows.</param>
+    /// <param name="reversalCount">The positive cap charge. Zero means there is no reversal to find.</param>
+    /// <param name="cancellationToken">The caller's cancellation token. The re-check passes
+    /// <see cref="CancellationToken.None"/>.</param>
+    /// <returns>Which of the two rows are already stored for this attempt.</returns>
+    Task<TradingWriterRefusalStored> FindStoredWriterRefusalAsync(
+        Guid finaliseId,
+        string refusalCode,
+        int reversalCount,
+        CancellationToken cancellationToken)
+    {
+        _ = finaliseId;
+        _ = refusalCode;
+        _ = reversalCount;
+        _ = cancellationToken;
+        return Task.FromResult(TradingWriterRefusalStored.None);
+    }
+
+    /// <summary>
+    /// Inserts the cap reversal and the <c>Refused</c> row. The production writer commits them in one
+    /// save. The default is not a transaction: it writes them one after another so a double that only
+    /// implements <see cref="WriteAsync"/> still finalises. That default stays for test doubles.
+    /// </summary>
+    /// <param name="reversal">The negative <c>Attempted</c> row.</param>
+    /// <param name="refusal">The <c>Refused</c> row.</param>
+    /// <param name="finaliseId">Stamped on both rows. A retry matches this id only.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    async Task AppendReversalAndRefusalAsync(
+        TradingAuditWriteRequest reversal,
+        TradingAuditWriteRequest refusal,
+        Guid finaliseId,
+        CancellationToken cancellationToken)
+    {
+        await WriteAsync(reversal with { FinaliseId = finaliseId }, cancellationToken).ConfigureAwait(false);
+        await WriteAsync(refusal with { FinaliseId = finaliseId }, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Inserts the pre-send <see cref="TradingAuditOutcomes.Unknown"/> claim, or reports the claim already
     /// stored for this account, tool and key. The store rejects a second claim for the same triple.
     /// </summary>
@@ -30,6 +73,15 @@ public interface ITradingAuditLogWriter
     }
 }
 
+/// <summary>What a writer-lock refusal has already stored for one claim.</summary>
+/// <param name="Reversed">The negative cap charge is already stored, or there was no charge.</param>
+/// <param name="Refused">A <c>Refused</c> row for this request hash and code is already stored.</param>
+public readonly record struct TradingWriterRefusalStored(bool Reversed, bool Refused)
+{
+    /// <summary>Neither row is stored.</summary>
+    public static TradingWriterRefusalStored None => new(false, false);
+}
+
 /// <summary>One row to append to <c>TradingAuditLog</c>.</summary>
 /// <param name="AccountId">The venue account id.</param>
 /// <param name="ParsedStage">The stage string stored on the row.</param>
@@ -41,6 +93,9 @@ public interface ITradingAuditLogWriter
 /// <param name="ContractCount">Cap charge. The pre-send claim uses zero.</param>
 /// <param name="VenueErrorCode">Venue or refusal code, or <see langword="null"/>.</param>
 /// <param name="OrderId">Broker order id on a live row, or <see langword="null"/>.</param>
+/// <param name="FinaliseId">
+/// Correlates one lock-failure reversal with its <c>Refused</c> row. Null on every other row.
+/// </param>
 public sealed record TradingAuditWriteRequest(
     int AccountId,
     string ParsedStage,
@@ -51,4 +106,5 @@ public sealed record TradingAuditWriteRequest(
     string Outcome,
     int ContractCount,
     string? VenueErrorCode,
-    long? OrderId = null);
+    long? OrderId = null,
+    Guid? FinaliseId = null);

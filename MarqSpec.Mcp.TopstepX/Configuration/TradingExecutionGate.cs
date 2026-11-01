@@ -191,7 +191,7 @@ public sealed class TradingExecutionGate(
 
     /// <summary>
     /// Refuses when the parsed stage is not <see cref="AccountStage.Practice"/>. Unknown stages also invoke
-    /// <paramref name="unknownStageSignal"/> for future metrics (gh#732).
+    /// <paramref name="unknownStageSignal"/>, which counts the refusal (gh#732).
     /// </summary>
     /// <param name="stage">Stage from a fresh account row.</param>
     /// <param name="accountId">The venue account id.</param>

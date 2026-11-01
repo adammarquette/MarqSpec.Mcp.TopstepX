@@ -421,3 +421,15 @@ not start until v1 is shipped and a separate ADR amendment is accepted.
 | gh#722 | **Epic: v2 trading on evaluation/funded accounts** (out of v1 scope) |
 
 *Assisted-by: Cursor Cloud Agent*
+
+## Update (2026-11-01) — the unknown-stage counter (gh#732)
+
+gh#733 in the follow-up table was a duplicate of gh#732. The parser-gap signal is the untagged counter
+`mcp.execution.unknown_stage` on the host meter `MarqSpec.Mcp.TopstepX`. It increments by one when
+`RefuseIfStageBlocksWrite` sees `AccountStage.Unknown`, including a `dryRun` preview, and not when the
+stage is practice or a known non-practice family. No account id and no account name are tags. The
+refusal itself is unchanged.
+
+This repository does not define an alarm resource. Paging stays the CloudWatch path (ADR-0019, ADR-0023,
+gh#526). The rule an operator attaches to the existing per-environment topic is in
+[deployment.md](../deployment.md#unknown-account-stage-gh732). Grafana alerting is not added.

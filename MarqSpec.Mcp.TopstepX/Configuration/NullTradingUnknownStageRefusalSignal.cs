@@ -1,6 +1,6 @@
 namespace MarqSpec.Mcp.TopstepX.Configuration;
 
-/// <summary>No-op until gh#732 wires metrics and alerts (gh#733 was a duplicate).</summary>
+/// <summary>No-op. Production registers <see cref="TradingUnknownStageRefusalSignal"/> (gh#732).</summary>
 public sealed class NullTradingUnknownStageRefusalSignal : ITradingUnknownStageRefusalSignal
 {
     /// <inheritdoc />

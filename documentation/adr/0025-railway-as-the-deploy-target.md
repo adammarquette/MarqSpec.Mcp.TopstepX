@@ -80,8 +80,10 @@ front of a plaintext `8080` listener and health-checked `/health`. On Railway:
   waiting on the lease report healthy?
 - **Migrations (Maker, product):** `server` and `recorder` both migrate at startup. Is that intended, or
   should only one migrate?
-- **Data retention** reverses "the tape is a record" and is tracked as its own ADR issue, gh#763. No pruning until it
-  is accepted, and it sequences after gh#755's export.
+- **Data retention** is [ADR-0027](0027-tape-retention-after-export.md) (gh#763). The recorder deletes a
+  UTC day of `Trades` only after an `uploaded` trades receipt for that day and contract. No receipt
+  means no delete. `drive_disabled` is not confirmation. It sequences after gh#755's export.
+  Timescale `policy_retention` stays empty.
 - **Required check:** whether `railway-template` becomes a required check (Adam's branch rule).
 
 Assisted-by: Grok Bot (Cursor)

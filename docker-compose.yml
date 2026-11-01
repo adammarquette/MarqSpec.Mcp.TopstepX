@@ -155,6 +155,10 @@ services:
       TapeExport__Drive__FolderId: "${TapeExport__Drive__FolderId:-}"
       TapeExport__Drive__ServiceAccountJson: "${TapeExport__Drive__ServiceAccountJson:-}"
       TapeExport__Drive__ServiceAccountJsonPath: "${TapeExport__Drive__ServiceAccountJsonPath:-}"
+      # Days of Trades an uploaded export may stay (gh#763, ADR-0027). Default 90.
+      # 7 through 3650. Zero and a negative number are refused. No uploaded trades
+      # receipt means no delete, so a stack that has not exported drops nothing.
+      TapeRetention__Days: "${TapeRetention__Days:-90}"
 
       Indicators__AtrPeriod: "${Indicators__AtrPeriod:-14}"
       Indicators__RsiPeriod: "${Indicators__RsiPeriod:-14}"

@@ -50,6 +50,7 @@ retrospective justification is a press release. The useful ones name the option 
 | [0024](0024-gated-trading-actions-practice-v1.md) | **Gated trading actions — practice accounts only in v1** | Accepted · supersedes [0002](0002-read-only-venue-boundary.md) under the constraints here · gh#706 (v1 epic), gh#722 (v2 epic) · PR #723 |
 | [0025](0025-railway-as-the-deploy-target.md) | **Railway as the deploy target** — image-sourced, `.railway/railway.ts` in the repo, Railway swappable | **Proposed** (draft) · fills the gap [0023](0023-aws-deployment-topology.md) left · gh#758 |
 | [0026](0026-drive-file-scope-for-tape-export.md) | **Tape export Drive uses the drive.file scope** | Accepted · `R-10.6` · gh#755 · PR #765 |
+| [0027](0027-tape-retention-after-export.md) | **Tape retention deletes only a day with an uploaded export** | Accepted · gh#763 · answers the export-first question [0025](0025-railway-as-the-deploy-target.md) left open |
 
 *Adding a record? Add its row here in the same PR, and a routing entry in [`../README.md`](../README.md) if
 the corpus shape changes.*

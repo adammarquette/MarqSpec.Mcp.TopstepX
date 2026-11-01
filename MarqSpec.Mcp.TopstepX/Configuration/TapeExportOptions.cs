@@ -24,9 +24,12 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// both set, and it does not replace the volume.
 /// </para>
 /// <para>
-/// <b>The export is additive.</b> A finished UTC day is copied out. Local rows stay. Timescale
-/// <c>policy_retention</c> on <c>Trades</c> stays empty, and this process has no retention or prune
-/// switch. Deleting raw tape is a separate product decision and needs its own ADR (gh#758).
+/// <b>The export is additive.</b> A finished UTC day is copied out. Local rows stay. This export
+/// has no prune switch. Timescale <c>policy_retention</c> on <c>Trades</c> stays empty. A later
+/// retention pass (ADR-0027, gh#763) may delete one UTC day of <c>Trades</c> only when an
+/// <c>uploaded</c> trades receipt exists for that day, venue, instrument and contract.
+/// <c>drive_disabled</c>, <c>pending</c> and <c>failed</c> are not that receipt. No receipt means
+/// no delete.
 /// </para>
 /// </remarks>
 public sealed class TapeExportOptions : IValidatableObject

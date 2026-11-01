@@ -697,11 +697,13 @@ public sealed class TradeTapeRecorderTests
             hub.MarketConnects.Should().Be(0);
             inner.GetCalls.Should().Be(0);
 
+            int backoffAlreadyArmed = clock.ArmedDelays(TimeSpan.FromMinutes(1));
             clock.Advance(HeldSession.CacheLifetime - HeldSession.RefreshBuffer);
             await WaitUntil(() =>
                 tape.For("ES").Reason == TapeUnavailableReason.Stopped
                 && tape.For("ES").Explanation != null
-                && tape.For("ES").Explanation!.Contains("will not call loginKey", StringComparison.Ordinal));
+                && tape.For("ES").Explanation!.Contains("will not call loginKey", StringComparison.Ordinal)
+                && clock.ArmedDelays(TimeSpan.FromMinutes(1)) > backoffAlreadyArmed);
 
             hub.MarketConnects.Should().Be(0);
             hub.TradeSubscriptions.Should().BeEmpty();
@@ -2934,12 +2936,12 @@ public sealed class TradeTapeRecorderTests
             await recorder.StartAsync(CancellationToken.None);
             await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
 
-            int delaysBeforeStop = clock.DelayCalls;
+            int backoffAlreadyArmed = clock.ArmedDelays(TimeSpan.FromMinutes(1));
             hub.SimulateSessionConflict("invalid session");
 
             await WaitUntil(() =>
                 tape.For("ES").Reason == TapeUnavailableReason.StoppedForSessionConflict
-                && clock.DelayCalls > delaysBeforeStop
+                && clock.ArmedDelays(TimeSpan.FromMinutes(1)) > backoffAlreadyArmed
                 && conflicts.GetMeasurementSnapshot().Count == 1
                 && logger.Warnings.Count > 0);
 
@@ -2997,9 +2999,9 @@ public sealed class TradeTapeRecorderTests
             await recorder.StartAsync(CancellationToken.None);
             await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
 
-            int delaysBeforeStop = clock.DelayCalls;
+            int backoffAlreadyArmed = clock.ArmedDelays(TimeSpan.FromSeconds(30));
             hub.SimulateSessionConflict("session not found");
-            await WaitUntil(() => clock.DelayCalls > delaysBeforeStop);
+            await WaitUntil(() => clock.ArmedDelays(TimeSpan.FromSeconds(30)) > backoffAlreadyArmed);
 
             recorder.ExecuteTask!.IsCompleted.Should().BeFalse();
             logger.Warnings.Should().Contain(message => message.Contains("trading platform", StringComparison.Ordinal));
@@ -3039,9 +3041,9 @@ public sealed class TradeTapeRecorderTests
             sockets.AutoReconnect.Should().BeFalse();
             SessionLoginGate.FirstAutomaticRetryDelay(sockets).Should().BeNull();
 
-            int delaysBeforeStop = clock.DelayCalls;
+            int backoffAlreadyArmed = clock.ArmedDelays(TimeSpan.FromMinutes(1));
             hub.SimulateSessionConflict("invalidsession");
-            await WaitUntil(() => clock.DelayCalls > delaysBeforeStop);
+            await WaitUntil(() => clock.ArmedDelays(TimeSpan.FromMinutes(1)) > backoffAlreadyArmed);
 
             sockets.AutoReconnect.Should().BeFalse();
             clock.Advance(TimeSpan.FromMinutes(1));
@@ -3075,11 +3077,11 @@ public sealed class TradeTapeRecorderTests
             await recorder.StartAsync(CancellationToken.None);
             await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
 
-            int delaysBeforeStop = clock.DelayCalls;
+            int backoffAlreadyArmed = clock.ArmedDelays(TimeSpan.FromMinutes(1));
             hub.SimulateMarketDisconnect();
             await WaitUntil(() =>
                 tape.For("ES").Reason == TapeUnavailableReason.StoppedForSessionConflict
-                && clock.DelayCalls > delaysBeforeStop
+                && clock.ArmedDelays(TimeSpan.FromMinutes(1)) > backoffAlreadyArmed
                 && probe.Calls >= 1);
 
             logger.Warnings.Should().Contain(message =>
@@ -3204,6 +3206,7 @@ public sealed class TradeTapeRecorderTests
         // a later split that retries one of them is red. None of the four may keep connecting.
         bool noToken = path == "no-token";
         bool hub = path == "hub";
+        TimeSpan backoff = TimeSpan.FromMinutes(1);
         ScriptedSessionProbe probe = new()
         {
             Verdict = noToken ? SessionProbeVerdict.Inconclusive : SessionProbeVerdict.Conflict,
@@ -3219,7 +3222,7 @@ public sealed class TradeTapeRecorderTests
                 McpTransport.Http,
                 recordTape: true,
                 leaseTimeToLive: TimeSpan.FromHours(1),
-                sessionConflictBackoff: TimeSpan.FromMinutes(1),
+                sessionConflictBackoff: backoff,
                 sessionProbe: probe,
                 webSocketOptions: sockets,
                 heldSession: held);
@@ -3232,7 +3235,10 @@ public sealed class TradeTapeRecorderTests
             await WaitUntil(() => hubClient.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
             sockets.AutoReconnect.Should().BeFalse();
 
-            int delaysBeforeStop = clock.DelayCalls;
+            // The renewal timer (TTL / 3) can arm after subscribe and before this backoff. The hub
+            // path also publishes the stop reason first. Either one used to satisfy "some delay
+            // started", and advancing a minute then left the real backoff in the future (gh#923).
+            int backoffAlreadyArmed = clock.ArmedDelays(backoff);
             if (hub)
             {
                 hubClient.SimulateSessionConflict("invalid session");
@@ -3243,14 +3249,14 @@ public sealed class TradeTapeRecorderTests
             }
 
             await WaitUntil(() =>
-                clock.DelayCalls > delaysBeforeStop
+                clock.ArmedDelays(backoff) > backoffAlreadyArmed
                 && (noToken
                     ? tape.For("ES").Reason == TapeUnavailableReason.Stopped
                     : tape.For("ES").Reason == TapeUnavailableReason.StoppedForSessionConflict));
 
             int connects = hubClient.MarketConnects;
             int subscribes = hubClient.SubscribeAttempts;
-            clock.Advance(TimeSpan.FromMinutes(1));
+            clock.Advance(backoff);
             await BackgroundServiceTestSupport.AwaitCompletionAsync(recorder.ExecuteTask!);
 
             recorder.ExecuteTask!.IsCompleted.Should().BeTrue();
@@ -3790,12 +3796,12 @@ public sealed class TradeTapeRecorderTests
             await recorder.StartAsync(CancellationToken.None);
             await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
 
-            int delaysBeforeStop = clock.DelayCalls;
+            int backoffAlreadyArmed = clock.ArmedDelays(TimeSpan.FromMinutes(1));
             hub.SimulateMarketDisconnect();
             await WaitUntil(() =>
                 tape.For("ES").Explanation != null
                 && tape.For("ES").Explanation!.Contains("loginKey", StringComparison.Ordinal)
-                && clock.DelayCalls > delaysBeforeStop);
+                && clock.ArmedDelays(TimeSpan.FromMinutes(1)) > backoffAlreadyArmed);
 
             hub.MarketConnects.Should().Be(1);
             tape.For("ES").Reason.Should().Be(TapeUnavailableReason.Stopped);
@@ -3837,12 +3843,12 @@ public sealed class TradeTapeRecorderTests
             await recorder.StartAsync(CancellationToken.None);
             await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
 
-            int delaysBeforeStop = clock.DelayCalls;
+            int backoffAlreadyArmed = clock.ArmedDelays(TimeSpan.FromMinutes(1));
             hub.SimulateMarketDisconnect();
             await WaitUntil(() =>
                 tape.For("ES").Explanation != null
                 && tape.For("ES").Explanation!.Contains("REST tools", StringComparison.Ordinal)
-                && clock.DelayCalls > delaysBeforeStop);
+                && clock.ArmedDelays(TimeSpan.FromMinutes(1)) > backoffAlreadyArmed);
 
             gate.StopLatched.Should().BeFalse();
             gate.LoginPermitted.Should().BeTrue();
@@ -4173,11 +4179,11 @@ public sealed class TradeTapeRecorderTests
             await recorder.StartAsync(CancellationToken.None);
             await WaitUntil(() => hub.TradeSubscriptions.Contains(CountingGateway.DefaultContractId));
 
-            int delaysBeforeStop = clock.DelayCalls;
+            int backoffAlreadyArmed = clock.ArmedDelays(TimeSpan.FromMinutes(1));
             gate.LatchStop();
             await WaitUntil(() =>
                 tape.For("ES").Reason == TapeUnavailableReason.StoppedForSessionConflict
-                && clock.DelayCalls > delaysBeforeStop);
+                && clock.ArmedDelays(TimeSpan.FromMinutes(1)) > backoffAlreadyArmed);
 
             logger.Warnings.Should().Contain(message => message.Contains("(api)", StringComparison.Ordinal));
             hub.MarketDisconnects.Should().BeGreaterThanOrEqualTo(1);
@@ -4415,11 +4421,15 @@ public sealed class TradeTapeRecorderTests
     }
 
     /// <summary>
-    /// The suite clock, counting each <see cref="TimeProvider.Delay"/> after the timer is armed.
-    /// A session-conflict backoff parks here, so a test can tell the wait has started.
+    /// The suite clock. <see cref="DelayCalls"/> counts every timer, including the lease renewal.
+    /// A stand-down test uses <see cref="ArmedDelays"/> for the backoff itself: the hub path
+    /// publishes the stop reason before that timer exists, and the renewal (a third of the claim
+    /// TTL) can be the delay that appears in between. Advancing on the renewal leaves the backoff
+    /// scheduled after the clock has already moved (gh#923).
     /// </summary>
     private sealed class RecordingClock : FakeTimeProvider
     {
+        private readonly Dictionary<long, int> _armedByDue = [];
         private int _delays;
         private int _fired;
 
@@ -4431,6 +4441,17 @@ public sealed class TradeTapeRecorderTests
         public int DelayCalls => Volatile.Read(ref _delays);
 
         public int Fired => Volatile.Read(ref _fired);
+
+        /// <summary>How many timers have been armed with this due time.</summary>
+        /// <param name="dueTime">The delay passed to <see cref="TimeProvider.CreateTimer"/>.</param>
+        /// <returns>The number armed so far. Zero when none have been.</returns>
+        public int ArmedDelays(TimeSpan dueTime)
+        {
+            lock (_armedByDue)
+            {
+                return _armedByDue.TryGetValue(dueTime.Ticks, out int count) ? count : 0;
+            }
+        }
 
         public override ITimer CreateTimer(
             TimerCallback callback,
@@ -4444,6 +4465,12 @@ public sealed class TradeTapeRecorderTests
                 callback(timerState);
             };
             ITimer timer = base.CreateTimer(counted, state, dueTime, period);
+            lock (_armedByDue)
+            {
+                _armedByDue.TryGetValue(dueTime.Ticks, out int count);
+                _armedByDue[dueTime.Ticks] = count + 1;
+            }
+
             Interlocked.Increment(ref _delays);
             return timer;
         }

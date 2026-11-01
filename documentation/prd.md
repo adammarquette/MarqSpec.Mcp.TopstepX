@@ -762,9 +762,14 @@ only after an `uploaded` trades receipt for that day and contract. No receipt me
 - **R-10.2** A UTC day is copied only after its exclusive end (00:00 UTC the next day). The current
   day is not written. A day a still-open listen overlaps is not written. Rows stream into the gzip and
   the Parquet row groups. The manifest is renamed into place last and names one generation
-  (`yyyy-MM-dd.vN`). Its sha256 and row counts must match those files, and each file's row count
-  must match the source rows before a receipt is marked `uploaded`. A missing sha256 or a count
-  mismatch refuses that receipt (gh#795). A mismatch of the files themselves refuses that day.
+  (`yyyy-MM-dd.vN`). Its sha256 and row counts must match those files, and each gzip row count
+  must match the source rows before a receipt is marked `uploaded`. A file mismatch is
+  `verification_failed` with `reason=manifest`. A source mismatch discards the manifest and
+  writes the day once more in the same pass (gh#795). If it still disagrees, the manifest stays
+  discarded, `mcp.tape.export.stuck` increments, and the next pass writes the day again. The
+  count is not inside the file-write transaction: a day that is still receiving rows is already
+  excluded, and a row that arrives after a matching count and before the receipt can wait for
+  that next pass. A count-query error fails that day and the pass continues.
   A day whose receipt hash still matches is not read again. The pass does not delete local rows, an
   older generation, or a Drive file.
 - **R-10.3** `import-tape` restores a verified day into Postgres and refuses a checksum or row-count

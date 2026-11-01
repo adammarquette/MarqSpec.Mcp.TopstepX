@@ -96,6 +96,7 @@ public sealed class TapeExportWorker(
             catch (Exception exception)
             {
                 _logger.LogError(
+                    exception,
                     "Scheduled tape export failed ({ExceptionType}). Local tape was not deleted by this pass.",
                     exception.GetType().Name);
             }

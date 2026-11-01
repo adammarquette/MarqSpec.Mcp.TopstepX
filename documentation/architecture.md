@@ -820,7 +820,8 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.tape.reconnects` | counter | `transition` = connected \| disconnected | `TradeTapeRecorder` |
 | `mcp.tape.lease.changes` | counter | `change` = acquired \| refused \| lost · `symbol` | `TradeTapeRecorder` (ADR-0016) |
 | `mcp.tape.session_conflicts` | counter | `source` = hub \| api | `TradeTapeRecorder`; span `tape.session_conflict` carries `source` only (gh#757) |
-| `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed | `TapeExportPass` (gh#755, `R-10`). One measurement per pass for a repeated outcome |
+| `mcp.tape.exports` | counter | `outcome` = skipped_open \| skipped_receipt \| days_exported \| rows_exported \| verification_failed \| rows_imported \| import_refused \| lock_held \| export_failed · `reason` = manifest \| source_count on `verification_failed` only | `TapeExportPass` (gh#755, gh#795, `R-10`). One measurement per pass for a repeated outcome |
+| `mcp.tape.export.stuck` | counter, days | (none) | `TapeExportPass`, a day whose source count still disagreed after the pass wrote it again (gh#795) |
 | `mcp.tape.export.duration` | histogram, seconds | (none) | `TapeExportPass`, once per pass including a lock skip |
 | `mcp.tape.pruned` | counter, rows | (none) | `TapeRetentionPass`, measured deletes only (gh#763) |
 | `mcp.tape.prune.skipped` | counter, keys | `reason` = no_receipt \| key_cap | `TapeRetentionPass`. `no_receipt` is a key with no uploaded trades receipt. `key_cap` is the walk hitting its cap, so a chunk is not dropped |
@@ -1168,8 +1169,14 @@ Trades and closed coverage are one pair per contract per day,
 `footprint-cells/{venue}/{instrument}/{resolution}/yyyy-MM-dd.vN.csv.gz` and `.parquet`. The manifest is
 `manifests/yyyy-MM-dd.json` (`csv.gz+parquet/v1`), written last by a temp file, fsync, and rename, and
 it is the name a reader trusts. It stores the generation, each file's sha256, and the data-row count.
-Before a receipt is marked `uploaded`, those counts are checked against the source rows. A mismatch
-refuses the receipt and counts `verification_failed` (gh#795).
+Before a receipt is marked `uploaded`, the gzip counts are checked against the source rows. The
+check is not inside the file-write transaction: a day still receiving rows is already excluded,
+and holding that snapshot across the gzip write would pin it for the disk IO. A source mismatch
+discards the manifest and writes the day once more. If it still disagrees, the manifest stays
+discarded, `mcp.tape.export.stuck` increments, and a Warning names the day (gh#795). A row that
+lands after a matching count and before the receipt waits for the next pass.
+`verification_failed` carries `reason=manifest` or `reason=source_count`. A count-query error is
+`export_failed` for that day and the pass continues.
 An older generation is left on disk.
 The image user is uid 64198. Railway allows one volume per service and mounts it as root at `/data`.
 Since gh#767 the image `ENTRYPOINT` is `scripts/prepare-tape-volume.sh`

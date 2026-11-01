@@ -225,19 +225,10 @@ public sealed class TapeExportPass(
                 using Activity? exportSpan = _telemetry.Activities.StartActivity("tape.export", ActivityKind.Internal);
                 exportSpan?.SetTag("tape.day", day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
 
-                TapeExportVerification written;
+                PreparedDay prepared;
                 try
                 {
-                    TapeExportVerification existing = await TapeExportArchive.VerifyAsync(_options.Path, day, cancellationToken)
-                        .ConfigureAwait(false);
-                    if (existing.Verified)
-                    {
-                        written = existing;
-                    }
-                    else
-                    {
-                        written = await StreamDayAsync(day, now, cancellationToken).ConfigureAwait(false);
-                    }
+                    prepared = await PrepareDayAsync(day, now, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -246,40 +237,34 @@ public sealed class TapeExportPass(
                 catch (Exception exception)
                 {
                     exportSpan?.SetStatus(ActivityStatusCode.Error);
+                    exportSpan?.SetTag(HostTelemetry.OutcomeTag, TapeExportOutcome.ExportFailed);
                     _telemetry.TapeExport(TapeExportOutcome.ExportFailed, 1);
                     daysRefused++;
                     _logger.LogError(
+                        exception,
                         "Tape export of {Day} failed ({ExceptionType}). Local rows were left in place.",
                         day,
                         exception.GetType().Name);
                     continue;
                 }
 
-                if (!written.Verified)
+                if (prepared.Failure is string failure)
                 {
                     exportSpan?.SetStatus(ActivityStatusCode.Error);
-                    _telemetry.TapeExport(TapeExportOutcome.VerificationFailed, 1);
+                    exportSpan?.SetTag(HostTelemetry.OutcomeTag, TapeExportOutcome.VerificationFailed);
+                    exportSpan?.SetTag(HostTelemetry.ReasonTag, failure);
+                    _telemetry.TapeExport(TapeExportOutcome.VerificationFailed, 1, failure);
                     daysRefused++;
                     _logger.LogError(
-                        "Tape export of {Day} did not verify ({Reason}). Local rows were left in place.",
+                        "Tape export of {Day} refused the receipt ({Reason}: {Detail}). "
+                        + "Local rows were left in place.",
                         day,
-                        written.Reason);
+                        failure,
+                        prepared.Detail);
                     continue;
                 }
 
-                string? mismatch = await SourceCountMismatchAsync(day, written, cancellationToken)
-                    .ConfigureAwait(false);
-                if (mismatch is not null)
-                {
-                    exportSpan?.SetStatus(ActivityStatusCode.Error);
-                    _telemetry.TapeExport(TapeExportOutcome.VerificationFailed, 1);
-                    daysRefused++;
-                    _logger.LogError(
-                        "Tape export of {Day} refused the receipt ({Reason}). Local rows were left in place.",
-                        day,
-                        mismatch);
-                    continue;
-                }
+                TapeExportVerification written = prepared.Written;
 
                 if (gate is null && _drive.IsEnabled)
                 {
@@ -349,6 +334,108 @@ public sealed class TapeExportPass(
             daysRefused);
 
         return new TapeExportReport(daysExported, daysRefused, rowsExported, 0);
+    }
+
+    /// <summary>
+    /// How many times one pass writes a day whose source count disagrees. The second is the last.
+    /// </summary>
+    private const int SourceCountWrites = 2;
+
+    /// <summary>
+    /// Files for one day, or why they were refused. <see cref="Failure"/> is null when they may upload.
+    /// </summary>
+    /// <param name="Written">The verified files. Empty when <paramref name="Failure"/> is set.</param>
+    /// <param name="Failure">
+    /// <see cref="TapeExportVerificationReason.Manifest"/> or
+    /// <see cref="TapeExportVerificationReason.SourceCount"/>. Null when the files match the source.
+    /// </param>
+    /// <param name="Detail">
+    /// The first check that failed. Empty when <paramref name="Failure"/> is null.
+    /// </param>
+    private readonly record struct PreparedDay(
+        TapeExportVerification Written,
+        string? Failure,
+        string Detail);
+
+    /// <summary>
+    /// Reuses a verified generation only when its row counts still match the source. A mismatch discards
+    /// that manifest and writes the day again, once. The count is not held in the file-write transaction:
+    /// a day that is still receiving rows is already excluded, and holding <c>REPEATABLE READ</c> across
+    /// the gzip write would pin that snapshot for the disk IO.
+    /// </summary>
+    private async Task<PreparedDay> PrepareDayAsync(
+        DateOnly day,
+        DateTimeOffset exportedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        TapeExportVerification existing = await TapeExportArchive.VerifyAsync(
+                _options.Path, day, cancellationToken)
+            .ConfigureAwait(false);
+        if (existing.Verified)
+        {
+            string? reused = await SourceCountMismatchAsync(day, existing, cancellationToken)
+                .ConfigureAwait(false);
+            if (reused is null)
+            {
+                return new PreparedDay(existing, null, string.Empty);
+            }
+
+            DiscardManifest(day);
+            _logger.LogWarning(
+                "Tape export of {Day} will not reuse files the source count rejected ({Reason}).",
+                day,
+                reused);
+        }
+
+        for (int attempt = 1; attempt <= SourceCountWrites; attempt++)
+        {
+            TapeExportVerification written = await StreamDayAsync(day, exportedAtUtc, cancellationToken)
+                .ConfigureAwait(false);
+            if (!written.Verified)
+            {
+                return new PreparedDay(written, TapeExportVerificationReason.Manifest, written.Reason);
+            }
+
+            string? mismatch = await SourceCountMismatchAsync(day, written, cancellationToken)
+                .ConfigureAwait(false);
+            if (mismatch is null)
+            {
+                return new PreparedDay(written, null, string.Empty);
+            }
+
+            DiscardManifest(day);
+            if (attempt == SourceCountWrites)
+            {
+                _logger.LogWarning(
+                    "Tape export of {Day} is stuck after {Attempts} writes ({Reason}). "
+                    + "The manifest was discarded.",
+                    day,
+                    attempt,
+                    mismatch);
+                _telemetry.TapeExportStuck();
+                return new PreparedDay(
+                    written,
+                    TapeExportVerificationReason.SourceCount,
+                    mismatch);
+            }
+
+            _logger.LogWarning(
+                "Tape export of {Day} source count disagreed ({Reason}). Writing the day again.",
+                day,
+                mismatch);
+        }
+
+        throw new InvalidOperationException(
+            "Tape export exhausted its source-count writes without a result.");
+    }
+
+    private void DiscardManifest(DateOnly day)
+    {
+        string path = TapeExportArchive.ManifestPath(_options.Path, day);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
     }
 
     private async Task<TapeExportVerification> StreamDayAsync(
@@ -1386,14 +1473,15 @@ public sealed class TapeExportPass(
         (DateTimeOffset start, DateTimeOffset end) = Bounds(day);
         foreach (TapeExportStoredFile file in written.Files ?? [])
         {
-            if (string.IsNullOrEmpty(file.Sha256))
-            {
-                return file.RelativePath + " has no sha256";
-            }
-
+            // Parquet carries the same rows as the gzip. The gzip count is the one compared to the source.
             if (!string.Equals(file.Format, TapeExportArchive.CsvGzFormat, StringComparison.Ordinal))
             {
                 continue;
+            }
+
+            if (file.Kind is not "trades" and not "tape-coverage" and not "footprint")
+            {
+                return file.RelativePath + " kind " + file.Kind + " is not counted";
             }
 
             int source = await CountSourceRowsAsync(file, start, end, cancellationToken)
@@ -1466,7 +1554,7 @@ public sealed class TapeExportPass(
                 cancellationToken).ConfigureAwait(false);
         }
 
-        return file.Rows;
+        return -1;
     }
 
     private async Task<int> ScalarAsync(

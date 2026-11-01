@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO.Compression;
 using System.Text;
-using System.Text.Json;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
@@ -105,61 +104,80 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Export_WritesAManifestWithRowCountsAndChecksums()
-    {
-        await SeedTradeAsync(On(_keptDay, 14), 1, 5123.25m);
-
-        await Pass(new HostTelemetry()).ExportAsync(null, CancellationToken.None);
-
-        string json = await File.ReadAllTextAsync(TapeExportArchive.ManifestPath(_destination, _keptDay));
-        using JsonDocument manifest = JsonDocument.Parse(json);
-        JsonElement files = manifest.RootElement.GetProperty("files");
-        files.GetArrayLength().Should().BeGreaterThan(0);
-        string? tradesSha = null;
-        int? tradesRows = null;
-        foreach (JsonElement file in files.EnumerateArray())
-        {
-            string sha = file.GetProperty("sha256").GetString()!;
-            sha.Should().MatchRegex("^[0-9a-f]{64}$");
-            file.GetProperty("rows").GetInt32().Should().BeGreaterThan(0);
-            if (file.GetProperty("kind").GetString() == "trades"
-                && file.GetProperty("format").GetString() == TapeExportArchive.CsvGzFormat)
-            {
-                tradesSha = sha;
-                tradesRows = file.GetProperty("rows").GetInt32();
-            }
-        }
-
-        tradesRows.Should().Be(1);
-        TapeExportReceipt receipt = await _database.TapeExportReceipts.SingleAsync(row =>
-            row.Format == TapeExportArchive.CsvGzFormat && row.Kind == "trades");
-        receipt.Sha256.Should().Be(tradesSha);
-        receipt.RowCount.Should().Be(1);
-        receipt.UploadState.Should().NotBe(TapeExportReceipt.StateUploaded);
-    }
-
-    [Fact]
-    public async Task Export_WhenTheSourceCountDoesNotMatch_RefusesTheReceipt()
+    public async Task Export_WhenTheSourceCountMismatches_RetriesOnceTheSourceSettles()
     {
         await SeedTradeAsync(On(_keptDay, 14), 1, 10m);
         ExtraTradeOnSourceCount extra = new(_fixture.ConnectionString);
         await using TopstepXDbContext database = _fixture.CreateContext(extra);
+        using HostTelemetry firstTelemetry = new();
+        using MetricCollector<long> refused =
+            new(firstTelemetry, HostTelemetry.Name, HostTelemetry.TapeExportsInstrument);
+        using MetricCollector<long> stuck =
+            new(firstTelemetry, HostTelemetry.Name, HostTelemetry.TapeExportStuckInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, firstTelemetry.Activities);
+
+        TapeExportReport first = await Pass(firstTelemetry, database: database)
+            .ExportAsync(null, CancellationToken.None);
+
+        first.DaysExported.Should().Be(0);
+        first.DaysRefused.Should().Be(1);
+        extra.Inserts.Should().BeGreaterThan(0);
+        (await database.TapeExportReceipts.CountAsync()).Should().Be(0);
+        File.Exists(TapeExportArchive.ManifestPath(_destination, _keptDay)).Should().BeFalse();
+        refused.GetMeasurementSnapshot().Should().Contain(measurement =>
+            Equals(measurement.Tags[HostTelemetry.OutcomeTag], TapeExportOutcome.VerificationFailed)
+            && Equals(measurement.Tags[HostTelemetry.ReasonTag], TapeExportVerificationReason.SourceCount));
+        stuck.GetMeasurementSnapshot().Should().ContainSingle().Which.Value.Should().Be(1);
+        spans.Should().Contain(span =>
+            span.OperationName == "tape.export"
+            && span.Status == ActivityStatusCode.Error
+            && (string?)span.GetTagItem(HostTelemetry.OutcomeTag) == TapeExportOutcome.VerificationFailed
+            && (string?)span.GetTagItem(HostTelemetry.ReasonTag) == TapeExportVerificationReason.SourceCount);
+
+        extra.Armed = false;
+        using HostTelemetry secondTelemetry = new();
+        TapeExportReport second = await Pass(secondTelemetry, database: database)
+            .ExportAsync(null, CancellationToken.None);
+
+        second.DaysExported.Should().Be(1);
+        second.DaysRefused.Should().Be(0);
+        TapeExportReceipt receipt = await database.TapeExportReceipts.SingleAsync(row =>
+            row.Kind == "trades" && row.Format == TapeExportArchive.CsvGzFormat);
+        receipt.UploadState.Should().NotBe(TapeExportReceipt.StateUploaded);
+        receipt.Sha256.Should().MatchRegex("^[0-9a-f]{64}$");
+        receipt.RowCount.Should().Be(await database.Trades.CountAsync());
+        (await TapeExportArchive.VerifyAsync(_destination, _keptDay, CancellationToken.None))
+            .Verified.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Export_WhenTheSourceCountQueryFails_RefusesThatDayAndContinues()
+    {
+        await SeedTradeAsync(On(_oldDay, 14), 1, 10m);
+        await SeedTradeAsync(On(_keptDay, 15), 2, 11m);
+        await using TopstepXDbContext database = _fixture.CreateContext(new SourceCountQueryFails());
         using HostTelemetry telemetry = new();
         using MetricCollector<long> exports =
             new(telemetry, HostTelemetry.Name, HostTelemetry.TapeExportsInstrument);
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+        RememberingLogger logs = new();
 
-        TapeExportReport report = await Pass(telemetry, database: database)
+        TapeExportReport report = await Pass(telemetry, database: database, logger: logs)
             .ExportAsync(null, CancellationToken.None);
 
         report.DaysExported.Should().Be(0);
-        report.DaysRefused.Should().Be(1);
-        extra.Inserted.Should().BeTrue();
-        (await database.TapeExportReceipts.CountAsync(row =>
-            row.UploadState == TapeExportReceipt.StateUploaded)).Should().Be(0);
+        report.DaysRefused.Should().Be(2);
         (await database.TapeExportReceipts.CountAsync()).Should().Be(0);
-        exports.GetMeasurementSnapshot().Should().Contain(measurement =>
-            Equals(measurement.Tags[HostTelemetry.OutcomeTag], TapeExportOutcome.VerificationFailed));
-        File.Exists(TapeExportArchive.ManifestPath(_destination, _keptDay)).Should().BeTrue();
+        exports.GetMeasurementSnapshot().Count(measurement =>
+            Equals(measurement.Tags[HostTelemetry.OutcomeTag], TapeExportOutcome.ExportFailed))
+            .Should().Be(2);
+        spans.Count(span =>
+            span.OperationName == "tape.export" && span.Status == ActivityStatusCode.Error)
+            .Should().Be(2);
+        logs.Exceptions.Should().HaveCount(2);
+        logs.Exceptions.Should().OnlyContain(exception => exception.Message == "source count failed");
     }
 
     [Fact]
@@ -1139,13 +1157,17 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Commits one extra trade when the pass counts source rows, after the file was written.
+    /// Commits one extra trade on every source count while <see cref="Armed"/> is set, so a same-pass
+    /// rewrite still disagrees. The second pass turns it off and the source has settled.
     /// </summary>
     private sealed class ExtraTradeOnSourceCount(string connectionString) : DbCommandInterceptor
     {
-        private int _inserted;
+        private int _inserts;
+        private int _sequence = 99;
 
-        public bool Inserted => Volatile.Read(ref _inserted) == 1;
+        public bool Armed { get; set; } = true;
+
+        public int Inserts => Volatile.Read(ref _inserts);
 
         public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
             DbCommand command,
@@ -1153,10 +1175,11 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
             InterceptionResult<DbDataReader> result,
             CancellationToken cancellationToken)
         {
-            if (command.CommandText.Contains(TapeExportPass.SourceCountSqlMarker, StringComparison.Ordinal)
-                && command.CommandText.Contains("\"Trades\"", StringComparison.Ordinal)
-                && Interlocked.Exchange(ref _inserted, 1) == 0)
+            if (Armed
+                && command.CommandText.Contains(TapeExportPass.SourceCountSqlMarker, StringComparison.Ordinal)
+                && command.CommandText.Contains("\"Trades\"", StringComparison.Ordinal))
             {
+                int sequence = Interlocked.Increment(ref _sequence);
                 using NpgsqlConnection connection = new(connectionString);
                 connection.Open();
                 using NpgsqlCommand insert = new(
@@ -1166,13 +1189,56 @@ public sealed class TapeExportStoreTests : IAsyncLifetime
                          "Price", "Size", "Direction", "RecordedAt")
                     VALUES
                         ('test', 'ES', 'CON.F.US.EP.Z26', TIMESTAMPTZ '2026-10-10 14:00:00+00',
-                         99, 10, 1, 1, TIMESTAMPTZ '2026-10-10 14:00:00+00')
+                         @sequence, 10, 1, 1, TIMESTAMPTZ '2026-10-10 14:00:00+00')
                     """,
                     connection);
+                insert.Parameters.AddWithValue("sequence", sequence);
                 insert.ExecuteNonQuery();
+                Interlocked.Increment(ref _inserts);
             }
 
             return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>The source-count statement fails. The pass must record the day and keep going.</summary>
+    private sealed class SourceCountQueryFails : DbCommandInterceptor
+    {
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken)
+        {
+            if (command.CommandText.Contains(TapeExportPass.SourceCountSqlMarker, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("source count failed");
+            }
+
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
+
+    private sealed class RememberingLogger : ILogger<TapeExportPass>
+    {
+        public List<Exception> Exceptions { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            if (exception is not null)
+            {
+                Exceptions.Add(exception);
+            }
         }
     }
 

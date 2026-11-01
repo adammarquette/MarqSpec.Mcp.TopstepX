@@ -15,10 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The tape export manifest is checked against the source before a receipt is uploaded**
-  (gh#795). `manifests/yyyy-MM-dd.json` already names each file's row count and sha256.
-  A count that does not match the source rows refuses the receipt, so it is not `uploaded`.
-  Stopping the host does not export.
+- **A tape day is not uploaded when its source count disagrees** (gh#795). The pass
+  discards that manifest and writes the day once more. If the count still disagrees, it
+  discards the manifest again, counts `mcp.tape.export.stuck`, and the next pass writes
+  the day from the source. `verification_failed` is tagged `reason=manifest` or
+  `reason=source_count`. A count-query error stays on that day.
 - **The recorder can store the latest quote per contract** (gh#351). `LatestQuotes` is one row
   per contract, upserted from the hub the tape recorder already holds. Volume is `bigint`.
   `ReceivedAt` is the database clock. `MarketData__RecordLatestQuotes` defaults off and does

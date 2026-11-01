@@ -45,7 +45,8 @@ A hypertable chunk is dropped only when its range ends at or before the cutoff a
 has that uploaded receipt. The drop is `drop_chunks` under `lock_timeout` of 5 seconds. A compressed
 chunk that is only partly exported, or that still holds a row inside the window, is left for a
 later day. It is not decompressed. On a plain table the same receipt rule deletes in batches.
-Effective retention is 90 days, plus up to one chunk interval where a compressed chunk was left.
+Effective retention is 90 days, and longer when a compressed chunk is not fully exported:
+those rows stay until every row in the chunk has an uploaded receipt, which can be past the window.
 
 The pass runs in the process that writes the tape: HTTP, `MarketData__RecordTape=true`, and a held
 recorder lease. The lease is read again before every batch and before `drop_chunks`. Losing it
@@ -54,13 +55,16 @@ every 24 hours.
 
 ### How a drop is audited (gh#763 question 4)
 
-Before any rows for a day go, an Information line names the day, the instrument, the contract and
-the receipt's row count. Skipped days are logged the same way, with the reason that no uploaded
-trades receipt exists. The span is `tape.retention`. Its `outcome` is `pruned`, `skipped`,
-`lease_lost` or `failed`. `mcp.tape.pruned` counts rows removed. `mcp.tape.prune.skipped` counts
-days left for lack of a receipt. `mcp.tape.prune.failures` counts a pass that threw, and the log
-carries the exception message. The receipt row is not deleted, so the confirmation is still in
-`TapeExportReceipts` after the prints are gone.
+Before any rows for a day go, an Information line names the day, the venue, the instrument, the
+contract and the receipt's row count. That count is the receipt's `RowCount`, not a measured
+delete. Skipped keys are logged with venue and contract, because no uploaded trades receipt
+exists. The span is `tape.retention`. Its `outcome` is `idle` (nothing eligible), `skipped`
+(keys refused for lack of a receipt), `pruned` (rows removed), `lease_lost` or `failed`.
+`mcp.tape.pruned` counts rows a delete statement removed. `mcp.tape.prune.skipped` counts keys
+left for lack of a receipt, tagged `reason=no_receipt`. `mcp.tape.prune.failures` is tagged
+`reason=prune_error` when the pass throws and `reason=lock_timeout` when `drop_chunks` gives up the
+lock and row deletes continue. `mcp.tape.prune.lease_lost` counts a pass that stopped because
+the lease was gone. The receipt row is not deleted.
 
 The Railway template does not set `TapeRetention__Days`. The reserved-name check in
 `evaluate-template.mjs` matches keys that start with `Retention__`. It does not match

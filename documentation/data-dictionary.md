@@ -409,8 +409,10 @@ compress in place. Timescale `policy_retention` stays empty. `SchemaTests` still
 `policy_compression` on `Trades` and that `policy_retention` is empty. The recorder deletes rows for
 a UTC day only when an `uploaded` trades receipt (`csv.gz`, non-empty `Sha256`) exists for that day,
 venue, instrument and contract. No receipt means the rows stay. A compressed chunk that is not fully
-exported is left. `LatestQuotes` is not this table and is not pruned. The batched delete's
-select uses `IX_Trades_Instrument_TradeTimeUtc`.
+exported is left, so retention can run longer than `TapeRetention__Days`. `LatestQuotes` is
+not this table and is not pruned. The batched delete filters venue, instrument, contract and
+the day, the leading columns of `PK_Trades`. The planner may use that key or
+`IX_Trades_Instrument_TradeTimeUtc`. The test requires an index scan, not one index name.
 
 **The export copies a finished UTC day and does not delete rows** (`R-10`, gh#755). A day of
 `TradeTimeUtc` is written once that day has ended, as gzip CSV and Parquet, one pair of files per

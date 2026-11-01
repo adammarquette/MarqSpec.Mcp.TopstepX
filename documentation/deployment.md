@@ -543,7 +543,8 @@ so nothing is deleted. The export itself still does not delete rows.
 Timescale `policy_retention` on `Trades` stays empty
 ([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)). A chunk is dropped only when it ends at or
 before the cutoff and every row in it has that receipt. A compressed chunk that is only partly
-exported is left. `LatestQuotes` is not tape and is not touched. `Retention__Enabled`,
+exported is left, so the tape kept can be longer than `TapeRetention__Days` until that chunk is
+fully exported. `LatestQuotes` is not tape and is not touched. `Retention__Enabled`,
 `Retention__RawTapeDays`, `Retention__DailySummaryDays` and `Retention__RequireExportBeforeDrop`
 are not keys. The template does not set `TapeRetention__Days`; the code default of 90 applies.
 

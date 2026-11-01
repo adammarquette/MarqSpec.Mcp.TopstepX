@@ -14,6 +14,8 @@
 //     sets in Railway. The GHCR pull credential (read:packages) is a dashboard setting; registryCredentials is
 //     rejected here because IaC would take it as a literal.
 //   - Trading__Enabled is the literal "false" (ADR-0024). Dashboard edits to it remain unverifiable by CI.
+//   - The recorder writes latest quotes. The server lists get_quote and its RecordLatestQuotes
+//     stays "false", so the server never opens a hub to fill that table (ADR-0016, gh#351).
 //   - Plaintext 8080 behind Railway's TLS edge, the ADR-0021 shape: ASPNETCORE_HTTP_PORTS is SET, never cleared.
 //
 // Nothing applies this file automatically. `railway config plan` previews; `apply` is an operator action.
@@ -208,6 +210,9 @@ export default defineRailway((ctx) => {
       // Railway's edge is the only path to this service and overwrites X-Forwarded-For.
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true",
       MarketData__RecordTape: "false",
+      // Reads the recorder's row. Writing stays off: this process must not open a hub (ADR-0016).
+      MarketData__RecordLatestQuotes: "false",
+      MarketData__GetQuoteEnabled: "true",
       Otel__ServiceName: "marqspec-mcp-topstepx-server",
     },
   });
@@ -236,6 +241,8 @@ export default defineRailway((ctx) => {
       // No edge in front, so nothing trustworthy sets X-Forwarded-*.
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "false",
       MarketData__RecordTape: "true",
+      // Same hub the tape already holds. The server's GetQuoteEnabled stays tied to this (gh#351).
+      MarketData__RecordLatestQuotes: "true",
       Otel__ServiceName: "marqspec-mcp-topstepx-recorder",
       // gh#755 tape export (contract from PR #765): OFF in every environment, deferred (r3). Production's
       // recorder gets ONE volume at /data (exports in /data/tape-exports, Drive key at /data/keys/drive-sa.json)

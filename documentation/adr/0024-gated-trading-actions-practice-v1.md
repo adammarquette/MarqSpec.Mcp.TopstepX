@@ -212,22 +212,30 @@ Layers are ordered; an earlier refusal **must not** call the gateway for a write
    switch treats the validation failure as engaged. A disable
    that lands before the idempotency claim writes no audit
    row. A disable that lands after the claim
-   records the refusal and does not send. The kill switch blocks cancel and close on that same path.
-   **Pending Adam:** whether a halt should keep blocking cancel and close. v1 keeps the block. A carve-out
-   would be a write the switch does not cover, and v1 has no separate flatten privilege. Do not change it
-   until Adam decides.
+   records the refusal and does not send. The kill switch does not. Adam decided on 31 Oct 2026
+   that a halt blocks new orders and modifies only. Cancel and close stay allowed (gh#770).
 2. **Kill switch** — env, file, or `Trading__KillSwitch` in configuration. The environment variable and the
    file are read on every check. The configured flag and the file path come from
    `IOptionsMonitor<TradingExecutionOptions>.CurrentValue`, so a reload changes them without a restart and
    retargets the watcher when the path changes. An invalid reload throws out of `Reload()` before that
    retarget runs, so the watcher stays on the previous path, and the switch engages on the next check.
-   Checked
-   on every call, including cancel and close. Same pending decision as the master-enable bullet.
+   It blocks `place_order` and `modify_order` only. `cancel_order`, `close_position` and
+   `partial_close_position` still run the rest of the gate. A close stays reduce-only: the full close
+   sends account and contract only, and the venue route `Position/closeContract` flattens that position.
+   A partial close is refused when the size exceeds the absolute open size
+   (`partial_close_exceeds_position`), so it cannot flip the position or add to it.
 3. **Practice-only stage gate (hard, v1)** — fresh account fetch + `ResolveStage` as §2; **cannot be overridden
    by config** in v1.
 4. **Account allowlist** — secondary: `accountId` must appear when the list is set; it does **not** bypass
    stage. When `Trading__Enabled` is true, an empty `Trading__AllowedAccountIds` fails startup. While the
    master switch is off, an empty list is still valid.
+   **One writer per account (gh#772).** Before any trading write, the gate takes a Postgres session
+   advisory lock keyed by account (`pg_try_advisory_lock`, class `0x07720024`, on one non-pooled
+   connection). A second process that cannot take it refuses with `account_writer_held` and does not
+   send. Reads and the recorder do not take the lock. The lock is released on shutdown. A dropped
+   connection drops the lock, and the next write probes `pg_advisory_lock_held` on that session rather
+   than assuming it is still held. The Railway template still requires one server replica
+   (`[single-server]`, gh#774). That check is defence in depth beside this lock.
 5. **Size / contract caps** — max contracts per order and per day per account; symbol denylist optional.
    Size must be greater than 0, and a limit or stop needs a positive price, before any audit row. Modify
    runs the cap when a size is supplied, charges that full new size (not a delta from the resting order),
@@ -311,7 +319,10 @@ An order is **not treated as live** until the **broker acknowledgment** arrives.
   cannot be retried into a second order and cannot be reported as `Live`. Refusals and previews are not
   stored as claims and are not replayed as `SafeToRetry`. `retrySafety` is `SafeToRetry` (refusal, preview,
   or venue rejection), `NotSafeToRetry` (broker acknowledged), or `OutcomeUnknown` (reconcile; do not retry
-  the same key). The claim survives a restart, a redeploy and a second replica (gh#712, gh#750). A replay
+  the same key). Adam's v1 answer for a lost acknowledgment is this `OutcomeUnknown` plus
+  reconciliation with `get_orders`, `get_positions` and `get_trades`. There is no extra safeguard and
+  no venue-side client order id (gh#771). `customTag` stays unexposed (ADR-0008). The claim survives a
+  restart, a redeploy and a second replica (gh#712, gh#750). A replay
   is tagged `replay=true` on `mcp.execution.writes` so it is not counted as a new outcome.
 - **`confirm_trading_action`** follows the same rule: confirming a preview performs the transmit and applies
   the ack rule above.

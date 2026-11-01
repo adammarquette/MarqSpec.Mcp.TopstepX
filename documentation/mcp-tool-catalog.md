@@ -21,7 +21,8 @@ page against either**, so check it against the code, never against another docum
 
 - **Reads do not transmit.** The five tools under [Orders](#orders) are the only venue writes, and each one
   calls `TradingRiskGate` and nothing else. `Trading__Enabled` defaults to false and turns every one of them
-  off, including cancel and close. The kill switch blocks those same calls. Nothing else on this surface
+  off, including cancel and close. The kill switch blocks new orders and modifies only. Cancel and
+  close stay allowed, and a close cannot flip or add to a position. Nothing else on this surface
   places, modifies, cancels or closes.
 - **Over HTTP, every call is authenticated, in one of two modes** — and the tool surface is identical under
   both. `Mcp__Auth__Mode=StaticToken`, the compose stack and the plain `dotnet run` recipe, is one shared
@@ -1217,8 +1218,14 @@ them without a process restart. A reload that fails validation throws from the o
 publishing the invalid document, and the next check refuses with `trading_configuration_invalid`. The last
 good values are not kept. A disable before the claim writes no row.
 A disable after the claim records the refusal and does not send.
-The kill switch refuses with `kill_switch` on the same five tools. Cancel and close have no carve-out.
-**Pending Adam:** that block stays until he decides whether a halt may still flatten. v1 does not add a carve-out.
+The kill switch refuses with `kill_switch` on `place_order` and `modify_order` only (gh#770).
+`cancel_order`, `close_position` and `partial_close_position` stay allowed while it is engaged.
+A full close sends the account and the contract; the venue flattens that position. A partial close
+is refused when the size exceeds the absolute open size, so it cannot flip the position or add to it.
+One replica may trade an account (gh#772). The gate holds a session advisory lock for that account
+and refuses a second writer with `account_writer_held`. Reads and the recorder are not locked.
+The template's one-replica check (gh#774) is defence in depth. A lost acknowledgment is
+`OutcomeUnknown`; reconcile, and do not retry. v1 adds no client order id (gh#771).
 
 When `Trading__Enabled` is true, startup fails if `Trading__AllowedAccountIds` is empty.
 

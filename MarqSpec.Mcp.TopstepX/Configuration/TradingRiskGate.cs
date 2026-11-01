@@ -40,6 +40,7 @@ public sealed class TradingRiskGate
     private readonly TradingContractDenylist _contractDenylist;
     private readonly TradingWriteVenueAccountCache _accountCache;
     private readonly HostTelemetry _telemetry;
+    private readonly ITradingAccountWriterLock? _accountWriterLock;
 
     /// <summary>
     /// One order operation per instance. Exchanged to one at entry, before the per-call attempt exists.
@@ -78,7 +79,8 @@ public sealed class TradingRiskGate
         ITradingAuditLogWriter auditLog,
         TradingContractDenylist contractDenylist,
         TradingWriteVenueAccountCache accountCache,
-        HostTelemetry telemetry)
+        HostTelemetry telemetry,
+        ITradingAccountWriterLock? accountWriterLock = null)
         : this(
             executionGate,
             gateway,
@@ -89,7 +91,8 @@ public sealed class TradingRiskGate
             contractDenylist,
             accountCache,
             telemetry,
-            cleanupFault: null)
+            cleanupFault: null,
+            accountWriterLock)
     {
     }
 
@@ -111,6 +114,10 @@ public sealed class TradingRiskGate
     /// <param name="cleanupFault">
     /// A fault planted by a test, or null. Copied onto the per-call attempt before the operation runs.
     /// </param>
+    /// <param name="accountWriterLock">
+    /// The per-account session lock (gh#772). Null is the in-process test seam.
+    /// The host always registers one.
+    /// </param>
     internal TradingRiskGate(
         TradingExecutionGate executionGate,
         IExecutionGateway gateway,
@@ -121,7 +128,8 @@ public sealed class TradingRiskGate
         TradingContractDenylist contractDenylist,
         TradingWriteVenueAccountCache accountCache,
         HostTelemetry telemetry,
-        Exception? cleanupFault)
+        Exception? cleanupFault,
+        ITradingAccountWriterLock? accountWriterLock = null)
     {
         _executionGate = executionGate;
         _gateway = gateway;
@@ -133,6 +141,7 @@ public sealed class TradingRiskGate
         _accountCache = accountCache;
         _telemetry = telemetry;
         _cleanupFault = cleanupFault;
+        _accountWriterLock = accountWriterLock;
     }
 
     /// <summary>Places an order when every gate layer permits.</summary>
@@ -289,6 +298,12 @@ public sealed class TradingRiskGate
             return halted;
         }
 
+        if (await RefuseIfWriterLockBusyAsync(command.AccountId, audit, command.Size, cancellationToken)
+                .ConfigureAwait(false) is { } writer)
+        {
+            return writer;
+        }
+
         if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, cancellationToken)
                 .ConfigureAwait(false) is { } idempotencyBlock)
         {
@@ -417,6 +432,12 @@ public sealed class TradingRiskGate
             return halted;
         }
 
+        if (await RefuseIfWriterLockBusyAsync(command.AccountId, audit, haltCount, cancellationToken)
+                .ConfigureAwait(false) is { } writer)
+        {
+            return writer;
+        }
+
         if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, cancellationToken)
                 .ConfigureAwait(false) is { } idempotencyBlock)
         {
@@ -529,16 +550,24 @@ public sealed class TradingRiskGate
             TradingRequestHasher.HashCancel(command, context.DryRun),
             context);
 
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks: false)
+            is TradingExecutionRefusal disabled
             && disabled.Code == TradingExecutionRefusal.TradingDisabled.Code)
         {
             return RefuseWithoutSideEffects(disabled);
         }
 
-        if (await RefuseWhileHaltedAsync(command.AccountId, audit, contractCount: 0, cancellationToken)
+        if (await RefuseWhileHaltedAsync(
+                command.AccountId, audit, contractCount: 0, cancellationToken, killSwitchBlocks: false)
                 .ConfigureAwait(false) is { } halted)
         {
             return halted;
+        }
+
+        if (await RefuseIfWriterLockBusyAsync(command.AccountId, audit, contractCount: 0, cancellationToken)
+                .ConfigureAwait(false) is { } writer)
+        {
+            return writer;
         }
 
         if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, cancellationToken)
@@ -549,7 +578,8 @@ public sealed class TradingRiskGate
 
         (AccountStage stage, TradingExecutionRefusal? stageRefusal) = await ResolvePracticeStageAsync(
             command.AccountId,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            killSwitchBlocks: false).ConfigureAwait(false);
         if (stageRefusal is TradingExecutionRefusal stageBlock)
         {
             return await RefuseAsync(
@@ -561,7 +591,7 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        if (RefuseAllowlist(command.AccountId) is TradingExecutionRefusal allowlist)
+        if (RefuseAllowlist(command.AccountId, killSwitchBlocks: false) is TradingExecutionRefusal allowlist)
         {
             return await RefuseAsync(
                 command.AccountId,
@@ -579,7 +609,8 @@ public sealed class TradingRiskGate
                 stage,
                 audit,
                 contractCount: 0,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                killSwitchBlocks: false).ConfigureAwait(false);
         }
 
         return await TransmitWithoutCapChargeAsync(
@@ -602,16 +633,24 @@ public sealed class TradingRiskGate
             TradingRequestHasher.HashClose(command, context.DryRun),
             context);
 
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks: false)
+            is TradingExecutionRefusal disabled
             && disabled.Code == TradingExecutionRefusal.TradingDisabled.Code)
         {
             return RefuseWithoutSideEffects(disabled);
         }
 
-        if (await RefuseWhileHaltedAsync(command.AccountId, audit, contractCount: 0, cancellationToken)
+        if (await RefuseWhileHaltedAsync(
+                command.AccountId, audit, contractCount: 0, cancellationToken, killSwitchBlocks: false)
                 .ConfigureAwait(false) is { } halted)
         {
             return halted;
+        }
+
+        if (await RefuseIfWriterLockBusyAsync(command.AccountId, audit, contractCount: 0, cancellationToken)
+                .ConfigureAwait(false) is { } writer)
+        {
+            return writer;
         }
 
         if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, cancellationToken)
@@ -622,7 +661,8 @@ public sealed class TradingRiskGate
 
         (AccountStage stage, TradingExecutionRefusal? stageRefusal) = await ResolvePracticeStageAsync(
             command.AccountId,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            killSwitchBlocks: false).ConfigureAwait(false);
         if (stageRefusal is TradingExecutionRefusal stageBlock)
         {
             return await RefuseAsync(
@@ -634,7 +674,7 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        if (RefuseAllowlist(command.AccountId) is TradingExecutionRefusal allowlist)
+        if (RefuseAllowlist(command.AccountId, killSwitchBlocks: false) is TradingExecutionRefusal allowlist)
         {
             return await RefuseAsync(
                 command.AccountId,
@@ -645,7 +685,7 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        if (RefuseContract(command.ContractId) is TradingExecutionRefusal symbol)
+        if (RefuseContract(command.ContractId, killSwitchBlocks: false) is TradingExecutionRefusal symbol)
         {
             return await RefuseAsync(
                 command.AccountId,
@@ -663,7 +703,8 @@ public sealed class TradingRiskGate
                 stage,
                 audit,
                 contractCount: 0,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                killSwitchBlocks: false).ConfigureAwait(false);
         }
 
         return await TransmitWithoutCapChargeAsync(
@@ -686,7 +727,8 @@ public sealed class TradingRiskGate
             TradingRequestHasher.HashPartialClose(command, context.DryRun),
             context);
 
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks: false)
+            is TradingExecutionRefusal disabled
             && disabled.Code == TradingExecutionRefusal.TradingDisabled.Code)
         {
             return RefuseWithoutSideEffects(disabled);
@@ -697,10 +739,17 @@ public sealed class TradingRiskGate
             return RefuseWithoutSideEffects(TradingExecutionRefusal.SizeNotPositive(command.Size));
         }
 
-        if (await RefuseWhileHaltedAsync(command.AccountId, audit, command.Size, cancellationToken)
+        if (await RefuseWhileHaltedAsync(
+                command.AccountId, audit, command.Size, cancellationToken, killSwitchBlocks: false)
                 .ConfigureAwait(false) is { } halted)
         {
             return halted;
+        }
+
+        if (await RefuseIfWriterLockBusyAsync(command.AccountId, audit, command.Size, cancellationToken)
+                .ConfigureAwait(false) is { } writer)
+        {
+            return writer;
         }
 
         if (await BlockedByIdempotencyAsync(command.AccountId, audit, context, cancellationToken)
@@ -711,7 +760,8 @@ public sealed class TradingRiskGate
 
         (AccountStage stage, TradingExecutionRefusal? stageRefusal) = await ResolvePracticeStageAsync(
             command.AccountId,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            killSwitchBlocks: false).ConfigureAwait(false);
         if (stageRefusal is TradingExecutionRefusal stageBlock)
         {
             return await RefuseAsync(
@@ -723,7 +773,7 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        if (RefuseAllowlist(command.AccountId) is TradingExecutionRefusal allowlist)
+        if (RefuseAllowlist(command.AccountId, killSwitchBlocks: false) is TradingExecutionRefusal allowlist)
         {
             return await RefuseAsync(
                 command.AccountId,
@@ -734,7 +784,7 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        if (RefuseContract(command.ContractId) is TradingExecutionRefusal symbol)
+        if (RefuseContract(command.ContractId, killSwitchBlocks: false) is TradingExecutionRefusal symbol)
         {
             return await RefuseAsync(
                 command.AccountId,
@@ -756,8 +806,8 @@ public sealed class TradingRiskGate
                 cancellationToken).ConfigureAwait(false);
         }
 
-        if (await RefusePartialCloseSizeAsync(command, cancellationToken).ConfigureAwait(false)
-            is TradingExecutionRefusal position)
+        if (await RefusePartialCloseSizeAsync(command, cancellationToken, killSwitchBlocks: false)
+                .ConfigureAwait(false) is TradingExecutionRefusal position)
         {
             if (position.Code == TradingExecutionRefusal.TradingDisabled.Code)
             {
@@ -783,7 +833,8 @@ public sealed class TradingRiskGate
             attempt,
             async () =>
             {
-                if (await RefuseDailyCapAsync(command.AccountId, command.Size, cancellationToken)
+                if (await RefuseDailyCapAsync(
+                        command.AccountId, command.Size, cancellationToken, killSwitchBlocks: false)
                         .ConfigureAwait(false) is TradingExecutionRefusal daily)
                 {
                     return await AuditedUnlessTradingDisabledAsync(
@@ -802,7 +853,8 @@ public sealed class TradingRiskGate
                         stage,
                         audit,
                         contractCount: command.Size,
-                        cancellationToken).ConfigureAwait(false);
+                        cancellationToken,
+                        killSwitchBlocks: false).ConfigureAwait(false);
                 }
 
                 return await TransmitWithCapChargeAsync(
@@ -812,7 +864,8 @@ public sealed class TradingRiskGate
                     capChargeSize: command.Size,
                     attempt,
                     ct => _gateway.PartialClosePosition(command, ct),
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken,
+                    killSwitchBlocks: false).ConfigureAwait(false);
             },
             cancellationToken).ConfigureAwait(false);
     }
@@ -841,9 +894,10 @@ public sealed class TradingRiskGate
 
     private async Task<(AccountStage Stage, TradingExecutionRefusal? Refusal)> ResolvePracticeStageAsync(
         int accountId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is TradingExecutionRefusal disabled)
         {
             return (AccountStage.Unknown, disabled);
         }
@@ -877,9 +931,9 @@ public sealed class TradingRiskGate
         return (stage, null);
     }
 
-    private TradingExecutionRefusal? RefuseAllowlist(int accountId)
+    private TradingExecutionRefusal? RefuseAllowlist(int accountId, bool killSwitchBlocks = true)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is TradingExecutionRefusal disabled)
         {
             return disabled;
         }
@@ -887,9 +941,9 @@ public sealed class TradingRiskGate
         return _executionGate.RefuseIfNotAllowlisted(accountId);
     }
 
-    private TradingExecutionRefusal? RefuseContract(string contractId)
+    private TradingExecutionRefusal? RefuseContract(string contractId, bool killSwitchBlocks = true)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is TradingExecutionRefusal disabled)
         {
             return disabled;
         }
@@ -900,9 +954,10 @@ public sealed class TradingRiskGate
     private async Task<TradingExecutionRefusal?> RefuseDailyCapAsync(
         int accountId,
         int requestedSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is TradingExecutionRefusal disabled)
         {
             return disabled;
         }
@@ -920,15 +975,18 @@ public sealed class TradingRiskGate
         int capChargeSize,
         SendAttempt attempt,
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true)
     {
-        if (await RefuseBeforeClaimAsync(accountId, stage, audit, capChargeSize, cancellationToken)
+        if (await RefuseBeforeClaimAsync(
+                accountId, stage, audit, capChargeSize, cancellationToken, killSwitchBlocks)
                 .ConfigureAwait(false) is { } switchedOff)
         {
             return switchedOff;
         }
 
-        if (await RefuseGatewayWriteUnlessPermittedAsync(accountId, cancellationToken).ConfigureAwait(false)
+        if (await RefuseGatewayWriteUnlessPermittedAsync(accountId, cancellationToken, killSwitchBlocks)
+                .ConfigureAwait(false)
             is TradingExecutionRefusal gatewayRefusal)
         {
             if (gatewayRefusal.Code == TradingExecutionRefusal.TradingDisabled.Code)
@@ -951,8 +1009,8 @@ public sealed class TradingRiskGate
             return claimed;
         }
 
-        if (await RefuseAfterClaimAsync(accountId, stage, audit, cancellationToken).ConfigureAwait(false)
-            is { } afterClaim)
+        if (await RefuseAfterClaimAsync(accountId, stage, audit, cancellationToken, killSwitchBlocks)
+                .ConfigureAwait(false) is { } afterClaim)
         {
             return afterClaim;
         }
@@ -983,7 +1041,8 @@ public sealed class TradingRiskGate
             capChargeSize,
             attempt,
             send,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            killSwitchBlocks).ConfigureAwait(false);
     }
 
     private async Task<TradingRiskGateResult> TransmitWithoutCapChargeAsync(
@@ -994,13 +1053,15 @@ public sealed class TradingRiskGate
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
         CancellationToken cancellationToken)
     {
-        if (await RefuseBeforeClaimAsync(accountId, stage, audit, contractCount: 0, cancellationToken)
+        if (await RefuseBeforeClaimAsync(
+                accountId, stage, audit, contractCount: 0, cancellationToken, killSwitchBlocks: false)
                 .ConfigureAwait(false) is { } switchedOff)
         {
             return switchedOff;
         }
 
-        if (await RefuseGatewayWriteUnlessPermittedAsync(accountId, cancellationToken).ConfigureAwait(false)
+        if (await RefuseGatewayWriteUnlessPermittedAsync(
+                accountId, cancellationToken, killSwitchBlocks: false).ConfigureAwait(false)
             is TradingExecutionRefusal gatewayRefusal)
         {
             if (gatewayRefusal.Code == TradingExecutionRefusal.TradingDisabled.Code)
@@ -1023,8 +1084,9 @@ public sealed class TradingRiskGate
             return claimed;
         }
 
-        if (await RefuseAfterClaimAsync(accountId, stage, audit, cancellationToken).ConfigureAwait(false)
-            is { } afterClaim)
+        if (await RefuseAfterClaimAsync(
+                accountId, stage, audit, cancellationToken, killSwitchBlocks: false)
+                .ConfigureAwait(false) is { } afterClaim)
         {
             return afterClaim;
         }
@@ -1054,17 +1116,20 @@ public sealed class TradingRiskGate
             capChargeApplied: 0,
             attempt,
             send,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            killSwitchBlocks: false).ConfigureAwait(false);
     }
 
     private Task<TradingExecutionRefusal?> RefuseGatewayWriteUnlessPermittedAsync(
         int accountId,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true) =>
         _executionGate.RefuseWriteUnlessPermittedAsync(
             accountId,
             _marketData,
             cancellationToken,
-            _accountCache.TryGet(accountId));
+            _accountCache.TryGet(accountId),
+            killSwitchBlocks);
 
     private async Task<TradingRiskGateResult> SendAndFinalizeAsync(
         int accountId,
@@ -1073,9 +1138,10 @@ public sealed class TradingRiskGate
         int capChargeApplied,
         SendAttempt attempt,
         Func<CancellationToken, Task<ExecutionWriteResult>> send,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal blocked)
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is TradingExecutionRefusal blocked)
         {
             try
             {
@@ -1137,9 +1203,10 @@ public sealed class TradingRiskGate
         AccountStage stage,
         AuditEnvelope audit,
         int contractCount,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is TradingExecutionRefusal disabled)
         {
             return await AuditedUnlessTradingDisabledAsync(
                 accountId,
@@ -1199,9 +1266,10 @@ public sealed class TradingRiskGate
         AccountStage stage,
         AuditEnvelope audit,
         int contractCount,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is not TradingExecutionRefusal blocked)
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is not TradingExecutionRefusal blocked)
         {
             return null;
         }
@@ -1228,9 +1296,10 @@ public sealed class TradingRiskGate
         int accountId,
         AccountStage stage,
         AuditEnvelope audit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is not TradingExecutionRefusal blocked)
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is not TradingExecutionRefusal blocked)
         {
             return null;
         }
@@ -1614,13 +1683,39 @@ public sealed class TradingRiskGate
                 OrderId: settled?.WriteResult?.OrderId),
             Preview: null);
 
-    private async Task<TradingRiskGateResult?> RefuseWhileHaltedAsync(
+    private async Task<TradingRiskGateResult?> RefuseIfWriterLockBusyAsync(
         int accountId,
         AuditEnvelope audit,
         int contractCount,
         CancellationToken cancellationToken)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal halted
+        if (_accountWriterLock is null)
+        {
+            return null;
+        }
+
+        if (await _accountWriterLock.TryHoldAsync(accountId, cancellationToken).ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        return await RefuseAsync(
+            accountId,
+            ParsedStage.Unresolved,
+            audit,
+            contractCount,
+            TradingExecutionRefusal.AccountWriterHeld(accountId),
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<TradingRiskGateResult?> RefuseWhileHaltedAsync(
+        int accountId,
+        AuditEnvelope audit,
+        int contractCount,
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true)
+    {
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is TradingExecutionRefusal halted
             && halted.Code != TradingExecutionRefusal.TradingDisabled.Code)
         {
             return await RefuseAsync(
@@ -1686,9 +1781,10 @@ public sealed class TradingRiskGate
 
     private async Task<TradingExecutionRefusal?> RefusePartialCloseSizeAsync(
         ExecutionPartialClosePositionCommand command,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool killSwitchBlocks = true)
     {
-        if (_executionGate.RefuseIfDisabledOrHalted() is TradingExecutionRefusal disabled)
+        if (_executionGate.RefuseIfDisabledOrHalted(killSwitchBlocks) is TradingExecutionRefusal disabled)
         {
             return disabled;
         }

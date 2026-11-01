@@ -394,13 +394,21 @@ if (server) {
       "[server-records-quotes] server: MarketData__RecordLatestQuotes must be the "
       + "literal \"false\"; the server reads quotes and never writes them");
   }
-  // gh#772: two sessions or replicas trading one account is undecided, so exactly one server replica, stated
-  // explicitly (an omitted count would leave it to Railway's dashboard), in one region. SDK 3.16.0 expresses scale
+  // gh#772: one replica may trade an account. The gate holds that lock. This check (gh#774) still requires
+  // exactly one server replica, stated explicitly (an omitted count would leave it to the dashboard), in one
+  // region. SDK 3.16.0 expresses scale
   // only as deploy.numReplicas / deploy.region / deploy.multiRegionConfig (from replicas/regions); it has no
   // autoscaling field, so there is nothing more to pin here (deployment.md).
   const sd = server.deploy ?? {};
-  if (sd.numReplicas !== 1) fail(`[single-server] server: exactly one replica (numReplicas: 1) until gh#772 is decided, got ${JSON.stringify(sd.numReplicas)}`);
-  if (sd.multiRegionConfig && Object.keys(sd.multiRegionConfig).length) fail(`[single-server] server: no multi-region config until gh#772 is decided, got ${JSON.stringify(sd.multiRegionConfig)}`);
+  if (sd.numReplicas !== 1) {
+    fail("[single-server] server: exactly one replica (numReplicas: 1). "
+      + "gh#772 is one writer per account; this check (gh#774) is defence in depth, got "
+      + JSON.stringify(sd.numReplicas));
+  }
+  if (sd.multiRegionConfig && Object.keys(sd.multiRegionConfig).length) {
+    fail("[single-server] server: no multi-region config. gh#774 keeps one region beside the "
+      + "account writer lock (gh#772), got " + JSON.stringify(sd.multiRegionConfig));
+  }
 }
 
 const recorder = byName.recorder;

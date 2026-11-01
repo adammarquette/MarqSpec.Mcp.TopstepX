@@ -451,7 +451,8 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 
 - **R-4.1** **A venue write exists only behind `TradingRiskGate`.** `Trading__Enabled` defaults to false and
   refuses every order operation, including cancel and close, before the vendor client is called and with no
-  side effects. The kill switch blocks the same calls. MCP tools call the gate and never the vendor client or
+  side effects. The kill switch blocks new orders and modifies only. Cancel and close stay allowed, and a
+  close stays reduce-only (gh#770). MCP tools call the gate and never the vendor client or
   `IExecutionGateway` ([ADR-0024](adr/0024-gated-trading-actions-practice-v1.md), which supersedes
   [ADR-0002](adr/0002-read-only-venue-boundary.md)).
 - **R-4.2** `scripts/check-no-order-path.sh` enforces that boundary over the product projects. Order-method
@@ -647,8 +648,12 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   changing that flag does not change the listing until restart. The gate reads `Trading__Enabled`, the kill
   switch, the denylist, the allowlist and the contract caps from the options monitor on every check, so a
   configuration reload changes them without a process restart. A reload that fails validation refuses and
-  does not keep the last good values. The kill switch blocks cancel and close
-  on that same path. Every call emits the
+  does not keep the last good values. The kill switch blocks `place_order` and `modify_order` only.
+  Cancel and close stay allowed (gh#770). A partial close that would exceed the open position is refused,
+  and a full close sends no side and no size. One process holds a session advisory lock per account before
+  a trading write (gh#772). A second writer is `account_writer_held`. Reads and the recorder are not locked.
+  A lost acknowledgment is `OutcomeUnknown` plus reconciliation. v1 adds no client order id (gh#771).
+  Every call emits the
   gate's execution-write span and counter, tagged with the operation and the refusal reason. Each tool takes
   a caller-supplied `idempotencyKey`, at most 256 characters and scoped per account and tool. A longer key
   is `idempotency_key_too_long` and writes no row. The gate writes an `Unknown` audit claim before the send.

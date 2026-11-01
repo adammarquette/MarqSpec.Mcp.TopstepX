@@ -1020,6 +1020,8 @@ public static class Program
         // registrations this comment is about rather than weakening what any one of them promises.
         services.AddScoped<ReferenceTools>();
         services.AddScoped<BarTools>();
+        services.AddScoped<LatestQuoteReader>();
+        services.AddScoped<QuoteTools>();
         services.AddScoped<IndicatorTools>();
         services.AddScoped<KeyLevelTools>();
         services.AddScoped<TapeTools>();

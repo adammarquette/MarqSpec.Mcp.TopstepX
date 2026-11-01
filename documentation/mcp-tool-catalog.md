@@ -283,6 +283,20 @@ the boundary (gh#110).
 
 ## Market data
 
+### `get_quote(symbol)`
+
+The latest stored bid, ask and last for one symbol. The recorder writes the row. This call only
+reads it, and it does not open a market hub.
+
+Returns `{ symbol, status, contractId, bid, ask, last, volume, quoteTimeUtc, ageSeconds, stale }`.
+Prices are raw decimals in the contract's price units. `volume` is session volume, in contracts.
+`ageSeconds` is how long ago the database accepted the row. `stale` is true when that age is past
+`MarketData__LatestQuoteStaleAfter` (shipped as 15 seconds). A stale row is still returned.
+
+`status` is `ok`, `missing`, or `unknown_symbol`. `missing` means the symbol is served and there
+is no row for its front contract. `unknown_symbol` means the symbol is not served. Neither throws.
+Fields that do not apply are omitted.
+
 ### `get_bars(symbol, resolutionMinutes, fromUtc, toUtc)`
 The workhorse. Cache-aside: served from the store, with only genuinely missing buckets fetched.
 

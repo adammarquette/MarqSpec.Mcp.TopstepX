@@ -825,7 +825,8 @@ The recorder upserts this row from the market hub it already holds, at most once
 feature is inert in production until the deployment slice. A server that is not the recorder
 does not open a hub to fill the table. `ReceivedAt` is `clock_timestamp()`, so the reader
 in the next slice can age on that clock. A flush delay makes the stamp up to one flush gap
-later than the hub event.
+later than the hub event. `get_quote` reads the row and reports that age. A row older than
+`MarketData__LatestQuoteStaleAfter` is marked stale and still returned.
 A failure counter names the CLR type on `exception.type`, not the message.
 An older receipt cannot replace a newer one. This table is not subject to retention: gh#763
 will exclude it. A rolled contract's row stays until a later slice deletes it. No tool reads

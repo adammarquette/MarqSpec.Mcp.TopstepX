@@ -18,10 +18,12 @@ public sealed class LatestQuoteOptionsTests
         options.LatestQuoteFlush.Should().Be(MarketDataOptions.DefaultLatestQuoteFlush);
         options.LatestQuoteFrontRefresh.Should().Be(MarketDataOptions.DefaultLatestQuoteFrontRefresh);
         options.LatestQuoteSubscribeBackoff.Should().Be(MarketDataOptions.DefaultLatestQuoteSubscribeBackoff);
+        options.LatestQuoteStaleAfter.Should().Be(MarketDataOptions.DefaultLatestQuoteStaleAfter);
         options.Validate(new ValidationContext(options)).Should().NotContain(result =>
             result.MemberNames.Contains(nameof(MarketDataOptions.LatestQuoteFlush))
             || result.MemberNames.Contains(nameof(MarketDataOptions.LatestQuoteFrontRefresh))
-            || result.MemberNames.Contains(nameof(MarketDataOptions.LatestQuoteSubscribeBackoff)));
+            || result.MemberNames.Contains(nameof(MarketDataOptions.LatestQuoteSubscribeBackoff))
+            || result.MemberNames.Contains(nameof(MarketDataOptions.LatestQuoteStaleAfter)));
     }
 
     [Theory]
@@ -144,5 +146,39 @@ public sealed class LatestQuoteOptionsTests
 
         options.Validate(new ValidationContext(options)).Should().NotContain(result =>
             result.MemberNames.Contains(nameof(MarketDataOptions.LatestQuoteSubscribeBackoff)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(30 * 60 + 1)]
+    public void AStaleWindowOutsideTheRange_IsRefusedAndNamesTheKey(int seconds)
+    {
+        MarketDataOptions options = new()
+        {
+            Instruments = "ES",
+            SessionCloseCentral = "16:00",
+            LatestQuoteStaleAfter = TimeSpan.FromSeconds(seconds),
+        };
+
+        options.Validate(new ValidationContext(options)).Should().Contain(result =>
+            result.ErrorMessage != null
+            && result.ErrorMessage.Contains("MarketData:LatestQuoteStaleAfter", StringComparison.Ordinal)
+            && result.MemberNames.Contains(nameof(MarketDataOptions.LatestQuoteStaleAfter)));
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(30 * 60)]
+    public void AStaleWindowAtEitherBound_IsAccepted(int seconds)
+    {
+        MarketDataOptions options = new()
+        {
+            Instruments = "ES",
+            SessionCloseCentral = "16:00",
+            LatestQuoteStaleAfter = TimeSpan.FromSeconds(seconds),
+        };
+
+        options.Validate(new ValidationContext(options)).Should().NotContain(result =>
+            result.MemberNames.Contains(nameof(MarketDataOptions.LatestQuoteStaleAfter)));
     }
 }

@@ -23,7 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (one second). A refused subscribe retries only that contract, on
   `MarketData__LatestQuoteSubscribeBackoff`. Fronts are resolved again on
   `MarketData__LatestQuoteFrontRefresh`. A volume that does not fit in `bigint` is skipped.
-  No tool reads the table yet.
+- **`get_quote` reads that stored row** (gh#351). It returns bid, ask, last, age and whether the
+  row is past `MarketData__LatestQuoteStaleAfter`. A missing row and an unknown symbol are
+  results, not errors. The call does not open a market hub. `RecordLatestQuotes` stays off, so
+  nothing is written until the deployment slice turns the recorder on.
 
 ### Fixed
 

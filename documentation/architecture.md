@@ -826,6 +826,7 @@ on a bump, so a dashboard that must not break is built on these
 | `mcp.indicator.projections` | counter, values | `indicator` · `symbol` · `resolution` **or** `session` | `IndicatorProjector` |
 | `mcp.recorder.health.reads` | counter | `outcome` = ok \| degraded \| unavailable \| timeout | `RecorderHealthService`, once per report that was built (gh#756) |
 | `mcp.quote.writes` | counter | `outcome` = quote_written \| quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_subscribed \| quote_volume_rejected | `LatestQuoteWriter` (gh#351). Spans `quote.flush` and `quote.subscribe` carry the same `outcome` |
+| `mcp.quote.reads` | counter | `outcome` = quote_fresh \| quote_stale \| quote_miss \| quote_unknown | `LatestQuoteReader` (gh#351). Span `quote.read` carries the same `outcome`. `quote_stale` is still a row |
 | `mcp.quote.failures` | counter | `reason` = quote_failed \| quote_subscribe_refused \| quote_front_unresolved \| quote_volume_rejected \| quote_unsubscribe_failed \| quote_shutdown_failed · `exception.type` = the CLR type name, not the message | `LatestQuoteWriter`. `quote_failed` is a store flush. Unsubscribe and shutdown are their own reasons |
 
 `mcp.recorder.health.reads` reuses the `outcome` tag key. Its values are `ok`, `degraded`, `unavailable` and

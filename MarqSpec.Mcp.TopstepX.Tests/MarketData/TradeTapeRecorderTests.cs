@@ -4267,7 +4267,8 @@ public sealed class TradeTapeRecorderTests
             BarSessionCalendar.Parse("16:00", []),
             clock,
             _telemetry,
-            new RecorderHealthMemo());
+            new RecorderHealthMemo(),
+            new BarBackfillStatus());
         return service.ReadAsync(CancellationToken.None);
     }
 

@@ -153,6 +153,24 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Chunks <c>drop_chunks</c> removed. Untagged. Not a row count.</summary>
     public const string TapeChunksDroppedInstrument = "mcp.tape.chunks_dropped";
 
+    /// <summary>Pages one backfill pass asked the cache for (gh#899).</summary>
+    public const string BarBackfillPagesInstrument = "mcp.bars.backfill.pages";
+
+    /// <summary>Bars one backfill pass wrote (gh#899).</summary>
+    public const string BarBackfillBarsInstrument = "mcp.bars.backfill.bars";
+
+    /// <summary>Empty venue pages one backfill pass recorded (gh#899).</summary>
+    public const string BarBackfillEmptyInstrument = "mcp.bars.backfill.empty";
+
+    /// <summary>Backfill passes that stopped on HTTP 429 (gh#899).</summary>
+    public const string BarBackfillRateLimitedInstrument = "mcp.bars.backfill.rate_limited";
+
+    /// <summary>Backfill pass failures, by exception type name (gh#899).</summary>
+    public const string BarBackfillErrorsInstrument = "mcp.bars.backfill.errors";
+
+    /// <summary>Backfill passes by stop reason (gh#899).</summary>
+    public const string BarBackfillStopsInstrument = "mcp.bars.backfill.stops";
+
     /// <summary>Which cache-aside series a read was of. Values: <see cref="CacheSeries"/>.</summary>
     public const string SeriesTag = "series";
 
@@ -238,6 +256,12 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapePruneFailures;
     private readonly Counter<long> _tapePruneLeaseLost;
     private readonly Counter<long> _tapeChunksDropped;
+    private readonly Counter<long> _barBackfillPages;
+    private readonly Counter<long> _barBackfillBars;
+    private readonly Counter<long> _barBackfillEmpty;
+    private readonly Counter<long> _barBackfillRateLimited;
+    private readonly Counter<long> _barBackfillErrors;
+    private readonly Counter<long> _barBackfillStops;
 
     /// <summary>Creates the meter and the activity source.</summary>
     /// <param name="logger">Optional. A bookkeeping failure logs one constant line through it.</param>
@@ -391,6 +415,36 @@ public sealed class HostTelemetry : IDisposable
             TapeChunksDroppedInstrument,
             unit: "{chunk}",
             description: "Chunks drop_chunks removed. Untagged. Not a row count.");
+
+        _barBackfillPages = _meter.CreateCounter<long>(
+            BarBackfillPagesInstrument,
+            unit: "{page}",
+            description: "Pages one bar-backfill pass asked the cache for. Untagged.");
+
+        _barBackfillBars = _meter.CreateCounter<long>(
+            BarBackfillBarsInstrument,
+            unit: "{bar}",
+            description: "Bars one bar-backfill pass wrote. Untagged.");
+
+        _barBackfillEmpty = _meter.CreateCounter<long>(
+            BarBackfillEmptyInstrument,
+            unit: "{page}",
+            description: "Empty venue pages one bar-backfill pass recorded. Untagged.");
+
+        _barBackfillRateLimited = _meter.CreateCounter<long>(
+            BarBackfillRateLimitedInstrument,
+            unit: "{stop}",
+            description: "Bar-backfill passes that stopped on HTTP 429. Untagged.");
+
+        _barBackfillErrors = _meter.CreateCounter<long>(
+            BarBackfillErrorsInstrument,
+            unit: "{failure}",
+            description: "Bar-backfill failures, by exception type name. Not the message.");
+
+        _barBackfillStops = _meter.CreateCounter<long>(
+            BarBackfillStopsInstrument,
+            unit: "{stop}",
+            description: "Bar-backfill passes, by stop reason.");
     }
 
     /// <summary>
@@ -872,6 +926,78 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Counts one pass that stopped because the recorder lease was gone.</summary>
     public void TapePruneLeaseLost() =>
         _tapePruneLeaseLost.Add(1, new KeyValuePair<string, object?>(ReasonTag, TapePruneReason.LeaseLost));
+
+    /// <summary>Counts pages one backfill pass asked for.</summary>
+    /// <param name="pages">Pages. Zero records nothing.</param>
+    public void BarBackfillPages(int pages)
+    {
+        if (pages <= 0)
+        {
+            return;
+        }
+
+        _barBackfillPages.Add(pages);
+    }
+
+    /// <summary>Counts bars one backfill pass wrote.</summary>
+    /// <param name="bars">Bars written. Zero records nothing.</param>
+    public void BarBackfillBars(int bars)
+    {
+        if (bars <= 0)
+        {
+            return;
+        }
+
+        _barBackfillBars.Add(bars);
+    }
+
+    /// <summary>Counts empty venue pages one backfill pass recorded.</summary>
+    /// <param name="pages">Empty pages. Zero records nothing.</param>
+    public void BarBackfillEmpty(int pages)
+    {
+        if (pages <= 0)
+        {
+            return;
+        }
+
+        _barBackfillEmpty.Add(pages);
+    }
+
+    /// <summary>Counts one backfill pass that stopped on HTTP 429.</summary>
+    public void BarBackfillRateLimited() => _barBackfillRateLimited.Add(1);
+
+    /// <summary>Counts one backfill failure and names the exception type. Not the message.</summary>
+    /// <param name="exceptionType">The CLR type name.</param>
+    public void BarBackfillError(string exceptionType)
+    {
+        if (string.IsNullOrWhiteSpace(exceptionType))
+        {
+            return;
+        }
+
+        _barBackfillErrors.Add(
+            1,
+            new KeyValuePair<string, object?>(ExceptionTag, exceptionType));
+    }
+
+    /// <summary>Counts one finished backfill pass.</summary>
+    /// <param name="reason">Why it stopped, from <see cref="BarBackfillStop"/>.</param>
+    public void BarBackfillStopped(string reason)
+    {
+        if (!BarBackfillStop.All.Contains(reason))
+        {
+            return;
+        }
+
+        _barBackfillStops.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+    }
+
+    /// <summary>
+    /// Starts the span for one backfill pass. The caller sets <c>outcome</c> and disposes it.
+    /// </summary>
+    /// <returns>The span, or null when nothing is listening.</returns>
+    public Activity? StartBarBackfill() =>
+        Activities.StartActivity("bars.backfill", ActivityKind.Internal);
 
     /// <summary>Counts chunks <c>drop_chunks</c> removed.</summary>
     /// <param name="chunks">Chunks removed. Zero records nothing.</param>

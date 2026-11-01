@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Historical bar backfill** (gh#899). `Backfill__Enabled` defaults off and is not a Railway
+  variable. When it is on, one HTTP startup pass fills uncovered ranges through the existing bar
+  cache. Stdio does not run it. A second replica skips when the advisory lock is held. Minute and
+  hour edges are the sim-tier measurements from gh#494 (63 days and one year). The live tier is
+  not measured. Pages stay at 1,000 bars. The combined history cap is 50 per 30 seconds and the
+  backfill cap is 20. Live reads count backfill still in the window and wait for at most those
+  20. Backfill yields while a live read is waiting. HTTP 429 stops the pass. An empty answer within
+  2 days of now expires after 15 minutes. An older empty answer is permanent until its
+  `BarCoverage` rows are deleted. The last pass is on `get_recorder_health`.
 - **Unknown account stage is visible on the writes counter** (gh#732, ADR-0024).
   The tag and the unwired alert are specified in
   [deployment.md](documentation/deployment.md#unknown-account-stage-gh732).

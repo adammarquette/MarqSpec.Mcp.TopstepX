@@ -668,6 +668,30 @@ When a backend exists, the rule is: the sum of `mcp.execution.writes` where `ref
 `unknown_account_stage` is at least 1 over 5 minutes. Missing data does not breach. Any such
 increment is a parser gap. Fix the name parser. Do not turn trading on for that account to clear it.
 
+## Bar backfill (gh#899)
+
+`Backfill__Enabled` defaults to false. Nothing in the Railway template sets it. When it is true
+the HTTP process runs one pass at startup and then stops. A stdio process does not run it. A
+second replica takes a Postgres advisory lock and skips when that lock is held. For each configured
+instrument and for `Backfill__ResolutionsMinutes` (default `1,60`) it asks the bar cache for the
+uncovered ranges back to the measured history edge. Those edges are sim-tier measurements (gh#494):
+one-minute bars stop at 63 days, and hour bars, or any resolution of 60 minutes or more, stop at
+365 days. The live tier's depth has not been measured. `Backfill__NotBeforeUtc` may start later
+than that edge. A value older than the edge is moved forward to it. A value in the future is
+refused at startup. An instrument that the registry does not serve is refused at startup.
+
+An empty venue answer is coverage, on the cache's existing rule. A range that ends within 2 days
+of now expires after 15 minutes (`RecentEmptyTtl`). A range older than that is permanent
+(`SettledHistoryAge`). The next pass does not ask again while that row stands. A venue outage that
+returns empty for a range older than 2 days therefore stays covered until the `BarCoverage` rows
+for that instrument, resolution, and range are deleted. Deleting those rows is what makes the next
+pass ask again. It does not delete `Bars`. Pages stay at 1,000 bars. A window is 5,000 bars,
+several pages. In any 30 seconds the combined history cap is 50 and the backfill cap is 20.
+Live reads count backfill requests still in the window, so a live read waits for at most those
+20. Backfill yields before booking anything new while a live read is waiting. A dropped lock
+stops the pass. HTTP 429 stops the pass. The last pass, including pages finished before a
+failure, is on `get_recorder_health` as `barBackfill`, because production exports no OTLP.
+
 ## Troubleshooting
 
 ### Vendor DNS on a custom Docker network (gh#697)

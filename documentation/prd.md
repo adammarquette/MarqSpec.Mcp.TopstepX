@@ -747,7 +747,9 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
 The tape is original data and it stays in Postgres. A container reset that drops the database volume
 drops prints that no REST call can refetch (gh#755). The export below is an additional copy on a
 mounted volume. Timescale `policy_retention` on `Trades` stays empty. **Deleting local tape is not
-this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758).
+this requirement.** ADR-0027 (gh#763) is the retention decision: a UTC day of `Trades` is deleted
+only after an `uploaded` trades receipt for that day and contract. No receipt means no delete.
+`Retention__*` is not read. `TapeRetention__Days` is the window.
 
 - **R-10.1** The HTTP host writes a scheduled export of `Trades`, closed `TapeCoverage` and
   `FootprintCells` as **both** gzip CSV and Parquet under `TapeExport__Path`. Trades and coverage are
@@ -790,7 +792,8 @@ this requirement.** `Retention__*` is out of scope and needs its own ADR (gh#758
 - **R-10.7** Each file writes one `TapeExportReceipts` row. `pending` is the in-flight upload.
   `drive_disabled` means Drive was off. `uploaded` and `failed` are the outcomes. A failure stores the
   exception type and the HTTP status, never the credential, and does not clear `DriveFileId`. This
-  requirement does not delete tape. `Retention__*` is not read and needs its own ADR (gh#758).
+  requirement does not delete tape. ADR-0027 reads an `uploaded` trades receipt and deletes
+  nothing without one. `Retention__*` is not read.
 
 ## Open questions
 

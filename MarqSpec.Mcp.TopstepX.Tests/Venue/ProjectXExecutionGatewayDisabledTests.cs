@@ -85,7 +85,6 @@ public sealed class ProjectXExecutionGatewayDisabledTests
         return new ProjectXExecutionGateway(
             gate,
             new StubAccountsGateway([PracticeAccount()]),
-            new NoOpUnknownSignal(),
             client,
             new TradingWriteVenueAccountCache(),
             new HostTelemetry(),
@@ -109,13 +108,6 @@ public sealed class ProjectXExecutionGatewayDisabledTests
     private sealed class FakeKillSwitch : ITradingKillSwitch
     {
         public bool IsEngaged => false;
-    }
-
-    private sealed class NoOpUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public void UnknownStageWriteRefused(int accountId)
-        {
-        }
     }
 
     private sealed class StubAccountsGateway(IReadOnlyList<VenueAccount> accounts) : IMarketDataGateway

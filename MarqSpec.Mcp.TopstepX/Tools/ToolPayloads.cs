@@ -1313,4 +1313,35 @@ public static class ToolPayloads
             segments.Count == 1 ? ContractSpan.SingleContract : ContractSpan.SpansRoll,
             segments);
     }
+
+    /// <summary>The latest stored quote for one symbol.</summary>
+    /// <param name="Symbol">The symbol the caller asked for.</param>
+    /// <param name="Status"><c>ok</c>, <c>missing</c>, or <c>unknown_symbol</c>.</param>
+    /// <param name="ContractId">
+    /// The front contract. Omitted from the wire when there is none.
+    /// </param>
+    /// <param name="Bid">Best bid, in the contract's price units. Omitted unless the status is ok.</param>
+    /// <param name="Ask">Best ask. Omitted unless the status is ok.</param>
+    /// <param name="Last">Last trade. Omitted unless the status is ok.</param>
+    /// <param name="Volume">Session volume, in contracts. Omitted unless the status is ok.</param>
+    /// <param name="QuoteTimeUtc">The venue stamp. Omitted when the row had none, or there is no row.</param>
+    /// <param name="AgeSeconds">
+    /// Seconds since the database accepted the row. Omitted when there is no row.
+    /// </param>
+    /// <param name="Stale">
+    /// True when the row is older than the stale window. False when there is no row.
+    /// </param>
+    /// <param name="Reason">Why a failed read failed. Omitted unless the status is failed.</param>
+    public sealed record Quote(
+        string Symbol,
+        string Status,
+        string? ContractId,
+        decimal? Bid,
+        decimal? Ask,
+        decimal? Last,
+        long? Volume,
+        DateTimeOffset? QuoteTimeUtc,
+        double? AgeSeconds,
+        bool Stale,
+        string? Reason);
 }

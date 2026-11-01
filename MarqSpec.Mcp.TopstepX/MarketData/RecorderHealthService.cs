@@ -43,7 +43,8 @@ public sealed class RecorderHealthService(
     BarSessionCalendar calendar,
     TimeProvider clock,
     HostTelemetry telemetry,
-    RecorderHealthMemo memo)
+    RecorderHealthMemo memo,
+    BarBackfillStatus backfill)
 {
     /// <summary>How long the database work of one report may take before it counts as a timeout.</summary>
     public static readonly TimeSpan DefaultProbeTimeout = TimeSpan.FromSeconds(2);
@@ -55,6 +56,7 @@ public sealed class RecorderHealthService(
     private readonly TimeProvider _clock = clock;
     private readonly HostTelemetry _telemetry = telemetry;
     private readonly RecorderHealthMemo _memo = memo;
+    private readonly BarBackfillStatus _backfill = backfill;
 
     /// <summary>The deadline for this instance. Tests in this assembly shorten it; production leaves the default.</summary>
     internal TimeSpan ProbeTimeout { get; set; } = DefaultProbeTimeout;
@@ -167,6 +169,9 @@ public sealed class RecorderHealthService(
 
         string outcome = Outcome(probe, feedConnected, contracts, gaps);
         _telemetry.RecorderHealthRead(outcome);
+        int? tapeDaysKept = databaseUp
+            ? await _store.TapeDaysKeptAsync(cancellationToken).ConfigureAwait(false)
+            : null;
 
         RecorderHealthReport.Report report = new(
             asOf,
@@ -184,8 +189,25 @@ public sealed class RecorderHealthService(
                 : null,
             contracts,
             gaps,
-            _tape.HubReconnects);
+            _tape.HubReconnects,
+            TapeDaysKept: tapeDaysKept,
+            BarBackfill: Backfill(_backfill.Last));
         return (report, outcome);
+    }
+
+    private static RecorderHealthReport.BarBackfill? Backfill(BarBackfillStatus.Snapshot? snapshot)
+    {
+        if (snapshot is not { } pass || pass.EndedUtc is not DateTimeOffset ended)
+        {
+            return null;
+        }
+
+        return new RecorderHealthReport.BarBackfill(
+            pass.StartedUtc,
+            ended,
+            pass.StopReason,
+            pass.Pages,
+            pass.Errors);
     }
 
     private async Task<Probe> ProbeAsync(CancellationToken databaseToken)

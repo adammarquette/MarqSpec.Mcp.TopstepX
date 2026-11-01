@@ -299,6 +299,9 @@ public sealed class RecorderHealthEndpointTests
             CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ContractLastTick>>([new ContractLastTick("ES", Es, _tuesday)]);
 
+        public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(0);
+
         public Task<IReadOnlyList<CoverageSlice>> CoverageAsync(
             IReadOnlyCollection<string> instruments,
             DateTimeOffset windowStart,

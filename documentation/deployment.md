@@ -75,8 +75,43 @@ requires `X.Y.Z@sha256:<digest>`. The SDK labels IaC experimental, so expect DSL
 | Service | Image | Role |
 |---|---|---|
 | `postgres` | `timescale/timescaledb-ha:pg17@sha256:cae37881…` (ADR-0004), digest-pinned | `PGDATA=/home/postgres/pgdata/data`; no domain, no TCP proxy. **Volume in production only** (below) |
-| `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **StaticToken** on `MCP_HTTP_BEARER_TOKEN` in every environment (ADR-0021 exception, temporary), `RecordTape=false` |
-| `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
+| `server` | `SERVER_IMAGE`: GHCR `X.Y.Z` (no prerelease) and `@sha256:`, auto-updates off | public MCP endpoint, **StaticToken** on `MCP_HTTP_BEARER_TOKEN` in every environment (ADR-0021 exception, temporary), `RecordTape=false`, `RecordLatestQuotes=false`, `GetQuoteEnabled=true` |
+| `recorder` | the **same** `SERVER_IMAGE`; the check rejects a mismatch, since both migrate | `RecordTape=true`, `RecordLatestQuotes=true`, StaticToken, no `Mcp__OAuth__*`, one replica, no domain or proxy |
+
+### Promoting latest quotes (gh#351)
+
+The recorder writes latest quotes. `MarketData__RecordLatestQuotes` there is the literal
+`true`. The server lists `get_quote`. `MarketData__GetQuoteEnabled` there is the literal
+`true`, and `RecordLatestQuotes` is the literal `false`, so the server does not open a
+hub. The recorder does not set `GetQuoteEnabled`, so it does not list the tool. Each of
+the server's `GetQuoteEnabled`, the recorder's `RecordLatestQuotes`, and the recorder's
+`GetQuoteEnabled` must be the literal `true`, the literal `false`, or absent. `True`, a
+padded `true`, and a shared or variable reference are rejected (`quote-switch`). The
+server write switch is only the literal `false` (`server-records-quotes`). The tool and
+the recorder's write switch are on together or off together. Compose and the code
+defaults stay off. Staging and production share this file (ADR-0016).
+
+**Load.** The recorder adds one price subscription per front contract on the single
+TopstepX session it already holds, beside the trade subscriptions. Quotes tick more
+often than trades, so the hub carries more messages, and the recorder writes at most
+one `LatestQuotes` batch per second. A refused subscribe backs off that contract only
+and does not stop the tape. Watch `get_recorder_health` first: `hubReconnects` and
+`lastTickAgeSeconds` are the signal until a telemetry backend exists. Production sets
+no OTLP endpoint ([architecture](architecture.md), [ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)),
+so the `mcp.quote.writes`, `mcp.quote.failures` and `mcp.quote.reads` counters go
+nowhere today. Postgres write load is that one batch a second. `LatestQuotes` is not
+a tape and it is not pruned.
+
+**Migration.** The Postgres service config does not change. The `LatestQuotes` table
+comes from migration `20261101034408_AddLatestQuotes`, which landed with gh#911. Both
+processes apply migrations at startup (`MigrateAsync`, called from `Program` before the
+host listens). The promoted image must contain that migration and the reader. An older
+image ignores the new switches and does not create the table.
+
+**Rollback.** Set the recorder's `MarketData__RecordLatestQuotes` and the server's
+`MarketData__GetQuoteEnabled` to the literal `false` together in this file. Apply to
+staging, then promote. The tie rejects flipping just one. A dashboard-only edit is
+overwritten the next time staging or production applies this file.
 
 `Deployment__ImageDigest` is derived from `SERVER_IMAGE`, never typed separately, and `/health` reports
 it as `digest`. `version` is the informational version stamped into that image at build
@@ -93,7 +128,9 @@ one warning when that value is set and differs from the stamp, and logs nothing 
   ([pricing](https://docs.railway.com/reference/pricing/plans)), so a full 10 GiB costs about $1.50 a month.
 - `dev` and PR sandboxes have **no volume, no backups and no tape export**; every redeploy starts empty.
 - `[pg-volume]` enforces all three directions: production has exactly one, staging has exactly one, and
-  every other environment has none. `Retention__*` stays unset everywhere (gh#763).
+  every other environment has none. The template does not set `TapeRetention__Days`. The
+  reserved-name check matches keys that start with `Retention__` and does not match this key.
+  The code default of 90 applies where the key is absent (gh#763, ADR-0027).
 - An apply redeploys postgres only when postgres's own config changes (gh#844). Until gh#844 the template
   stated Railway's default restart policy, which Railway stores as null, so every plan re-applied it and
   every apply redeployed (and, before the volume, emptied) staging's Postgres; `[no-default-drift]` now
@@ -150,9 +187,13 @@ until #765 merges.
   JsonPath; Schedule HH:mm; Drive JSON a shared reference only; at most one exporter or export volume, and it is the
   recorder; in production, export on means the whole shape at once; outside production, off with no Drive keys.
 
-**One server replica, one region (gh#772).** Until two sessions or replicas trading one account is decided, the
-check (`[single-server]`) requires `server` to state exactly one replica (`numReplicas: 1`), in every environment,
-with no multi-region config. SDK 3.16.0 expresses scale only as `replicas` / `regions`, which compile to
+**One server replica, one region (gh#772, gh#774).** Adam ruled out two replicas trading one account.
+The gate holds a session advisory lock per account. During a Railway redeploy the new container
+refuses trading writes until the old one exits. That overlap is safe: the new process does not send.
+The template check (`[single-server]`, gh#774) still
+requires `server` to state exactly one replica (`numReplicas: 1`), in every environment, with no
+multi-region config. That check is defence in depth beside the lock. SDK 3.16.0 expresses scale only as
+`replicas` / `regions`, which compile to
 `deploy.numReplicas` / `deploy.multiRegionConfig`. It has no autoscaling field, so there is none to pin. A replica
 count or region changed in the dashboard after a deploy is invisible to CI.
 
@@ -276,12 +317,12 @@ produce a second **writer**. ADR-0016 wants one recorder.
   lock does not cover the gap between migrations (gh#843). No option exists to limit migrations to one
   service; the lock is what makes the overlap safe.
 
-**Data retention — proposed, pending an ADR.** Not in the template: the schema keeps the trade tape forever on
-purpose (`AddTradeTape` migration, `SchemaTests`). Proposed names are commented in
-[`.env.example`](../.env.example): `Retention__Enabled=false`, `Retention__RawTapeDays=30`,
-`Retention__DailySummaryDays=0` (forever) and `Retention__RequireExportBeforeDrop=true`. There is no pruning
-until that ADR (gh#763) is accepted, and export keys belong to gh#755. Until both exist, size the production volume
-for unbounded tape and keep its backups on.
+**Tape retention (gh#763, ADR-0027).** The recorder deletes a UTC day of `Trades` only after an
+`uploaded` trades receipt for that day and contract. No receipt means no delete. The window is
+`TapeRetention__Days` (default 90). The template leaves the key unset on purpose: this change does
+not edit Railway variables, and the `Retention__` reserved-name check does not apply to
+`TapeRetention__Days`. Absent, the code default is what runs. Export keys belong to gh#755. Keep
+backups on. Unexported prints cannot be refetched.
 
 **Done in the Railway dashboard, not the file:**
 
@@ -459,7 +500,9 @@ and skips. Rows stay in Postgres. That skip is the fail-safe for the **applicati
 [`scripts/prepare-tape-volume.sh`](../scripts/prepare-tape-volume.sh) followed by
 `dotnet MarqSpec.Mcp.TopstepX.dll`. `USER` stays 64198, so by default the script is not root: it logs
 `tape volume prepare skipped: running as uid 64198` and execs `dotnet` unchanged. That is every service
-today (server, recorder, compose, `docker run`). Only a service started as root with `RAILWAY_RUN_UID=0`,
+today (server, recorder, compose, `docker run`). On HTTP with recording off that line and the successful
+prepare line go to stdout, which Railway shows as Information (gh#894). Only a service started as root
+with `RAILWAY_RUN_UID=0`,
 which the template allows on the production recorder alone once the export is enabled, prepares the volume:
 
 - With no directory at `TAPE_VOLUME_ROOT` (default `/data`) it logs `skipped: no volume` and changes nothing.
@@ -504,6 +547,7 @@ the opposite: empty means the upload is off.
 | `TapeExport__Schedule` | `06:00` | UTC time of day, exact `HH:mm`. The worker waits for this time. A process that starts later waits until the next day. It also skips the pass unless this process holds a recorder lease. |
 | `TapeExport__Path` | `/data/tape-exports` | Absolute directory on the recorder volume. Railway mounts that one volume at `/data`. Not object storage. |
 | `TapeExport__Format` | `csv.gz+parquet` | The only accepted value. Both gzip CSV and Parquet are written. `csv.gz` alone, `parquet` alone, and an empty string are refused. |
+| `TapeRetention__Days` | `90` | Days an uploaded `Trades` day may stay (gh#763, ADR-0027). Accepted values are 7 through 3650. Zero and a negative number are refused and do not turn pruning off. A day is deleted only when an `uploaded` trades receipt exists. The recorder process runs the pass, 15 minutes after start and then every 24 hours, and only while it holds the lease. |
 | `TapeExport__Drive__FolderId` | empty | Drive folder id. **Empty disables Drive.** No client is constructed and no network call is made. |
 | `TapeExport__Drive__ServiceAccountJson` | empty | Inline service-account JSON. **Empty is off** unless the path below is set. Never commit a value. A path wins when both are set. **Anyone who can inspect the container can read this value.** Prefer the path. |
 | `TapeExport__Drive__ServiceAccountJsonPath` | empty | Absolute path of a mounted service-account JSON file. **This is the credential to use** once export is unblocked. On Railway that path is `/data/keys/drive-sa.json` (mode `0400`, directory mode `0700`, owned by uid 64198). Do not set it until export is unblocked. Empty is off unless the inline JSON above is set. A relative path is refused. |
@@ -529,13 +573,19 @@ records `IdentityBusy` and continues. Turning Drive on later uploads days that w
 id and may leave one empty extra folder.
 Reading the files back is [tape-export-reload.md](tape-export-reload.md).
 
-**Retention is out of scope.** `Retention__Enabled`, `Retention__RawTapeDays`,
-`Retention__DailySummaryDays` and `Retention__RequireExportBeforeDrop` are not read. The tape is
-permanent by schema: Timescale `policy_retention` on `Trades` stays empty
-([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)), and this process never deletes local rows.
-Changing that is a product decision that is still pending. It needs its own ADR before any template
-key is honoured. Do not set `Retention__*` expecting this build to drop tape, and do not treat a
-verified export as permission to prune.
+**The recorder prunes an exported day (gh#763, ADR-0027).** A UTC day of `Trades` whose end is at
+or before now minus `TapeRetention__Days` is deleted only when `TapeExportReceipts` has `Kind=trades`,
+`Format=csv.gz`, `UploadState=uploaded` and a non-empty `Sha256` for that day, venue, instrument and
+contract. `drive_disabled`, `pending` and `failed` do not qualify. No such row means the prints stay,
+and the pass logs and counts the skipped day. While Drive export is not live, nothing is `uploaded`,
+so nothing is deleted. The export itself still does not delete rows.
+Timescale `policy_retention` on `Trades` stays empty
+([ADR-0004](adr/0004-one-postgres-timescale-pgvector.md)). A chunk is dropped only when it ends at or
+before the cutoff and every row in it has that receipt. A compressed chunk that is only partly
+exported is left, so the tape kept can be longer than `TapeRetention__Days` until that chunk is
+fully exported. `LatestQuotes` is not tape and is not touched. `Retention__Enabled`,
+`Retention__RawTapeDays`, `Retention__DailySummaryDays` and `Retention__RequireExportBeforeDrop`
+are not keys. The template does not set `TapeRetention__Days`; the code default of 90 applies.
 
 A UTC day is copied once its exclusive end has passed (00:00 UTC the next day). The current day stays
 only in Postgres until then. A mismatch between the manifest and the files refuses that day and still
@@ -594,9 +644,57 @@ not leave a partial index: the create is `IF NOT EXISTS` after the lock. If the 
 build outlasts the wait, the second degrades or exits instead of sitting for the whole command.
 Restart it once the first is healthy.
 
+Compose configures that 300 second wait on the `server` service. `docker-compose.yml` sets
+`Migrations__LockWaitSeconds` to `${Migrations__LockWaitSeconds:-300}`. 300 seconds is the code
+default, passed through so an operator can change the wait without rebuilding the image. It is
+long enough for a normal multi-command apply to finish while the lock is held, and it is not the
+per-command timeout, so the waiter does not sit for a whole index build. It is also not Railway's
+healthcheck window: that window is 300 seconds by platform default and starts only after the
+container is deployed.
+
 The composed server has no healthcheck of its own. Postgres uses `pg_isready` with `start_period: 20s`,
 and the server waits on that, not on the server listening. If you add a healthcheck on the server that
 gates other services, give it a `start_period` that covers the same index-build migration.
+
+## Unknown account stage (gh#732)
+
+`mcp.execution.writes` with `refusal=unknown_account_stage` is one measurement per refused attempt,
+including a dry-run preview. `operation` names the tool. `replay` is `false` for that attempt. A
+practice write and a known non-practice refusal do not use that tag. No account id is a tag. The
+refusal itself is unchanged.
+
+Railway exports no metrics today. The template sets `Otel__ServiceName` and no `Otel__Endpoint`.
+With no endpoint the server emits no telemetry
+([ADR-0019](adr/0019-otlp-as-the-telemetry-boundary.md)). This alert is specified and unwired until a
+Railway telemetry backend is chosen. This section does not set an endpoint or a Railway variable.
+
+When a backend exists, the rule is: the sum of `mcp.execution.writes` where `refusal` is
+`unknown_account_stage` is at least 1 over 5 minutes. Missing data does not breach. Any such
+increment is a parser gap. Fix the name parser. Do not turn trading on for that account to clear it.
+
+## Bar backfill (gh#899)
+
+`Backfill__Enabled` defaults to false. Nothing in the Railway template sets it. When it is true
+the HTTP process runs one pass at startup and then stops. A stdio process does not run it. A
+second replica takes a Postgres advisory lock and skips when that lock is held. For each configured
+instrument and for `Backfill__ResolutionsMinutes` (default `1,60`) it asks the bar cache for the
+uncovered ranges back to the measured history edge. Those edges are sim-tier measurements (gh#494):
+one-minute bars stop at 63 days, and hour bars, or any resolution of 60 minutes or more, stop at
+365 days. The live tier's depth has not been measured. `Backfill__NotBeforeUtc` may start later
+than that edge. A value older than the edge is moved forward to it. A value in the future is
+refused at startup. An instrument that the registry does not serve is refused at startup.
+
+An empty venue answer is coverage, on the cache's existing rule. A range that ends within 2 days
+of now expires after 15 minutes (`RecentEmptyTtl`). A range older than that is permanent
+(`SettledHistoryAge`). The next pass does not ask again while that row stands. A venue outage that
+returns empty for a range older than 2 days therefore stays covered until the `BarCoverage` rows
+for that instrument, resolution, and range are deleted. Deleting those rows is what makes the next
+pass ask again. It does not delete `Bars`. Pages stay at 1,000 bars. A window is 5,000 bars,
+several pages. In any 30 seconds the combined history cap is 50 and the backfill cap is 20.
+Live reads count backfill requests still in the window, so a live read waits for at most those
+20. Backfill yields before booking anything new while a live read is waiting. A dropped lock
+stops the pass. HTTP 429 stops the pass. The last pass, including pages finished before a
+failure, is on `get_recorder_health` as `barBackfill`, because production exports no OTLP.
 
 ## Troubleshooting
 

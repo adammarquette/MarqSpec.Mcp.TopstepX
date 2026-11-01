@@ -23,7 +23,6 @@ public sealed class TradingRiskGateDisabledTelemetryTests
     private const string MesContract = "CON.F.US.MES.Z26";
 
     private readonly FakeKillSwitch _killSwitch = new();
-    private readonly RecordingUnknownSignal _unknownSignal = new();
     private readonly FakeExecutionGateway _gateway = new();
     private readonly RecordingAuditLog _audit = new();
     private readonly FakeDailyCapCoordinator _daily = new();
@@ -144,7 +143,6 @@ public sealed class TradingRiskGateDisabledTelemetryTests
             _gateway,
             new StubMarketDataGateway(accounts, []),
             stageResolver,
-            _unknownSignal,
             _daily,
             _audit,
             denylist,
@@ -179,11 +177,6 @@ public sealed class TradingRiskGateDisabledTelemetryTests
     private sealed class FakeKillSwitch : ITradingKillSwitch
     {
         public bool IsEngaged { get; set; }
-    }
-
-    private sealed class RecordingUnknownSignal : ITradingUnknownStageRefusalSignal
-    {
-        public void UnknownStageWriteRefused(int accountId) { }
     }
 
     private sealed class StubMarketDataGateway(

@@ -84,6 +84,9 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Append-only ledger of every trading attempt (ADR-0024 §5, gh#709).</summary>
     public DbSet<TradingAuditLogRecord> TradingAuditLog => Set<TradingAuditLogRecord>();
 
+    /// <summary>The latest quote per contract. The recorder upserts it; a read does not open a hub.</summary>
+    public DbSet<LatestQuoteRecord> LatestQuotes => Set<LatestQuoteRecord>();
+
     /// <inheritdoc />
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
@@ -245,6 +248,19 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             });
         });
 
+        modelBuilder.Entity<LatestQuoteRecord>(entity =>
+        {
+            entity.ToTable("LatestQuotes");
+            entity.HasKey(q => new { q.Venue, q.ContractId });
+
+            entity.Property(q => q.Venue).HasMaxLength(64);
+            entity.Property(q => q.Instrument).HasMaxLength(32);
+            entity.Property(q => q.ContractId).HasMaxLength(64);
+            entity.Property(q => q.Bid).HasColumnType(PriceColumnType);
+            entity.Property(q => q.Ask).HasColumnType(PriceColumnType);
+            entity.Property(q => q.Last).HasColumnType(PriceColumnType);
+        });
+
         modelBuilder.Entity<TradeRecord>(entity =>
         {
             entity.ToTable("Trades");
@@ -368,6 +384,12 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
                 .IsUnique()
                 .HasDatabaseName("IX_TradingAuditLog_AccountId_Tool_IdempotencyKey_Unknown")
                 .HasFilter("\"Outcome\" = 'Unknown' AND \"IdempotencyKey\" <> ''");
+
+            // One reversal and one Refused row per lock-failure attempt. Other rows leave this null.
+            entity.HasIndex(a => new { a.FinaliseId, a.Outcome })
+                .IsUnique()
+                .HasDatabaseName("IX_TradingAuditLog_FinaliseId_Outcome")
+                .HasFilter("\"FinaliseId\" IS NOT NULL");
         });
 
         // pgvector only maps under Npgsql. Configuring this unconditionally breaks every provider-agnostic

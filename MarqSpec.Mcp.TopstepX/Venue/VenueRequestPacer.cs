@@ -38,6 +38,12 @@ public sealed class VenueRequestPacer
     /// <summary>Requests the vendor allows against <c>History/retrieveBars</c> per <see cref="HistoryWindow"/>.</summary>
     public const int HistoryRequestsPerWindow = 50;
 
+    /// <summary>
+    /// How many of those history requests a backfill may take in one <see cref="HistoryWindow"/>.
+    /// The rest stay available for a live read (gh#899).
+    /// </summary>
+    public const int BackfillRequestsPerWindow = 20;
+
     /// <summary>The window <see cref="HistoryRequestsPerWindow"/> is counted over.</summary>
     public static readonly TimeSpan HistoryWindow = TimeSpan.FromSeconds(30);
 
@@ -63,12 +69,21 @@ public sealed class VenueRequestPacer
     private readonly TimeProvider _clock;
     private readonly Lock _sync = new();
 
-    /// <summary>The instants of the most recent <see cref="Capacity"/> reservations, oldest first.</summary>
-    /// <remarks>
-    /// Exactly <see cref="Capacity"/> entries at most, so this cannot grow with traffic. A reservation may
-    /// sit in the future — it is the instant the request is <i>allowed to go</i>, not when it was asked for.
-    /// </remarks>
-    private readonly Queue<DateTimeOffset> _reserved = new();
+    /// <summary>
+    /// Reservations still inside the window, oldest first. Live and released backfill share it, so the
+    /// two together cannot pass <see cref="Capacity"/>. A row older than the window is removed before
+    /// every decision.
+    /// </summary>
+    private readonly Queue<HistoryReservation> _reserved = new();
+
+    /// <summary>Live reads blocked in <see cref="WaitForSlotAsync"/>.</summary>
+    private int _liveWaiters;
+
+    /// <summary>
+    /// Completed when the last waiting live read leaves. Backfill waits on this instead of polling.
+    /// </summary>
+    private TaskCompletionSource _liveReleased =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Creates a pacer.</summary>
     /// <param name="capacity">The most requests allowed in any <paramref name="window"/>.</param>
@@ -117,29 +132,7 @@ public sealed class VenueRequestPacer
     {
         lock (_sync)
         {
-            DateTimeOffset now = _clock.GetUtcNow();
-
-            if (_reserved.Count < _capacity)
-            {
-                _reserved.Enqueue(now);
-                return now;
-            }
-
-            // Full: this request may go once the oldest of the last Capacity reservations has aged out of
-            // the window. Sliding, not a fresh allowance at a window boundary -- a fixed window would let
-            // 2x the cap through across the boundary between two of them.
-            //
-            // Plus BoundaryMargin, so the released request lands just PAST the boundary rather than on it.
-            // Exactly on it is legal only if the vendor's window is half-open, and the vendor does not say.
-            DateTimeOffset oldest = _reserved.Dequeue();
-            DateTimeOffset at = oldest + _window + BoundaryMargin;
-            if (at < now)
-            {
-                at = now;
-            }
-
-            _reserved.Enqueue(at);
-            return at;
+            return ReserveLiveUnlocked(armWaiter: false);
         }
     }
 
@@ -158,15 +151,257 @@ public sealed class VenueRequestPacer
     /// </remarks>
     public async ValueTask<TimeSpan> WaitForSlotAsync(CancellationToken cancellationToken)
     {
-        DateTimeOffset at = ReserveSlot();
-        TimeSpan wait = at - _clock.GetUtcNow();
+        DateTimeOffset at;
+        lock (_sync)
+        {
+            // The waiter flag is taken in the same lock as the reservation, so a backfill grant
+            // cannot land between the booking and the wait.
+            at = ReserveLiveUnlocked(armWaiter: true);
+        }
 
+        TimeSpan wait = at - _clock.GetUtcNow();
         if (wait <= TimeSpan.Zero)
         {
             return TimeSpan.Zero;
         }
 
-        await Task.Delay(wait, _clock, cancellationToken).ConfigureAwait(false);
-        return wait;
+        try
+        {
+            await Task.Delay(wait, _clock, cancellationToken).ConfigureAwait(false);
+            return wait;
+        }
+        finally
+        {
+            ReleaseLiveWaiter();
+        }
+    }
+
+    /// <summary>
+    /// Takes a backfill slot. Nothing is booked while a live read is waiting.
+    /// </summary>
+    /// <returns>
+    /// Now when fewer than <see cref="BackfillRequestsPerWindow"/> backfill rows are still in the
+    /// window, the shared window is not full, and no live read is waiting. Otherwise the later release,
+    /// and that future time is not inserted.
+    /// </returns>
+    public DateTimeOffset ReserveBackfillSlot()
+    {
+        lock (_sync)
+        {
+            return PlanBackfillUnlocked().At;
+        }
+    }
+
+    /// <summary>
+    /// Takes a backfill slot and waits for it. Time spent only yielding to a live read is not included
+    /// in the returned delay, so the gateway's paced total stays a rate-window figure.
+    /// </summary>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>How long the caller was held for the rate window.</returns>
+    public async ValueTask<TimeSpan> WaitForBackfillSlotAsync(CancellationToken cancellationToken)
+    {
+        TimeSpan paced = TimeSpan.Zero;
+        while (true)
+        {
+            BackfillPlan plan;
+            Task liveReleased;
+            lock (_sync)
+            {
+                plan = PlanBackfillUnlocked();
+                liveReleased = _liveReleased.Task;
+            }
+
+            TimeSpan wait = plan.At - _clock.GetUtcNow();
+            if (wait <= TimeSpan.Zero)
+            {
+                return paced;
+            }
+
+            if (plan.Yielded)
+            {
+                // Cancel the delay when the live release wins, including when both complete on
+                // the same clock advance. Leaving it armed lets a later advance fire it (gh#948).
+                using CancellationTokenSource yieldWait =
+                    CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                Task delay = Task.Delay(wait, _clock, yieldWait.Token);
+                await Task.WhenAny(delay, liveReleased).ConfigureAwait(false);
+                if (liveReleased.IsCompleted)
+                {
+                    // Do not await the delay here. This continuation can be the delay's own
+                    // callback, and awaiting it would wait for that callback to return.
+                    if (!delay.IsCompleted)
+                    {
+                        yieldWait.Cancel();
+                    }
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        throw new OperationCanceledException(cancellationToken);
+                    }
+                }
+                else
+                {
+                    await delay.ConfigureAwait(false);
+                }
+
+                continue;
+            }
+
+            await Task.Delay(wait, _clock, cancellationToken).ConfigureAwait(false);
+            paced += wait;
+        }
+    }
+
+    private DateTimeOffset ReserveLiveUnlocked(bool armWaiter)
+    {
+        DateTimeOffset now = _clock.GetUtcNow();
+        Trim(now);
+        DateTimeOffset at;
+        if (_reserved.Count < _capacity)
+        {
+            at = now;
+        }
+        else
+        {
+            // Full: this request may go once the oldest reservation still in the window, live or
+            // backfill, has aged out. Sliding, not a fresh allowance at a window boundary.
+            //
+            // Plus BoundaryMargin, so the released request lands just PAST the boundary rather than
+            // on it. Exactly on it is legal only if the vendor's window is half-open.
+            HistoryReservation oldest = _reserved.Dequeue();
+            at = oldest.At + _window + BoundaryMargin;
+            if (at < now)
+            {
+                at = now;
+            }
+        }
+
+        _reserved.Enqueue(new HistoryReservation(false, at));
+        if (armWaiter && at > now)
+        {
+            _liveWaiters++;
+        }
+
+        return at;
+    }
+
+    private BackfillPlan PlanBackfillUnlocked()
+    {
+        DateTimeOffset now = _clock.GetUtcNow();
+        Trim(now);
+        if (_liveWaiters > 0)
+        {
+            return new BackfillPlan(LiveRelease(now), Yielded: true);
+        }
+
+        DateTimeOffset backfillAt = BackfillReady(now);
+        DateTimeOffset sharedAt = SharedReady(now);
+        DateTimeOffset at = sharedAt > backfillAt ? sharedAt : backfillAt;
+        if (at > now)
+        {
+            return new BackfillPlan(at, Yielded: false);
+        }
+
+        _reserved.Enqueue(new HistoryReservation(true, at));
+        return new BackfillPlan(at, Yielded: false);
+    }
+
+    private DateTimeOffset BackfillReady(DateTimeOffset now)
+    {
+        int count = 0;
+        DateTimeOffset oldest = now;
+        bool any = false;
+        foreach (HistoryReservation slot in _reserved)
+        {
+            if (!slot.Backfill)
+            {
+                continue;
+            }
+
+            count++;
+            if (!any || slot.At < oldest)
+            {
+                oldest = slot.At;
+                any = true;
+            }
+        }
+
+        if (count < BackfillRequestsPerWindow)
+        {
+            return now;
+        }
+
+        DateTimeOffset ready = oldest + _window + BoundaryMargin;
+        return ready > now ? ready : now;
+    }
+
+    private DateTimeOffset SharedReady(DateTimeOffset now)
+    {
+        if (_reserved.Count < _capacity)
+        {
+            return now;
+        }
+
+        DateTimeOffset ready = _reserved.Peek().At + _window + BoundaryMargin;
+        return ready > now ? ready : now;
+    }
+
+    private DateTimeOffset LiveRelease(DateTimeOffset now)
+    {
+        DateTimeOffset wake = now + BoundaryMargin;
+        foreach (HistoryReservation slot in _reserved)
+        {
+            if (!slot.Backfill && slot.At > wake)
+            {
+                wake = slot.At;
+            }
+        }
+
+        return wake;
+    }
+
+    /// <summary>
+    /// Drops rows whose window has already closed. The queue is oldest first.
+    /// A future time, and a row whose waiter was cancelled, both stay until that
+    /// window closes. Removing either early would free budget the vendor still holds.
+    /// </summary>
+    private void Trim(DateTimeOffset now)
+    {
+        while (_reserved.Count > 0
+            && _reserved.Peek().At + _window + BoundaryMargin <= now)
+        {
+            _reserved.Dequeue();
+        }
+    }
+
+    private void ReleaseLiveWaiter()
+    {
+        TaskCompletionSource released;
+        lock (_sync)
+        {
+            if (_liveWaiters > 0)
+            {
+                _liveWaiters--;
+            }
+
+            if (_liveWaiters > 0)
+            {
+                return;
+            }
+
+            released = _liveReleased;
+            _liveReleased = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        released.TrySetResult();
+    }
+
+    private readonly record struct BackfillPlan(DateTimeOffset At, bool Yielded);
+
+    private sealed class HistoryReservation(bool backfill, DateTimeOffset at)
+    {
+        public bool Backfill { get; } = backfill;
+
+        public DateTimeOffset At { get; } = at;
     }
 }

@@ -79,7 +79,15 @@ public sealed class MigrationApplyLockTests
     }
 
     public static TheoryData<string> DroppedConnections { get; } =
-        ["socket", "57P01", "57P03", "57P01-wrapped"];
+        [
+            "socket",
+            "socket-io",
+            "socket-wrapped",
+            "57P01",
+            "57P03",
+            "57P01-wrapped",
+            "57P03-wrapped",
+        ];
 
     /// <summary>
     /// The store answered, then the connection dropped during the apply. Required exits. It must not
@@ -132,6 +140,92 @@ public sealed class MigrationApplyLockTests
         (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(
             0,
             "a throwing apply still releases the session lock");
+    }
+
+    /// <summary>
+    /// A schema defect that only carries a dropped connection inside it is not a drop. Startup
+    /// accepts the EF wrapper and Npgsql's own exception, and it stops at anything else, so this
+    /// still fails the process (gh#843).
+    /// </summary>
+    [Fact]
+    public async Task MigrateAsync_WhenASchemaDefectWrapsADroppedConnection_Propagates()
+    {
+        Exception failure = new InvalidOperationException(
+            "the migration rejected the schema",
+            new Exception(
+                "not a connection drop",
+                new PostgresException(
+                    "terminating connection due to administrator command",
+                    "FATAL",
+                    "FATAL",
+                    PostgresErrorCodes.AdminShutdown)));
+
+        await using WebApplication app = Build(
+            _fixture.ConnectionString,
+            required: false,
+            gate: null,
+            failure: failure);
+
+        Func<Task> act = () => Program.MigrateAsync(app);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Be("the migration rejected the schema");
+        (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(0);
+    }
+
+    /// <summary>
+    /// A read that times out under Npgsql's IOException is not a dropped connection. The
+    /// walk stops there, so the failure still fails the process (gh#843).
+    /// </summary>
+    [Fact]
+    public async Task MigrateAsync_WhenAReadTimesOutUnderIoException_Propagates()
+    {
+        Exception failure = new InvalidOperationException(
+            "An exception has been raised that is likely due to a transient failure.",
+            new NpgsqlException(
+                "Exception while reading from stream",
+                new IOException(
+                    "Unable to read data from the transport connection",
+                    new TimeoutException("Timeout during reading attempt"))));
+
+        await using WebApplication app = Build(
+            _fixture.ConnectionString,
+            required: false,
+            gate: null,
+            failure: failure);
+
+        Func<Task> act = () => Program.MigrateAsync(app);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*transient failure*");
+        (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(0);
+    }
+
+    /// <summary>
+    /// <c>42P07</c> is a schema defect. EF's wrapper around it still fails the process.
+    /// </summary>
+    [Fact]
+    public async Task MigrateAsync_WhenTheSchemaAlreadyHasTheRelation_Propagates()
+    {
+        Exception failure = new InvalidOperationException(
+            "An exception has been raised that is likely due to a transient failure.",
+            new PostgresException(
+                "relation already exists",
+                "ERROR",
+                "ERROR",
+                PostgresErrorCodes.DuplicateTable));
+
+        await using WebApplication app = Build(
+            _fixture.ConnectionString,
+            required: true,
+            gate: null,
+            failure: failure);
+
+        Func<Task> act = () => Program.MigrateAsync(app);
+
+        (await act.Should().ThrowAsync<InvalidOperationException>())
+            .WithMessage("*transient failure*");
+        (await CountLocksAsync(_fixture.ConnectionString, waitingOnly: false)).Should().Be(0);
     }
 
     /// <summary>
@@ -255,7 +349,8 @@ public sealed class MigrationApplyLockTests
 
             availability.IsAvailable.Should().BeFalse();
             availability.Explanation.Should().Contain("migration lock wait timed out");
-            logs.Lines.Should().NotContain(line => line.Contains("Store__Required", StringComparison.Ordinal));
+            logs.Lines.Should().NotContain(line =>
+                line.Contains("Store__Required", StringComparison.Ordinal));
         }
         finally
         {
@@ -298,6 +393,87 @@ public sealed class MigrationApplyLockTests
         {
             await UnlockAsync(holder);
         }
+    }
+
+    /// <summary>
+    /// The lines added for a dropped migration and a lock wait do not carry the connection
+    /// string or its password. The logger records exception text too, so a line that logged
+    /// the failure itself would still have to be redacted (gh#843).
+    /// </summary>
+    [Fact]
+    public async Task MigrationFailureLogs_OmitTheConnectionStringAndPassword()
+    {
+        string connectionString = _fixture.ConnectionString;
+        string password = new NpgsqlConnectionStringBuilder(connectionString).Password!;
+        password.Should().NotBeNullOrWhiteSpace();
+
+        ListLogger dropLogs = new() { IncludeExceptionText = true };
+        await using (WebApplication dropped = Build(
+            connectionString,
+            required: false,
+            gate: null,
+            failure: Dropped("57P01-wrapped"),
+            logs: dropLogs))
+        {
+            StoreAvailability availability = await Program.MigrateAsync(dropped);
+            availability.Explanation.Should().Contain("The connection dropped while applying migrations.");
+        }
+
+        AssertRedacted(dropLogs, connectionString, password);
+        dropLogs.Lines.Should().Contain(line => line.Contains(
+            "The connection dropped while applying migrations.",
+            StringComparison.Ordinal));
+
+        ListLogger requiredLogs = new() { IncludeExceptionText = true };
+        await using (WebApplication requiredApp = Build(
+            connectionString,
+            required: true,
+            gate: null,
+            failure: Dropped("socket"),
+            logs: requiredLogs))
+        {
+            Func<Task> act = () => Program.MigrateAsync(requiredApp);
+            await act.Should().ThrowAsync<StoreRequiredException>();
+        }
+
+        AssertRedacted(requiredLogs, connectionString, password);
+        requiredLogs.Lines.Should().Contain(line =>
+            line.Contains("Store__Required", StringComparison.Ordinal));
+
+        await using NpgsqlConnection holder = new(connectionString);
+        await holder.OpenAsync();
+        await using (NpgsqlCommand hold = LockCommand(holder, "SELECT pg_advisory_lock(@classId, @objectId)"))
+        {
+            await hold.ExecuteNonQueryAsync();
+        }
+
+        ListLogger waitLogs = new() { IncludeExceptionText = true };
+        try
+        {
+            Func<Task> waiting = () => MigrationApplyLock.ApplyUnderLockAsync(
+                connectionString,
+                _ => Task.CompletedTask,
+                waitLogs,
+                lockWaitTimeoutSeconds: 1,
+                CancellationToken.None);
+            await waiting.Should().ThrowAsync<MigrationLockWaitTimedOutException>();
+        }
+        finally
+        {
+            await UnlockAsync(holder);
+        }
+
+        AssertRedacted(waitLogs, connectionString, password);
+        waitLogs.Lines.Should().Contain(line =>
+            line.Contains("Waiting up to 1s.", StringComparison.Ordinal));
+    }
+
+    private static void AssertRedacted(ListLogger logs, string connectionString, string password)
+    {
+        string text = string.Join('\n', logs.Lines);
+        text.Should().NotContain(password);
+        text.Should().NotContain(connectionString);
+        text.Should().NotContain("Password=");
     }
 
     private static async Task UnlockAsync(NpgsqlConnection holder)
@@ -434,6 +610,9 @@ public sealed class MigrationApplyLockTests
     {
         public List<string> Lines { get; } = [];
 
+        /// <summary>When set, the captured line includes the exception text the logger was given.</summary>
+        public bool IncludeExceptionText { get; init; }
+
         public IDisposable? BeginScope<TState>(TState state)
             where TState : notnull
             => null;
@@ -447,7 +626,13 @@ public sealed class MigrationApplyLockTests
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            Lines.Add(formatter(state, exception));
+            string message = formatter(state, exception);
+            if (IncludeExceptionText && exception is not null)
+            {
+                message = message + "\n" + exception;
+            }
+
+            Lines.Add(message);
         }
     }
 
@@ -528,6 +713,16 @@ public sealed class MigrationApplyLockTests
         "socket" => new NpgsqlException(
             "The connection dropped while applying migrations.",
             new SocketException((int)SocketError.ConnectionReset)),
+        "socket-io" => new NpgsqlException(
+            "Exception while reading from stream",
+            new IOException(
+                "Unable to read data from the transport connection",
+                new SocketException((int)SocketError.ConnectionReset))),
+        "socket-wrapped" => new InvalidOperationException(
+            "An exception has been raised that is likely due to a transient failure.",
+            new NpgsqlException(
+                "Exception while reading from stream",
+                new SocketException((int)SocketError.ConnectionReset))),
         "57P01" => new PostgresException(
             "terminating connection due to administrator command",
             "FATAL",
@@ -547,6 +742,13 @@ public sealed class MigrationApplyLockTests
                 "FATAL",
                 "FATAL",
                 "57P01")),
+        "57P03-wrapped" => new InvalidOperationException(
+            "An exception has been raised that is likely due to a transient failure.",
+            new PostgresException(
+                "the database system is starting up",
+                "FATAL",
+                "FATAL",
+                "57P03")),
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown drop."),
     };
 }

@@ -297,8 +297,9 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
             //
             // scripts/check-paced-paging.sh is what keeps this call HERE -- inside the loop and ahead of the
             // fetch. Deleting it left every unit test green, which is the whole reason that gate exists.
-            TimeSpan paced =
-                await _historyPacer.WaitForSlotAsync(cancellationToken).ConfigureAwait(false);
+            TimeSpan paced = BarBackfillLane.IsActive
+                ? await _historyPacer.WaitForBackfillSlotAsync(cancellationToken).ConfigureAwait(false)
+                : await _historyPacer.WaitForSlotAsync(cancellationToken).ConfigureAwait(false);
 
             if (paced > TimeSpan.Zero)
             {

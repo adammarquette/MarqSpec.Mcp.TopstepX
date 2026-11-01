@@ -85,7 +85,8 @@ public sealed class RecorderHealthSpanTests
             BarSessionCalendar.Parse("16:00", []),
             new FakeTimeProvider(_tuesday),
             telemetry,
-            new RecorderHealthMemo());
+            new RecorderHealthMemo(),
+            new BarBackfillStatus());
     }
 
     private static ActivityListener Listen(List<Activity> into, ActivitySource source)
@@ -112,6 +113,9 @@ public sealed class RecorderHealthSpanTests
             DateTimeOffset windowEnd,
             CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<ContractLastTick>>([]);
+
+        public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(0);
 
         public Task<IReadOnlyList<CoverageSlice>> CoverageAsync(
             IReadOnlyCollection<string> instruments,

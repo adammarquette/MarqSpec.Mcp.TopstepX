@@ -24,7 +24,6 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
 {
     private readonly TradingExecutionGate _gate;
     private readonly IMarketDataGateway _marketData;
-    private readonly ITradingUnknownStageRefusalSignal _unknownStageSignal;
     private readonly IProjectXApiClient _client;
     private readonly VenueCallGuard _calls;
     private readonly TradingWriteVenueAccountCache _accountCache;
@@ -34,7 +33,6 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
     public ProjectXExecutionGateway(
         TradingExecutionGate gate,
         IMarketDataGateway marketData,
-        ITradingUnknownStageRefusalSignal unknownStageSignal,
         IProjectXApiClient client,
         TradingWriteVenueAccountCache accountCache,
         HostTelemetry telemetry,
@@ -42,7 +40,6 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
     {
         _gate = gate;
         _marketData = marketData;
-        _unknownStageSignal = unknownStageSignal;
         _client = client;
         _accountCache = accountCache;
         _calls = new VenueCallGuard(telemetry);
@@ -105,13 +102,15 @@ public sealed class ProjectXExecutionGateway : IExecutionGateway
         CancellationToken cancellationToken,
         Func<CancellationToken, Task<ExecutionWriteResult>> transmit)
     {
+        bool killSwitchBlocks = operation is ExecutionOperation.PlaceOrderOperation
+            or ExecutionOperation.ModifyOrderOperation;
         TradingExecutionRefusal? refusal = await _gate
             .RefuseWriteUnlessPermittedAsync(
                 accountId,
                 _marketData,
-                _unknownStageSignal,
                 cancellationToken,
-                _accountCache.TryGet(accountId))
+                _accountCache.TryGet(accountId),
+                killSwitchBlocks)
             .ConfigureAwait(false);
 
         if (refusal is TradingExecutionRefusal gateRefusal)

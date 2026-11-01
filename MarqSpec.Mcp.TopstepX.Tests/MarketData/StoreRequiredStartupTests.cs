@@ -62,21 +62,28 @@ public sealed class StoreRequiredStartupTests
     }
 
     /// <summary>
-    /// <see cref="StoreRequiredException.Explanation"/> is what the verbs log. It carries no host,
-    /// password, or connection string.
+    /// The unreachable probe logs <c>Nothing answered at {target}</c>. The password stays
+    /// out of that line, and <see cref="StoreRequiredException.Explanation"/> stays the
+    /// fixed unreachable sentence, so the target does not enter the marker.
     /// </summary>
     [Fact]
     public async Task MigrateAsync_WhenTheStoreIsRequired_ExplanationOmitsTheConnection()
     {
-        await using WebApplication app = Build(required: true, logs: new CapturedLogs());
+        CapturedLogs logs = new();
+        await using WebApplication app = Build(required: true, logs: logs);
 
         Func<Task> act = () => Program.MigrateAsync(app);
 
         StoreRequiredException thrown =
             (await act.Should().ThrowAsync<StoreRequiredException>()).Which;
+        string fixedExplanation = StoreAvailability.Unavailable(string.Empty).Explanation!;
+        logs.Text.Should().Contain("Nothing answered at host=127.0.0.1");
+        logs.Text.Should().NotContain(Sentinel);
+        thrown.Explanation.Should().Be(fixedExplanation);
         thrown.Explanation.Should().NotContain("127.0.0.1");
         thrown.Explanation.Should().NotContain(Sentinel);
         thrown.Explanation.Should().NotContain(ClosedPort);
+        thrown.Explanation.Should().NotContain("Nothing answered");
     }
 
     private static WebApplication Build(bool required, CapturedLogs logs)

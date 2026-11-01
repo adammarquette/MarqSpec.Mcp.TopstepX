@@ -292,30 +292,33 @@ public sealed class ColdStartSessionTerminationTests
             }
             catch (OperationCanceledException) when (deadlockGuard.IsCancellationRequested)
             {
-                await KillIfKnownAsync(holder).ConfigureAwait(false);
+                Exception? killFailure = await KillKnownBackendAsync(holder).ConfigureAwait(false);
                 throw new InvalidOperationException(
                     "The applying command did not report that it was blocked. Backend "
-                    + interceptor.BackendPid + ".");
+                    + interceptor.BackendPid + ".",
+                    killFailure);
             }
 
             await KillAsync(holder, interceptor.BackendPid).ConfigureAwait(false);
         }
 
-        private async Task KillIfKnownAsync(NpgsqlConnection holder)
+        private async Task<Exception?> KillKnownBackendAsync(NpgsqlConnection holder)
         {
             if (interceptor.BackendPid == 0)
             {
-                return;
+                return null;
             }
 
             try
             {
                 await KillAsync(holder, interceptor.BackendPid).ConfigureAwait(false);
+                return null;
             }
-            catch (NpgsqlException)
+            catch (Exception killFailure)
             {
-                // The guard is already failing the test. A second failure from the kill must
-                // not replace that message.
+                // The notice never arrived, so the test is already failing. The kill's own
+                // exception stays on that failure instead of being discarded.
+                return killFailure;
             }
         }
 

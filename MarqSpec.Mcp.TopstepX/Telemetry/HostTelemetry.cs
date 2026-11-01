@@ -75,6 +75,12 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A print stored from the market hub.</summary>
     public const string TapeTicksInstrument = "mcp.tape.ticks";
 
+    /// <summary>Latest-quote reads, by outcome. A stale read is still a read.</summary>
+    public const string QuoteReadsInstrument = "mcp.quote.reads";
+
+    /// <summary>Rows a latest-quote flush wrote or revised.</summary>
+    public const string QuoteWritesInstrument = "mcp.quote.writes";
+
     /// <summary>A market-hub connection transition.</summary>
     public const string TapeReconnectsInstrument = "mcp.tape.reconnects";
 
@@ -182,6 +188,8 @@ public sealed class HostTelemetry : IDisposable
     private readonly Histogram<double> _venueCallDuration;
     private readonly Counter<long> _gapFills;
     private readonly Counter<long> _tapeTicks;
+    private readonly Counter<long> _quoteReads;
+    private readonly Counter<long> _quoteWrites;
     private readonly Counter<long> _tapeReconnects;
     private readonly Counter<long> _tapeLeaseChanges;
     private readonly Counter<long> _recorderHealthReads;
@@ -236,6 +244,16 @@ public sealed class HostTelemetry : IDisposable
             TapeTicksInstrument,
             unit: "{print}",
             description: "Prints stored from the market hub, by instrument.");
+
+        _quoteReads = _meter.CreateCounter<long>(
+            QuoteReadsInstrument,
+            unit: "{read}",
+            description: "Latest-quote reads, by outcome. A stale row is returned and counted stale.");
+
+        _quoteWrites = _meter.CreateCounter<long>(
+            QuoteWritesInstrument,
+            unit: "{row}",
+            description: "Latest-quote rows a flush wrote or revised.");
 
         _tapeReconnects = _meter.CreateCounter<long>(
             TapeReconnectsInstrument,
@@ -492,6 +510,26 @@ public sealed class HostTelemetry : IDisposable
     /// </remarks>
     public void TapeTick(string symbol) =>
         _tapeTicks.Add(1, new KeyValuePair<string, object?>(SymbolTag, symbol));
+
+    /// <summary>Counts one latest-quote read.</summary>
+    /// <param name="outcome">What the read found, from <see cref="QuoteReadOutcome"/>.</param>
+    public void QuoteRead(string outcome)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(outcome);
+        _quoteReads.Add(1, new KeyValuePair<string, object?>(OutcomeTag, outcome));
+    }
+
+    /// <summary>Counts rows a latest-quote flush wrote or revised.</summary>
+    /// <param name="count">The statement's row count. Zero records nothing.</param>
+    public void QuoteRowsWritten(int count)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        _quoteWrites.Add(count, new KeyValuePair<string, object?>(OutcomeTag, QuoteReadOutcome.Written));
+    }
 
     /// <summary>Counts one market-hub connection transition.</summary>
     /// <param name="transition">Which way it moved, from <see cref="TapeTransition"/>.</param>
@@ -1160,6 +1198,28 @@ public static class RecorderHealthOutcome
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [Ok, Degraded, Unavailable, Timeout];
+}
+
+/// <summary>What a latest-quote read or flush did — the <c>outcome</c> tag on the quote instruments.</summary>
+public static class QuoteReadOutcome
+{
+    /// <summary>The table has no row for the contract.</summary>
+    public const string Miss = "quote_miss";
+
+    /// <summary>A row was returned and its receipt is past the stale threshold.</summary>
+    public const string Stale = "quote_stale";
+
+    /// <summary>A row was returned and its receipt is inside the stale threshold.</summary>
+    public const string Fresh = "quote_fresh";
+
+    /// <summary>The read named no venue or no contract.</summary>
+    public const string Refused = "quote_refused";
+
+    /// <summary>A flush wrote or revised rows.</summary>
+    public const string Written = "quote_written";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Miss, Stale, Fresh, Refused, Written];
 }
 
 /// <summary>Where a session conflict was seen — the <c>source</c> tag's closed vocabulary (gh#757).</summary>

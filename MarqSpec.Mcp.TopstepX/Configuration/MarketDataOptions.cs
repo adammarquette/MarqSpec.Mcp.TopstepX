@@ -166,6 +166,59 @@ public sealed partial class MarketDataOptions : IValidatableObject
     /// </remarks>
     public bool RecordTape { get; init; }
 
+    /// <summary>How often a latest-quote flush may run. Shipped as one second.</summary>
+    public static readonly TimeSpan DefaultLatestQuoteFlush = TimeSpan.FromSeconds(1);
+
+    /// <summary>The shortest <see cref="LatestQuoteFlush"/> startup will accept.</summary>
+    public static readonly TimeSpan MinLatestQuoteFlush = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>The longest <see cref="LatestQuoteFlush"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxLatestQuoteFlush = TimeSpan.FromSeconds(30);
+
+    /// <summary>A stored quote older than this is reported stale. Shipped as fifteen seconds.</summary>
+    public static readonly TimeSpan DefaultLatestQuoteStaleAfter = TimeSpan.FromSeconds(15);
+
+    /// <summary>The longest <see cref="LatestQuoteStaleAfter"/> startup will accept.</summary>
+    public static readonly TimeSpan MaxLatestQuoteStaleAfter = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Whether the recorder may upsert the latest quote for each contract it is already
+    /// listening to.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Off by default.</b> The writer runs only when the transport is HTTP, <see cref="RecordTape"/>
+    /// is on, and this switch is on. It uses the hub the tape recorder already connected. It does
+    /// not open a market hub of its own, and it does not touch the session-login gate. A server
+    /// process with <see cref="RecordTape"/> off never subscribes.
+    /// </para>
+    /// <para>
+    /// Quotes are coalesced to one row per contract and flushed at most once per
+    /// <see cref="LatestQuoteFlush"/>. The table is a cache, not a tape.
+    /// </para>
+    /// </remarks>
+    public bool RecordLatestQuotes { get; init; }
+
+    /// <summary>
+    /// The shortest gap between latest-quote flushes.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="MinLatestQuoteFlush"/> through <see cref="MaxLatestQuoteFlush"/>. Quotes that
+    /// arrive inside the gap collapse to the latest one per contract. A value outside that range
+    /// fails startup, naming <c>MarketData:LatestQuoteFlush</c>.
+    /// </remarks>
+    public TimeSpan LatestQuoteFlush { get; init; } = DefaultLatestQuoteFlush;
+
+    /// <summary>
+    /// A stored quote whose receipt is older than this is reported stale. The read still returns it.
+    /// </summary>
+    /// <remarks>
+    /// From <see cref="TimeSpan.Zero"/> through <see cref="MaxLatestQuoteStaleAfter"/>. Age is the
+    /// reader's clock minus <c>ReceivedAt</c>. A value outside that range fails startup, naming
+    /// <c>MarketData:LatestQuoteStaleAfter</c>.
+    /// </remarks>
+    public TimeSpan LatestQuoteStaleAfter { get; init; } = DefaultLatestQuoteStaleAfter;
+
     /// <summary>
     /// Whether a session conflict stops the recorder instead of reconnecting.
     /// </summary>
@@ -339,6 +392,22 @@ public sealed partial class MarketDataOptions : IValidatableObject
                 SectionName + ":SessionConflictBackoff must be from 00:00:00 through 00:02:00 inclusive. "
                 + "It was '" + SessionConflictBackoff.ToString("c", CultureInfo.InvariantCulture) + "'.",
                 [nameof(SessionConflictBackoff)]));
+        }
+
+        if (LatestQuoteFlush < MinLatestQuoteFlush || LatestQuoteFlush > MaxLatestQuoteFlush)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":LatestQuoteFlush must be from 00:00:00.200 through 00:00:30 inclusive. "
+                + "It was '" + LatestQuoteFlush.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(LatestQuoteFlush)]));
+        }
+
+        if (LatestQuoteStaleAfter < TimeSpan.Zero || LatestQuoteStaleAfter > MaxLatestQuoteStaleAfter)
+        {
+            results.Add(new ValidationResult(
+                SectionName + ":LatestQuoteStaleAfter must be from 00:00:00 through 00:10:00 inclusive. "
+                + "It was '" + LatestQuoteStaleAfter.ToString("c", CultureInfo.InvariantCulture) + "'.",
+                [nameof(LatestQuoteStaleAfter)]));
         }
 
         BarSessionCalendar calendar;

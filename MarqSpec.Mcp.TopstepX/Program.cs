@@ -950,6 +950,14 @@ public static class Program
         services.AddSingleton<TradeTapeRecorder>();
         services.AddHostedService(sp => sp.GetRequiredService<TradeTapeRecorder>());
 
+        // Latest quotes. The writer returns immediately unless HTTP, RecordTape, and
+        // RecordLatestQuotes are all on, and it never connects a hub of its own (gh#351).
+        // The reader is registered for the next tool slice. No tool calls it yet.
+        services.AddScoped<ILatestQuoteStore, LatestQuoteStore>();
+        services.AddScoped<LatestQuoteReader>();
+        services.AddSingleton<LatestQuoteWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<LatestQuoteWriter>());
+
         // Indicator warmup. Same shape: HTTP and an explicit switch, both. Always registered
         // so the container does not change with MarketData__WarmIndicators; ExecuteAsync
         // returns immediately unless the transport is HTTP and the switch is on. The

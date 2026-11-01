@@ -84,6 +84,9 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
     /// <summary>Append-only ledger of every trading attempt (ADR-0024 §5, gh#709).</summary>
     public DbSet<TradingAuditLogRecord> TradingAuditLog => Set<TradingAuditLogRecord>();
 
+    /// <summary>The latest quote per contract. The recorder upserts it; a read does not open a hub.</summary>
+    public DbSet<LatestQuoteRecord> LatestQuotes => Set<LatestQuoteRecord>();
+
     /// <inheritdoc />
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {
@@ -243,6 +246,22 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
                 v.Period,
                 v.BucketStart,
             });
+        });
+
+        modelBuilder.Entity<LatestQuoteRecord>(entity =>
+        {
+            entity.ToTable("LatestQuotes");
+            entity.HasKey(q => new { q.Venue, q.ContractId });
+
+            entity.Property(q => q.Venue).HasMaxLength(64);
+            entity.Property(q => q.Instrument).HasMaxLength(32);
+            entity.Property(q => q.ContractId).HasMaxLength(64);
+            entity.Property(q => q.Bid).HasColumnType(PriceColumnType);
+            entity.Property(q => q.Ask).HasColumnType(PriceColumnType);
+            entity.Property(q => q.Last).HasColumnType(PriceColumnType);
+            entity.Property(q => q.Volume).HasColumnType(PriceColumnType);
+
+            entity.HasIndex(q => q.Instrument);
         });
 
         modelBuilder.Entity<TradeRecord>(entity =>

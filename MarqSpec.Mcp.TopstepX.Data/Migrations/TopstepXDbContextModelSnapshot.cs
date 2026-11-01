@@ -212,6 +212,46 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.ToTable("IndicatorValues", (string)null);
                 });
 
+            modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.LatestQuoteRecord", b =>
+                {
+                    b.Property<string>("Venue")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ContractId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<decimal>("Ask")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.Property<decimal>("Bid")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.Property<string>("Instrument")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<decimal>("Last")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.Property<DateTimeOffset?>("QuoteTimeUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset>("ReceivedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal>("Volume")
+                        .HasColumnType("numeric(18,8)");
+
+                    b.HasKey("Venue", "ContractId");
+
+                    b.HasIndex("Instrument");
+
+                    b.ToTable("LatestQuotes", (string)null);
+                });
+
             modelBuilder.Entity("MarqSpec.Mcp.TopstepX.Data.Entities.ObservationRecord", b =>
                 {
                     b.Property<Guid>("Id")

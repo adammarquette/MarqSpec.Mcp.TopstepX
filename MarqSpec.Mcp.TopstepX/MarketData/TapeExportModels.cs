@@ -101,13 +101,17 @@ public sealed record TapeExportStoredFile(
 /// <param name="CoverageRows">Closed coverage rows across contracts.</param>
 /// <param name="FootprintRows">Footprint rows across instruments.</param>
 /// <param name="Files">The files that verified, or empty when they did not.</param>
+/// <param name="ExportedAtUtc">
+/// Database <c>now()</c> inside the export snapshot. Null when this result was not just written.
+/// </param>
 public sealed record TapeExportVerification(
     bool Verified,
     string Reason,
     int TradeRows,
     int CoverageRows,
     int FootprintRows,
-    IReadOnlyList<TapeExportStoredFile>? Files = null);
+    IReadOnlyList<TapeExportStoredFile>? Files = null,
+    DateTimeOffset? ExportedAtUtc = null);
 
 /// <summary>Counts from one export or import pass. The pass does not delete local rows.</summary>
 /// <param name="DaysExported">Days whose files verified.</param>

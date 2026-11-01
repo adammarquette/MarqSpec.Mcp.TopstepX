@@ -49,6 +49,21 @@ public sealed class TapeExportWorkerTests
     }
 
     [Fact]
+    public async Task ExecuteAsync_WhenTheHostStops_DoesNotExport()
+    {
+        ScriptedPass pass = new();
+        FakeTimeProvider clock = new(_before);
+        TapeExportWorker worker = Worker(pass, McpTransport.Http, enabled: true, clock, leaseHeld: true);
+
+        await worker.StartAsync(CancellationToken.None);
+        await WaitUntilArmed(worker, 1);
+        await worker.StopAsync(CancellationToken.None);
+
+        pass.Exports.Should().Be(0);
+        worker.ExecuteTask!.IsFaulted.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task ExecuteAsync_WhenTheScheduleArrivesAndTheLeaseIsHeld_ExportsOnce()
     {
         ScriptedPass pass = new();

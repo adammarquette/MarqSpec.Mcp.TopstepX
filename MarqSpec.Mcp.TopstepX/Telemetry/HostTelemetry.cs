@@ -124,6 +124,15 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A Drive upload of one export file (gh#755).</summary>
     public const string TapeUploadsInstrument = "mcp.tape.uploads";
 
+    /// <summary>Trade rows a retention pass removed (gh#763). Untagged.</summary>
+    public const string TapePrunedInstrument = "mcp.tape.pruned";
+
+    /// <summary>Days a retention pass left because no uploaded trades receipt exists.</summary>
+    public const string TapePruneSkippedInstrument = "mcp.tape.prune.skipped";
+
+    /// <summary>A retention pass that threw. Untagged.</summary>
+    public const string TapePruneFailuresInstrument = "mcp.tape.prune.failures";
+
     /// <summary>Which cache-aside series a read was of. Values: <see cref="CacheSeries"/>.</summary>
     public const string SeriesTag = "series";
 
@@ -197,6 +206,9 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _tapeExports;
     private readonly Histogram<double> _tapeExportDuration;
     private readonly Counter<long> _tapeUploads;
+    private readonly Counter<long> _tapePruned;
+    private readonly Counter<long> _tapePruneSkipped;
+    private readonly Counter<long> _tapePruneFailures;
 
     /// <summary>Creates the meter and the activity source.</summary>
     /// <param name="logger">Optional. A bookkeeping failure logs one constant line through it.</param>
@@ -305,6 +317,21 @@ public sealed class HostTelemetry : IDisposable
             TapeUploadsInstrument,
             unit: "{upload}",
             description: "Drive uploads of one export file, by outcome, operation, and reason.");
+
+        _tapePruned = _meter.CreateCounter<long>(
+            TapePrunedInstrument,
+            unit: "{row}",
+            description: "Trade rows a retention pass removed. Untagged. Zero records nothing.");
+
+        _tapePruneSkipped = _meter.CreateCounter<long>(
+            TapePruneSkippedInstrument,
+            unit: "{day}",
+            description: "Days left because no uploaded trades receipt exists. Untagged.");
+
+        _tapePruneFailures = _meter.CreateCounter<long>(
+            TapePruneFailuresInstrument,
+            unit: "{failure}",
+            description: "Retention passes that threw. Untagged.");
     }
 
     /// <summary>
@@ -626,6 +653,33 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Records how long one export or import pass took.</summary>
     /// <param name="seconds">Elapsed seconds. Not tagged: one series for the pass, not one per day.</param>
     public void TapeExportDuration(double seconds) => _tapeExportDuration.Record(seconds);
+
+    /// <summary>Counts trade rows one retention pass removed.</summary>
+    /// <param name="rows">Rows removed. Zero records nothing, so a quiet pass is not a series.</param>
+    public void TapePruned(long rows)
+    {
+        if (rows <= 0)
+        {
+            return;
+        }
+
+        _tapePruned.Add(rows);
+    }
+
+    /// <summary>Counts days left because no uploaded trades receipt exists.</summary>
+    /// <param name="days">Day and instrument pairs. Zero records nothing.</param>
+    public void TapePruneSkipped(int days)
+    {
+        if (days <= 0)
+        {
+            return;
+        }
+
+        _tapePruneSkipped.Add(days);
+    }
+
+    /// <summary>Counts one retention pass that threw.</summary>
+    public void TapePruneFailed() => _tapePruneFailures.Add(1);
 
     /// <summary>Counts one Drive upload outcome.</summary>
     /// <param name="outcome">What happened, from <see cref="TapeUploadOutcome"/>.</param>

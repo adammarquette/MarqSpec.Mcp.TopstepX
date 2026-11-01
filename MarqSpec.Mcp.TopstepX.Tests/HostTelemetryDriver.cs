@@ -231,6 +231,13 @@ internal static class HostTelemetryDriver
             return Resolution;
         }
 
+        if (parameter.ParameterType == typeof(long))
+        {
+            // TapePruned takes the row count as a long. Zero is not recorded, so the drive uses a
+            // positive value, the same one the int counts use.
+            return (long)Resolution;
+        }
+
         if (parameter.ParameterType == typeof(double))
         {
             return (double)Resolution;

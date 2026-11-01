@@ -29,8 +29,10 @@ bars. The driver's window is 5,000 bars. The walk stops at the sim-tier edges ab
 `VenueRequestPacer` keeps one queue. Before every decision it drops rows whose window has
 closed. Live and released backfill share that queue, so the two together stay inside 50 history
 requests in any 30 seconds. A live read therefore waits behind backfill only for requests already
-sent, and that wait is at most 20. Backfill will not book a new slot while a live read is
-waiting, and it will not take more than 20 slots in the window. A future backfill time is not
+sent, and that wait is at most those 20 requests, so at most one window. Backfill will not book
+a new slot while a live read is waiting, and it will not take more than 20 slots in the window.
+While live reads keep waiting, backfill does not book, so a busy tool can hold the pass back
+for as long as those reads continue. That starvation is the yield. A future backfill time is not
 inserted into the queue.
 
 Empty answers stay on the cache's rule. Within 2 days they expire after 15 minutes. Older empty

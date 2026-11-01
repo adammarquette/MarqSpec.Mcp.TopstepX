@@ -342,6 +342,22 @@ NAMED='[quotes-recorded-unread]' expect reject template quotes-recorded-unread \
 expect accept template quotes-off-together \
   'MarketData__GetQuoteEnabled: "true"' 'MarketData__GetQuoteEnabled: "false"' \
   'MarketData__RecordLatestQuotes: "true"' 'MarketData__RecordLatestQuotes: "false"'
+expect accept template quotes-both-on \
+  'MarketData__GetQuoteEnabled: "true",' 'MarketData__GetQuoteEnabled: "true",' \
+  'MarketData__RecordLatestQuotes: "true",' 'MarketData__RecordLatestQuotes: "true",'
+NAMED='[quote-switch]' expect reject template get-quote-enabled-true-word \
+  'MarketData__GetQuoteEnabled: "true"' 'MarketData__GetQuoteEnabled: "True"'
+NAMED='[quote-switch]' expect reject template get-quote-enabled-padded \
+  'MarketData__GetQuoteEnabled: "true"' 'MarketData__GetQuoteEnabled: " true"'
+NAMED='[quote-switch]' expect reject template get-quote-enabled-shared-ref \
+  'MarketData__GetQuoteEnabled: "true",' 'MarketData__GetQuoteEnabled: ctx.shared.PROJECTX_DATA_TIER,'
+NAMED='[quote-switch]' expect reject template recorder-quotes-true-word \
+  'MarketData__RecordLatestQuotes: "true"' 'MarketData__RecordLatestQuotes: "True"'
+NAMED='[quote-switch]' expect reject template recorder-get-quote-true-word \
+  'MarketData__RecordLatestQuotes: "true",' 'MarketData__RecordLatestQuotes: "true",
+      MarketData__GetQuoteEnabled: "True",'
+NAMED='[quotes-recorded-unread]' expect reject template get-quote-enabled-removed \
+  'MarketData__GetQuoteEnabled: "true",' ''
 expect reject template recorder-replicas-3 'replicas: 1,
     deploy: {
       ...RESTART,' 'replicas: 3,

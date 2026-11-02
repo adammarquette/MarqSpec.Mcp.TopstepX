@@ -99,11 +99,15 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A renewal or login that was refused (gh#757).</summary>
     public const string SessionRenewalRefusalsInstrument = "mcp.session.renewal_refusals";
 
+    /// <summary>A tool call refused for its arguments (gh#984).</summary>
+    public const string ToolArgumentRefusalsInstrument = "mcp.tool.argument_refusals";
+
     /// <summary>A held session that was opened for a recovery login (gh#757).</summary>
     public const string SessionRenewalReopensInstrument = "mcp.session.renewal_reopens";
 
     /// <summary>One budgeted recovery login (gh#757).</summary>
     public const string SessionRecoveryLoginsInstrument = "mcp.session.recovery_logins";
+
     /// <summary>
     /// A footprint or volume-profile read served with <c>live</c> false (gh#728).
     /// </summary>
@@ -240,6 +244,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _recorderHealthReads;
     private readonly Counter<long> _tapeSessionConflicts;
     private readonly Counter<long> _sessionRenewalRefusals;
+    private readonly Counter<long> _toolArgumentRefusals;
     private readonly Counter<long> _sessionRenewalReopens;
     private readonly Counter<long> _sessionRecoveryLogins;
     private readonly Counter<long> _tapeClosedReads;
@@ -341,6 +346,11 @@ public sealed class HostTelemetry : IDisposable
             SessionRenewalRefusalsInstrument,
             unit: "{refusal}",
             description: "Held-session renewals and logins that were refused, by why.");
+
+        _toolArgumentRefusals = _meter.CreateCounter<long>(
+            ToolArgumentRefusalsInstrument,
+            unit: "{refusal}",
+            description: "Tool calls refused for their arguments, by tool and by why.");
 
         _sessionRenewalReopens = _meter.CreateCounter<long>(
             SessionRenewalReopensInstrument,
@@ -753,6 +763,32 @@ public sealed class HostTelemetry : IDisposable
         span?.SetTag(ReasonTag, reason);
 
         _sessionRenewalRefusals.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+        return span;
+    }
+
+    /// <summary>
+    /// Records one tool-argument refusal. The tool name is the operation. Argument values are not tags.
+    /// </summary>
+    /// <param name="operation">The tool name.</param>
+    /// <param name="reason">
+    /// <see cref="ToolArgumentRefusal.Unexpected"/> or <see cref="ToolArgumentRefusal.Missing"/>.
+    /// </param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    public Activity? ToolArgumentRefusal(string operation, string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+
+        Activity? span = Activities.StartActivity("tool.argument_refusal", ActivityKind.Internal);
+        span?.SetTag(OperationTag, operation);
+        span?.SetTag(ReasonTag, reason);
+        span?.SetTag(ReplayTag, ExecutionWriteReplay.False);
+
+        _toolArgumentRefusals.Add(
+            1,
+            new KeyValuePair<string, object?>(OperationTag, operation),
+            new KeyValuePair<string, object?>(ReasonTag, reason),
+            new KeyValuePair<string, object?>(ReplayTag, ExecutionWriteReplay.False));
         return span;
     }
 
@@ -1476,6 +1512,19 @@ public static class ExecutionWriteReplay
 
     /// <summary>Every value.</summary>
     public static IReadOnlyList<string> All { get; } = [True, False];
+}
+
+/// <summary>Why a tool call was refused for its arguments (gh#984).</summary>
+public static class ToolArgumentRefusal
+{
+    /// <summary>A key the published schema does not list.</summary>
+    public const string Unexpected = "unexpected_argument";
+
+    /// <summary>A required key the call did not send.</summary>
+    public const string Missing = "missing_argument";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Unexpected, Missing];
 }
 
 /// <summary>Why a bar range was outstanding — the <c>reason</c> tag's closed vocabulary.</summary>

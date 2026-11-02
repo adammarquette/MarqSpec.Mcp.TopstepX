@@ -13,6 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Unknown tool arguments are refused** (gh#984). MCP SDK 2.3.0 ignores a key the tool does not declare.
+  It throws only when a required argument is missing, and that exception reaches the caller as
+  "An error occurred invoking '<tool>'." This server now refuses the call before the tool runs. An unknown
+  key is a validation error naming that key. That is a deliberate break: a call that bound before, because
+  the extra key was ignored, now fails. A missing required argument is named in the same error. A call that
+  uses only the listed arguments still runs.
+
 ## [0.7.3] - 2026-11-01
 
 ### Fixed

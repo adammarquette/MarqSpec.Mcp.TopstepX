@@ -4,6 +4,7 @@ using FluentAssertions;
 using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -120,7 +121,8 @@ public sealed class LatestQuoteSpanTests
             telemetry,
             store,
             (instrument, _) => Task.FromResult<string?>(instrument.Symbol == "ES" ? EsContract : null),
-            "projectx");
+            "projectx",
+            BarSessionCalendar.Parse(options.SessionCloseCentral, []));
         return (writer, hub, clock);
     }
 

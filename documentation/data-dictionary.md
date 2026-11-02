@@ -835,10 +835,13 @@ Index: `(Day, UploadState)` — the read that decision would make.
 | `Instrument` | `varchar(32)` | Normalised symbol. Not part of the key |
 | `Bid` | `numeric(18,8)` | Best bid |
 | `Ask` | `numeric(18,8)` | Best ask |
-| `Last` | `numeric(18,8)` | Last trade |
-| `Volume` | `bigint` | Session volume, in contracts. Zero is what the venue sent |
+| `Last` | `numeric(18,8)` | Last trade. Zero means unknown |
+| `LastAt` | `timestamptz` | Nullable. When `Last` was seen. Null when last is unknown |
+| `Volume` | `bigint` | Session volume from a quote. Zero means the quote did not carry it |
+| `VolumeAt` | `timestamptz` | Nullable. When `Volume` was seen |
+| `TradeDate` | `date` | Nullable. CME trade date of the event. Null when the market was shut |
 | `QuoteTimeUtc` | `timestamptz` | Nullable. The venue stamp, when the payload had one |
-| `ReceivedAt` | `timestamptz` | Database `clock_timestamp()` at upsert |
+| `ReceivedAt` | `timestamptz` | Database `clock_timestamp()` at upsert. Ages the bid and ask |
 
 The recorder upserts this row from the market hub it already holds, at most once per
 `MarketData__LatestQuoteFlush`, and only when that process is also recording tape.
@@ -847,8 +850,10 @@ server sets it false and sets `MarketData__GetQuoteEnabled` on, so the server li
 `get_quote` and does not open a hub to fill the table. A server that is not the recorder
 does not open a hub to fill the table. `ReceivedAt` is `clock_timestamp()`. A flush delay
 makes the stamp up to one flush gap later than the hub event. `get_quote` reads the newest
-row for the instrument, the contract the recorder subscribed, and reports that age. It does
-not search the venue. Until the new front ticks, that row is the old contract: the answer
+row for the instrument, the contract the recorder subscribed, and reports that age on the
+bid and ask. `LastAt` dates `last`. A carried last or volume is kept only for the same
+`TradeDate` and for 30 minutes. The read does not search the venue. Until the new front
+ticks, that row is the old contract: the answer
 names it and goes stale (gh#922, ADR-0016). A row older than
 `MarketData__LatestQuoteStaleAfter` is marked stale and still returned. The tool is
 registered only when `MarketData__GetQuoteEnabled` is on. The code default is off.

@@ -307,11 +307,17 @@ The front itself can be as late as `MarketData__LatestQuoteFrontRefresh` (fiftee
 If the old unsubscribe fails, both contracts can keep ticking and the answer can move
 between them (gh#922, ADR-0016).
 
-Returns `{ symbol, status, contractId, bid, ask, last, volume, quoteTimeUtc, ageSeconds, stale, reason }`.
-Prices are raw decimals in the contract's price units (`R-5.2`). `volume` is session volume, in
-contracts. `ageSeconds` is how long ago the database accepted the row. `stale` is true when that
-age is past `MarketData__LatestQuoteStaleAfter` (shipped as 15 seconds). A stale row is still
-returned.
+Returns `{ symbol, status, contractId, bid, ask, last, lastAt, volume, quoteTimeUtc, ageSeconds,
+stale, reason }`. Prices are raw decimals in the contract's price units (`R-5.2`). `ageSeconds`
+is how long ago the database accepted the bid and ask. It does not date `last` or `volume`.
+`stale` is that age past `MarketData__LatestQuoteStaleAfter` (shipped as 15 seconds). A stale
+row is still returned. `lastAt` is when the last trade or the quote that carried `last` was
+seen. A later bid or ask keeps that last only inside the same CME session
+(`BarSessionCalendar.TradeDateFor`) and for 30 minutes (`LatestQuoteCarry.MaxAge`). A zero bid
+or ask means that side is gone and is omitted. `volume` is session volume from a quote. It is
+omitted unless a quote carried it, which is the usual case: a trade print is not session volume
+(gh#983). A carried volume follows the same session and 30-minute limit. A price at or below
+zero is not treated as a last. Calendar spreads are outside this.
 
 `status` is `ok`, `missing`, `unknown_symbol`, or `failed`. `missing` means the symbol is served
 and the table has no row for it. `unknown_symbol` means the symbol is not served. `failed` means

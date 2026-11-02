@@ -13,6 +13,16 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// When this process accepted the quote. The store stamps the row with the database clock
 /// instead, and a read ages on that clock.
 /// </param>
+/// <param name="LastAt">When <paramref name="Last"/> was seen. Null when last is unknown.</param>
+/// <param name="VolumeAt">When <paramref name="Volume"/> was seen. Null when volume is unknown.</param>
+/// <param name="BookKnown">
+/// True when this event carried a bid and an ask, including a zero that means that side is gone.
+/// False for a trade, which does not replace the book.
+/// </param>
+/// <param name="TradeDate">
+/// The CME trade date of the event, from <c>BarSessionCalendar.TradeDateFor</c>. Null when the
+/// market was shut.
+/// </param>
 public sealed record LatestQuoteDraft(
     string Venue,
     string Instrument,
@@ -22,4 +32,8 @@ public sealed record LatestQuoteDraft(
     decimal Last,
     long Volume,
     DateTimeOffset? QuoteTimeUtc,
-    DateTimeOffset ReceivedAt);
+    DateTimeOffset ReceivedAt,
+    DateTimeOffset? LastAt = null,
+    DateTimeOffset? VolumeAt = null,
+    bool BookKnown = true,
+    DateOnly? TradeDate = null);

@@ -1,4 +1,5 @@
 using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
@@ -90,9 +91,162 @@ public sealed class LatestQuoteCoalescerTests
         coalescer.TakeAll(_now.AddMilliseconds(1)).Should().ContainSingle().Which.Bid.Should().Be(1m);
     }
 
+    [Fact]
+    public void SeenLast_IsKeptInsideTheSession_AndDroppedAtTheBoundaryOrMaxAge()
+    {
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        DateTimeOffset friday = MarketClock.FromMarket(new DateOnly(2026, 10, 30), new TimeOnly(15, 0));
+        DateOnly fridaySession = calendar.TradeDateFor(friday)!.Value;
+        DateTimeOffset reopen = MarketClock.FromMarket(new DateOnly(2026, 11, 1), new TimeOnly(17, 5));
+        DateOnly mondaySession = calendar.TradeDateFor(reopen)!.Value;
+        mondaySession.Should().NotBe(fridaySession);
+
+        LatestQuoteCoalescer coalescer = new();
+        coalescer.Offer(Draft(
+            bid: 10m,
+            at: friday,
+            last: 7650.5m,
+            volume: 100,
+            tradeDate: fridaySession));
+        coalescer.TakeAll(friday).Should().ContainSingle();
+
+        coalescer.Offer(Draft(
+            bid: 11m,
+            at: friday.AddMinutes(10),
+            last: 0,
+            volume: 0,
+            tradeDate: fridaySession));
+        LatestQuoteDraft kept = coalescer.TakeAll(friday.AddMinutes(10)).Should().ContainSingle().Subject;
+        kept.Bid.Should().Be(11m);
+        kept.Last.Should().Be(7650.5m);
+        kept.LastAt.Should().Be(friday);
+        kept.Volume.Should().Be(100L);
+        kept.VolumeAt.Should().Be(friday);
+
+        coalescer.Offer(Draft(
+            bid: 12m,
+            at: friday.AddMinutes(10) + LatestQuoteCarry.MaxAge + TimeSpan.FromMinutes(1),
+            last: 0,
+            volume: 0,
+            tradeDate: fridaySession));
+        LatestQuoteDraft expired = coalescer.TakeAll(friday.AddHours(1)).Should().ContainSingle().Subject;
+        expired.Bid.Should().Be(12m);
+        expired.Last.Should().Be(0);
+        expired.Volume.Should().Be(0);
+
+        coalescer = new();
+        coalescer.Offer(Draft(
+            bid: 10m,
+            at: friday,
+            last: 7650.5m,
+            volume: 40,
+            tradeDate: fridaySession));
+        coalescer.TakeAll(friday);
+        coalescer.Offer(Draft(
+            bid: 9m,
+            at: reopen,
+            last: 0,
+            volume: 0,
+            tradeDate: mondaySession));
+        LatestQuoteDraft nextSession = coalescer.TakeAll(reopen).Should().ContainSingle().Subject;
+        nextSession.Bid.Should().Be(9m);
+        nextSession.Last.Should().Be(0);
+        nextSession.Volume.Should().Be(0);
+    }
+
+    [Fact]
+    public void AnOlderTrade_DoesNotReplaceANewerLast_OrMoveTheVenueTimeBackwards()
+    {
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        DateTimeOffset at = MarketClock.FromMarket(new DateOnly(2026, 10, 30), new TimeOnly(15, 0));
+        DateOnly session = calendar.TradeDateFor(at)!.Value;
+        LatestQuoteCoalescer coalescer = new();
+        coalescer.Offer(Draft(bid: 10m, at: at.AddSeconds(5), last: 11m, tradeDate: session));
+        coalescer.TakeAll(at.AddSeconds(5));
+
+        coalescer.Offer(Trade(price: 9m, at: at, tradeDate: session));
+        LatestQuoteDraft row = coalescer.TakeAll(at.AddSeconds(6)).Should().ContainSingle().Subject;
+
+        row.Bid.Should().Be(10m);
+        row.Last.Should().Be(11m);
+        row.LastAt.Should().Be(at.AddSeconds(5));
+        row.QuoteTimeUtc.Should().Be(at.AddSeconds(5));
+    }
+
+    [Fact]
+    public void AQuoteWithAZeroBid_DropsThatSide_AndATradeDoesNot()
+    {
+        DateTimeOffset at = MarketClock.FromMarket(new DateOnly(2026, 10, 30), new TimeOnly(15, 0));
+        LatestQuoteCoalescer coalescer = new();
+        coalescer.Offer(Draft(bid: 10m, at: at, last: 10m));
+        coalescer.TakeAll(at);
+
+        coalescer.Offer(Trade(price: 10.25m, at: at.AddSeconds(1)));
+        coalescer.TakeAll(at.AddSeconds(1)).Should().ContainSingle().Which.Bid.Should().Be(10m);
+
+        coalescer.Offer(Draft(bid: 0m, at: at.AddSeconds(2), last: 0, ask: 10.5m));
+        LatestQuoteDraft book = coalescer.TakeAll(at.AddSeconds(2)).Should().ContainSingle().Subject;
+        book.Bid.Should().Be(0);
+        book.Ask.Should().Be(10.5m);
+    }
+
+    [Fact]
+    public void Forget_DropsAFlushedContract_AndClear_DropsTheHub()
+    {
+        DateTimeOffset at = MarketClock.FromMarket(new DateOnly(2026, 10, 30), new TimeOnly(15, 0));
+        LatestQuoteCoalescer coalescer = new();
+        coalescer.Offer(Draft(bid: 10m, at: at, last: 10m));
+        coalescer.TakeAll(at);
+        coalescer.Forget("projectx", "CON.F.US.EP.Z26");
+        coalescer.Offer(Draft(bid: 11m, at: at.AddSeconds(1), last: 0));
+        coalescer.TakeAll(at.AddSeconds(1)).Should().ContainSingle().Which.Last.Should().Be(0);
+
+        coalescer.Offer(Draft(bid: 12m, at: at.AddSeconds(2), last: 12m));
+        coalescer.TakeAll(at.AddSeconds(2));
+        coalescer.Clear();
+        coalescer.Offer(Draft(bid: 13m, at: at.AddSeconds(3), last: 0));
+        coalescer.TakeAll(at.AddSeconds(3)).Should().ContainSingle().Which.Last.Should().Be(0);
+    }
+
     private static LatestQuoteDraft Draft(
         decimal bid,
         DateTimeOffset at,
-        string contract = "CON.F.US.EP.Z26") =>
-        new("projectx", "ES", contract, bid, bid + 0.25m, bid, 1L, at, at);
+        string contract = "CON.F.US.EP.Z26",
+        decimal? last = null,
+        long volume = 1,
+        decimal? ask = null,
+        DateOnly? tradeDate = null)
+    {
+        decimal lastPrice = last ?? bid;
+        return new(
+            "projectx",
+            "ES",
+            contract,
+            bid,
+            ask ?? bid + 0.25m,
+            lastPrice,
+            volume,
+            at,
+            at,
+            lastPrice != 0 ? at : null,
+            volume != 0 ? at : null,
+            BookKnown: true,
+            tradeDate);
+    }
+
+    private static LatestQuoteDraft Trade(decimal price, DateTimeOffset at, DateOnly? tradeDate = null) =>
+        new(
+            "projectx",
+            "ES",
+            "CON.F.US.EP.Z26",
+            0,
+            0,
+            price,
+            0,
+            at,
+            at,
+            at,
+            VolumeAt: null,
+            BookKnown: false,
+            tradeDate);
 }

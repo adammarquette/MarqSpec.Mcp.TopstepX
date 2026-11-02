@@ -3,6 +3,7 @@ using System.Reflection;
 using FluentAssertions;
 using MarqSpec.Client.ProjectX.WebSocket;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Tests.Configuration;
@@ -16,6 +17,7 @@ using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol.Server;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
@@ -51,6 +53,68 @@ public sealed class QuoteToolsTests
         reads.LastMeasurement!.Tags[HostTelemetry.OutcomeTag].Should().Be(QuoteReadOutcome.Fresh);
         stopped.Should().ContainSingle(activity => activity.OperationName == "quote.read")
             .Which.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(QuoteReadOutcome.Fresh);
+    }
+
+    [Fact]
+    public async Task ACarriedLast_KeepsItsOwnTime_WhileAgeSecondsDatesTheBook()
+    {
+        using HostTelemetry telemetry = new();
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        DateTimeOffset now = MarketClock.FromMarket(new DateOnly(2026, 10, 30), new TimeOnly(15, 0));
+        DateOnly session = calendar.TradeDateFor(now)!.Value;
+        DateTimeOffset lastAt = now.AddMinutes(-10);
+        FakeTimeProvider clock = new(now);
+        QuoteTools tool = Tool(
+            telemetry,
+            Row(ageSeconds: 1, lastAt: lastAt, volumeAt: lastAt, tradeDate: session),
+            clock);
+
+        ToolPayloads.Quote quote = await tool.GetQuote("ES", CancellationToken.None);
+
+        quote.Bid.Should().Be(10m);
+        quote.Last.Should().Be(10m);
+        quote.LastAt.Should().Be(lastAt);
+        quote.Volume.Should().Be(4L);
+        quote.AgeSeconds.Should().Be(1);
+        quote.Stale.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ALastOlderThanTheCarryLimit_IsOmitted_WhileTheBookStays()
+    {
+        using HostTelemetry telemetry = new();
+        BarSessionCalendar calendar = BarSessionCalendar.Parse("16:00", []);
+        DateTimeOffset now = MarketClock.FromMarket(new DateOnly(2026, 10, 30), new TimeOnly(15, 0));
+        DateOnly session = calendar.TradeDateFor(now)!.Value;
+        FakeTimeProvider clock = new(now);
+        QuoteTools tool = Tool(
+            telemetry,
+            Row(
+                ageSeconds: 1,
+                lastAt: now - LatestQuoteCarry.MaxAge - TimeSpan.FromMinutes(1),
+                volumeAt: now - LatestQuoteCarry.MaxAge - TimeSpan.FromMinutes(1),
+                tradeDate: session),
+            clock);
+
+        ToolPayloads.Quote quote = await tool.GetQuote("ES", CancellationToken.None);
+
+        quote.Bid.Should().Be(10m);
+        quote.AgeSeconds.Should().Be(1);
+        quote.Last.Should().BeNull();
+        quote.LastAt.Should().BeNull();
+        quote.Volume.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AZeroBid_IsOmitted()
+    {
+        using HostTelemetry telemetry = new();
+        QuoteTools tool = Tool(telemetry, Row(ageSeconds: 1, bid: 0m));
+
+        ToolPayloads.Quote quote = await tool.GetQuote("ES", CancellationToken.None);
+
+        quote.Bid.Should().BeNull();
+        quote.Ask.Should().Be(10.25m);
     }
 
     [Fact]
@@ -234,22 +298,28 @@ public sealed class QuoteToolsTests
         return builder;
     }
 
-    private static QuoteTools Tool(HostTelemetry telemetry, LatestQuoteRow? row) =>
-        Tool(telemetry, new MemoryStore(row), NullLogger<LatestQuoteReader>.Instance);
+    private static QuoteTools Tool(
+        HostTelemetry telemetry,
+        LatestQuoteRow? row,
+        TimeProvider? clock = null) =>
+        Tool(telemetry, new MemoryStore(row), NullLogger<LatestQuoteReader>.Instance, clock);
 
     private static QuoteTools Tool(HostTelemetry telemetry, ILatestQuoteStore store) =>
-        Tool(telemetry, store, NullLogger<LatestQuoteReader>.Instance);
+        Tool(telemetry, store, NullLogger<LatestQuoteReader>.Instance, clock: null);
 
     private static QuoteTools Tool(
         HostTelemetry telemetry,
         ILatestQuoteStore store,
-        ILogger<LatestQuoteReader> logger)
+        ILogger<LatestQuoteReader> logger,
+        TimeProvider? clock = null)
     {
         MarketDataOptions options = QuoteOptions();
         LatestQuoteReader reader = new(
             store,
             new InstrumentRegistry(Options.Create(options)),
             Options.Create(options),
+            BarSessionCalendar.Parse(options.SessionCloseCentral, []),
+            clock ?? TimeProvider.System,
             telemetry,
             logger);
         return new QuoteTools(reader);
@@ -265,18 +335,28 @@ public sealed class QuoteToolsTests
         LatestQuoteStaleAfter = TimeSpan.FromSeconds(15),
     };
 
-    private static LatestQuoteRow Row(double ageSeconds) =>
+    private static LatestQuoteRow Row(
+        double ageSeconds,
+        decimal bid = 10m,
+        decimal last = 10m,
+        long volume = 4,
+        DateTimeOffset? lastAt = null,
+        DateTimeOffset? volumeAt = null,
+        DateOnly? tradeDate = null) =>
         new(
             "test",
             "ES",
             Contract,
-            10m,
+            bid,
             10.25m,
-            10m,
-            4L,
+            last,
+            volume,
             new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero),
             new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero),
-            ageSeconds);
+            ageSeconds,
+            lastAt,
+            volumeAt,
+            tradeDate);
 
     private static ActivityListener Listen(List<Activity> into, ActivitySource source)
     {

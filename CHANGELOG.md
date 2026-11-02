@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`get_quote` does not invent a last or a volume** (gh#983). A bid or ask of zero is that side
+  gone. A zero last or volume is omitted. A trade fills `last` and `lastAt`. Volume stays omitted
+  unless a quote carries it, which is the usual case. A carried last or volume stops at the CME
+  session boundary and after 30 minutes, so a fresh `ageSeconds` does not date them. `ageSeconds`
+  dates the bid and ask.
+
 ## [0.7.3] - 2026-11-01
 
 ### Fixed

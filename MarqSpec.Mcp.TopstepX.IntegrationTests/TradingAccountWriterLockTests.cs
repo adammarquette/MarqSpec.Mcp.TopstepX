@@ -108,7 +108,9 @@ public sealed class TradingAccountWriterLockTests(SchemaFixture fixture)
     {
         await using NpgsqlConnection killer = new(_fixture.ConnectionString);
         await killer.OpenAsync();
-        await using NpgsqlCommand terminate = new("SELECT pg_terminate_backend(@pid)", killer);
+        // With a timeout, pg_terminate_backend waits for the backend to exit, and its locks with it
+        // (gh#995). Without one it returns once the signal is sent.
+        await using NpgsqlCommand terminate = new("SELECT pg_terminate_backend(@pid, 5000)", killer);
         terminate.Parameters.AddWithValue("pid", await BackendPidAsync());
         (await terminate.ExecuteScalarAsync()).Should().Be(true);
     }

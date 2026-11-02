@@ -86,7 +86,58 @@ public sealed class LatestQuoteWriterTests
         LatestQuoteDraft row = store.Batches[0].Should().ContainSingle().Subject;
         row.Bid.Should().Be(11m);
         row.Volume.Should().Be(4L);
+        row.Last.Should().Be(11m);
         Counted(writes, QuoteWriteOutcome.Written).Should().Be(1);
+
+        await writer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task ABidAskQuoteWithZeroLast_KeepsTheTradePrice_AndDoesNotInventVolume()
+    {
+        RecordingStore store = new();
+        (LatestQuoteWriter writer, FakeMarketHub hub, FakeTimeProvider clock) = BuildClock(
+            McpTransport.Http, recordTape: true, recordQuotes: true, store);
+        hub.SimulateMarketReconnect();
+
+        await writer.StartAsync(CancellationToken.None);
+        await WaitUntil(() => hub.PriceSubscriptionIds.Contains(EsContract));
+
+        hub.RaiseQuote(new PriceUpdate
+        {
+            ContractId = EsContract,
+            Symbol = "F.US.EP",
+            BestBid = 7650.5m,
+            BestAsk = 7650.75m,
+            LastPrice = 0m,
+            Volume = 0m,
+            Timestamp = new DateTime(2026, 11, 1, 15, 0, 0, DateTimeKind.Utc),
+        });
+        hub.RaiseTrade(new TradeUpdate
+        {
+            ContractId = EsContract,
+            Price = 7650.5m,
+            Volume = 2m,
+            Timestamp = new DateTime(2026, 11, 1, 15, 0, 1, DateTimeKind.Utc),
+        });
+        hub.RaiseQuote(new PriceUpdate
+        {
+            ContractId = EsContract,
+            Symbol = "F.US.EP",
+            BestBid = 7650.75m,
+            BestAsk = 7651m,
+            LastPrice = 0m,
+            Volume = 0m,
+            Timestamp = new DateTime(2026, 11, 1, 15, 0, 2, DateTimeKind.Utc),
+        });
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await WaitUntil(() => store.Batches.Count > 0);
+
+        LatestQuoteDraft row = store.Batches[0].Should().ContainSingle().Subject;
+        row.Bid.Should().Be(7650.75m);
+        row.Ask.Should().Be(7651m);
+        row.Last.Should().Be(7650.5m);
+        row.Volume.Should().Be(0L);
 
         await writer.StopAsync(CancellationToken.None);
     }

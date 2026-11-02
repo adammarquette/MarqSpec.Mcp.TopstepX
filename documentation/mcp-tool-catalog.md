@@ -309,8 +309,11 @@ between them (gh#922, ADR-0016).
 
 Returns `{ symbol, status, contractId, bid, ask, last, volume, quoteTimeUtc, ageSeconds, stale, reason }`.
 Prices are raw decimals in the contract's price units (`R-5.2`). `volume` is session volume, in
-contracts. `ageSeconds` is how long ago the database accepted the row. `stale` is true when that
-age is past `MarketData__LatestQuoteStaleAfter` (shipped as 15 seconds). A stale row is still
+contracts, taken from the quote. A bid or ask that is live while `lastPrice` or `volume` arrived
+as 0 omits that field: 0 is not a price and not a session volume (gh#983). The last trade on
+the hub fills `last` when the quote left it out. `ageSeconds` is how long ago the database
+accepted the row. `stale` is true when that age is past `MarketData__LatestQuoteStaleAfter`
+(shipped as 15 seconds). A stale row is still
 returned.
 
 `status` is `ok`, `missing`, `unknown_symbol`, or `failed`. `missing` means the symbol is served

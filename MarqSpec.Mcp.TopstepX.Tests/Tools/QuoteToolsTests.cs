@@ -54,6 +54,21 @@ public sealed class QuoteToolsTests
     }
 
     [Fact]
+    public async Task ALiveBidWithZeroLastAndVolume_OmitsThem()
+    {
+        using HostTelemetry telemetry = new();
+        QuoteTools tool = Tool(telemetry, Row(ageSeconds: 1, last: 0m, volume: 0));
+
+        ToolPayloads.Quote quote = await tool.GetQuote("ES", CancellationToken.None);
+
+        quote.Status.Should().Be(LatestQuoteStatus.Ok);
+        quote.Bid.Should().Be(10m);
+        quote.Ask.Should().Be(10.25m);
+        quote.Last.Should().BeNull();
+        quote.Volume.Should().BeNull();
+    }
+
+    [Fact]
     public async Task AStaleRow_IsStillReturned()
     {
         using HostTelemetry telemetry = new();
@@ -265,15 +280,15 @@ public sealed class QuoteToolsTests
         LatestQuoteStaleAfter = TimeSpan.FromSeconds(15),
     };
 
-    private static LatestQuoteRow Row(double ageSeconds) =>
+    private static LatestQuoteRow Row(double ageSeconds, decimal last = 10m, long volume = 4L) =>
         new(
             "test",
             "ES",
             Contract,
             10m,
             10.25m,
-            10m,
-            4L,
+            last,
+            volume,
             new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero),
             new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero),
             ageSeconds);

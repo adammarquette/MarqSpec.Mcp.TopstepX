@@ -227,6 +227,7 @@ public sealed class LatestQuoteWriter : BackgroundService
         }
 
         _hub.PriceUpdateReceived += OnPrice;
+        _hub.TradeUpdateReceived += OnTrade;
         _hub.ConnectionStatusChanged += OnConnectionStatusChanged;
     }
 
@@ -238,6 +239,7 @@ public sealed class LatestQuoteWriter : BackgroundService
         }
 
         _hub.PriceUpdateReceived -= OnPrice;
+        _hub.TradeUpdateReceived -= OnTrade;
         _hub.ConnectionStatusChanged -= OnConnectionStatusChanged;
     }
 
@@ -344,6 +346,7 @@ public sealed class LatestQuoteWriter : BackgroundService
             try
             {
                 await _hub.SubscribeToPriceUpdatesAsync(pair.Key, cancellationToken).ConfigureAwait(false);
+                await SubscribeTradesAsync(pair.Key, cancellationToken).ConfigureAwait(false);
                 NoteSubscribed(pair.Key);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -521,6 +524,7 @@ public sealed class LatestQuoteWriter : BackgroundService
                 {
                     await _hub.UnsubscribeFromPriceUpdatesAsync(contractId, cancellationToken)
                         .ConfigureAwait(false);
+                    await UnsubscribeTradesAsync(contractId, cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -639,10 +643,86 @@ public sealed class LatestQuoteWriter : BackgroundService
             update.ContractId,
             update.BestBid,
             update.BestAsk,
-            update.LastPrice,
-            volume,
+            update.LastPrice > 0 ? update.LastPrice : 0,
+            volume > 0 ? volume : 0,
             VenueTime(update),
             _clock.GetUtcNow()));
+    }
+
+    private void OnTrade(object? sender, TradeUpdate update)
+    {
+        if (string.IsNullOrWhiteSpace(update.ContractId) || update.Price <= 0)
+        {
+            return;
+        }
+
+        string? instrument;
+        lock (_sync)
+        {
+            if (!_instrumentByContract.TryGetValue(update.ContractId, out instrument))
+            {
+                return;
+            }
+        }
+
+        // GatewayQuote often leaves lastPrice and volume at 0 on a bid/ask tick.
+        // The trade's price is the last. Its size is one print, not session volume.
+        DateTimeOffset? when = update.Timestamp.Year >= 2000
+            ? ProjectXMapping.ToUtc(update.Timestamp)
+            : null;
+        _coalescer.Offer(new LatestQuoteDraft(
+            Volatile.Read(ref _venue) ?? FallbackVenueId,
+            instrument,
+            update.ContractId,
+            Bid: 0,
+            Ask: 0,
+            update.Price,
+            Volume: 0,
+            when,
+            _clock.GetUtcNow()));
+    }
+
+    private async Task SubscribeTradesAsync(string contractId, CancellationToken cancellationToken)
+    {
+        if (_hub is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _hub.SubscribeToTradeUpdatesAsync(contractId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "A latest-quote trade subscription did not finish.");
+        }
+    }
+
+    private async Task UnsubscribeTradesAsync(string contractId, CancellationToken cancellationToken)
+    {
+        if (_hub is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _hub.UnsubscribeFromTradeUpdatesAsync(contractId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "A latest-quote trade unsubscribe did not finish.");
+        }
     }
 
     private static bool TryVolume(decimal volume, out long contracts)
@@ -772,6 +852,7 @@ public sealed class LatestQuoteWriter : BackgroundService
             {
                 await _hub.UnsubscribeFromPriceUpdatesAsync(contractId, unsubscribe.Token)
                     .ConfigureAwait(false);
+                await UnsubscribeTradesAsync(contractId, unsubscribe.Token).ConfigureAwait(false);
             }
             catch (Exception ex)
             {

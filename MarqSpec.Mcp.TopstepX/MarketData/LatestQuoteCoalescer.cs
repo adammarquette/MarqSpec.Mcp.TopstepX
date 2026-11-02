@@ -11,6 +11,7 @@ public sealed class LatestQuoteCoalescer
 {
     private readonly object _gate = new();
     private readonly Dictionary<string, LatestQuoteDraft> _pending = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, LatestQuoteDraft> _seen = new(StringComparer.Ordinal);
     private DateTimeOffset? _lastFlush;
 
     /// <summary>Keeps <paramref name="quote"/> as the pending row for its contract.</summary>
@@ -20,7 +21,19 @@ public sealed class LatestQuoteCoalescer
         ArgumentNullException.ThrowIfNull(quote);
         lock (_gate)
         {
-            _pending[Key(quote)] = quote;
+            string key = Key(quote);
+            if (!_pending.TryGetValue(key, out LatestQuoteDraft? prior))
+            {
+                _seen.TryGetValue(key, out prior);
+            }
+
+            // A trade arrives without a bid. It must not invent a row of zeros.
+            if (prior is null && quote.Bid == 0 && quote.Ask == 0)
+            {
+                return;
+            }
+
+            _pending[key] = prior is { } kept ? Merge(kept, quote) : quote;
         }
     }
 
@@ -82,10 +95,29 @@ public sealed class LatestQuoteCoalescer
     private List<LatestQuoteDraft> TakeUnderLock(DateTimeOffset now)
     {
         List<LatestQuoteDraft> batch = [.. _pending.Values];
+        foreach (LatestQuoteDraft quote in batch)
+        {
+            _seen[Key(quote)] = quote;
+        }
+
         _pending.Clear();
         _lastFlush = now;
         return batch;
     }
+
+    /// <summary>
+    /// A zero last or volume on a later quote is a field the payload left out, not a new
+    /// price. Bid and ask of zero on a trade are the same. A positive value replaces.
+    /// </summary>
+    private static LatestQuoteDraft Merge(LatestQuoteDraft prior, LatestQuoteDraft next) =>
+        next with
+        {
+            Bid = next.Bid != 0 ? next.Bid : prior.Bid,
+            Ask = next.Ask != 0 ? next.Ask : prior.Ask,
+            Last = next.Last != 0 ? next.Last : prior.Last,
+            Volume = next.Volume != 0 ? next.Volume : prior.Volume,
+            QuoteTimeUtc = next.QuoteTimeUtc ?? prior.QuoteTimeUtc,
+        };
 
     private static string Key(LatestQuoteDraft quote) => quote.Venue + "\n" + quote.ContractId;
 }

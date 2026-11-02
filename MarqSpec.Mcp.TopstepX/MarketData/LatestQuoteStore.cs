@@ -83,8 +83,10 @@ public sealed class LatestQuoteStore(TopstepXDbContext database) : ILatestQuoteS
             "Instrument" = excluded."Instrument",
             "Bid" = excluded."Bid",
             "Ask" = excluded."Ask",
-            "Last" = excluded."Last",
-            "Volume" = excluded."Volume",
+            "Last" = CASE WHEN excluded."Last" <> 0 THEN excluded."Last" ELSE "LatestQuotes"."Last" END,
+            "Volume" = CASE
+                WHEN excluded."Volume" <> 0 THEN excluded."Volume"
+                ELSE "LatestQuotes"."Volume" END,
             "QuoteTimeUtc" = excluded."QuoteTimeUtc",
             "ReceivedAt" = excluded."ReceivedAt"
         WHERE "LatestQuotes"."ReceivedAt" <= excluded."ReceivedAt"

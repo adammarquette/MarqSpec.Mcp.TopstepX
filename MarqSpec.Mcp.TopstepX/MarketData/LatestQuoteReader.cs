@@ -160,14 +160,19 @@ public sealed class LatestQuoteReader
 
         bool stale = row.AgeSeconds > _market.LatestQuoteStaleAfter.TotalSeconds;
         Mark(span, stale ? QuoteReadOutcome.Stale : QuoteReadOutcome.Fresh);
+        // A live bid or ask with a zero last or volume is a quote that did not carry
+        // that field. Zero is not a price and not a session volume (gh#983).
+        bool priced = row.Bid != 0 || row.Ask != 0;
+        decimal? last = priced && row.Last == 0 ? null : row.Last;
+        long? volume = priced && row.Volume == 0 ? null : row.Volume;
         return new LatestQuoteReading(
             instrument.Symbol,
             LatestQuoteStatus.Ok,
             row.ContractId,
             row.Bid,
             row.Ask,
-            row.Last,
-            row.Volume,
+            last,
+            volume,
             row.QuoteTimeUtc,
             row.AgeSeconds,
             stale,

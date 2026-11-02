@@ -311,6 +311,19 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
         PriceUpdateReceived?.Invoke(this, update);
     }
 
+    /// <summary>Raises one trade when the contract is subscribed for prices.</summary>
+    /// <param name="update">The trade. <see cref="TradeUpdate.ContractId"/> selects the contract.</param>
+    public void RaiseTrade(TradeUpdate update)
+    {
+        if (string.IsNullOrWhiteSpace(update.ContractId)
+            || !PriceSubscriptionIds.Contains(update.ContractId))
+        {
+            return;
+        }
+
+        TradeUpdateReceived?.Invoke(this, update);
+    }
+
     public Task UnsubscribeFromPriceUpdatesAsync(
         string contractId,
         CancellationToken cancellationToken = default)

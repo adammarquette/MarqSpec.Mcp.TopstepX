@@ -93,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`get_quote` does not report a zero last or volume** (gh#983). A bid/ask quote that
+  leaves `lastPrice` and `volume` at 0 omits those fields. A later trade fills `last`.
+  A following quote does not wipe that last, and a zero volume does not replace a
+  stored session volume.
 - **A database outage on the trading gate refuses instead of throwing** (gh#958, ADR-0024).
   A connection failure, a command timeout, or a store exception before the send returns the
   fail-closed refusal. The writer-lock re-check still refuses on any non-fatal finalise fault,

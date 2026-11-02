@@ -17,7 +17,9 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// refused and is not sent. Queued writers do not stay lined up behind that wait. The Railway template
 /// still requires one server replica (gh#774); this lock is the gate, and that check is defence
 /// in depth. Account ids are not kept in a field: the session is the record of which locks are
-/// held, and closing it releases them.
+/// held. Disposing releases them with <c>pg_advisory_unlock_all()</c> before it closes the session,
+/// because a closed socket frees nothing until the backend exits, and that can come after dispose
+/// has returned (gh#995).
 /// </remarks>
 public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDisposable, IAsyncDisposable
 {
@@ -29,6 +31,8 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
 
     /// <summary>How long one lock statement may run. A stall refuses the write.</summary>
     public const int CommandTimeoutSeconds = 2;
+
+    private const string UnlockAllSql = "SELECT pg_advisory_unlock_all()";
 
     private readonly string _connectionString;
     private readonly ILogger<TradingAccountWriterLock> _logger;
@@ -155,10 +159,10 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
         return new MutexHold(_mutex);
     }
 
-    /// <summary>Closes the session. Session advisory locks drop with the connection.</summary>
+    /// <summary>Releases this session's locks on the server, then closes the session.</summary>
     public void Dispose() => CloseSession();
 
-    /// <summary>Closes the session. Session advisory locks drop with the connection.</summary>
+    /// <summary>Releases this session's locks on the server, then closes the session.</summary>
     public async ValueTask DisposeAsync()
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
@@ -170,6 +174,7 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
             }
 
             _disposed = true;
+            await ReleaseAllAsync().ConfigureAwait(false);
             await DisposeConnectionAsync().ConfigureAwait(false);
         }
         finally
@@ -189,6 +194,7 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
             }
 
             _disposed = true;
+            ReleaseAll();
             _connection?.Dispose();
             _connection = null;
         }
@@ -256,6 +262,50 @@ public sealed class TradingAccountWriterLock : ITradingAccountWriterLock, IDispo
                 exception,
                 "Trading writer lock could not be probed. The session dropped.");
             return null;
+        }
+    }
+
+    private async Task ReleaseAllAsync()
+    {
+        if (_connection is not { State: System.Data.ConnectionState.Open })
+        {
+            return;
+        }
+
+        try
+        {
+            await using NpgsqlCommand command = new(UnlockAllSql, _connection)
+            {
+                CommandTimeout = CommandTimeoutSeconds,
+            };
+            await command.ExecuteScalarAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is NpgsqlException or InvalidOperationException)
+        {
+            // The session is closed next either way, and the locks drop when its backend exits.
+            _logger.LogDebug(exception, "Trading writer lock could not release before closing its session.");
+        }
+    }
+
+    private void ReleaseAll()
+    {
+        if (_connection is not { State: System.Data.ConnectionState.Open })
+        {
+            return;
+        }
+
+        try
+        {
+            using NpgsqlCommand command = new(UnlockAllSql, _connection)
+            {
+                CommandTimeout = CommandTimeoutSeconds,
+            };
+            command.ExecuteScalar();
+        }
+        catch (Exception exception) when (exception is NpgsqlException or InvalidOperationException)
+        {
+            // The session is closed next either way, and the locks drop when its backend exits.
+            _logger.LogDebug(exception, "Trading writer lock could not release before closing its session.");
         }
     }
 

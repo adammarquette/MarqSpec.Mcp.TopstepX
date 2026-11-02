@@ -72,6 +72,11 @@ page against either**, so check it against the code, never against another docum
 
   A SqlState the server cannot classify is reported as unclassified, not as "probably retry".
 
+- **An unexpected argument is a validation error, and it names the argument.** A call that sends a name the
+  tool's schema does not list — `unit` on `get_latest_bars`, for example — comes back naming each unexpected
+  argument and the arguments that tool accepts (`symbol`, `resolutionMinutes`, `count` for that one). The
+  same filter covers every tool. A call that uses only the listed arguments is unchanged (gh#984).
+
   **A lost race is an error, not a quiet success.** The rows the loser collided on are in the store — the
   other writer committed them — but the loser's *whole* transaction rolled back and kept none of its own work.
   So the answer is "retry", and the retry is served from what the other writer committed. **A defect in this

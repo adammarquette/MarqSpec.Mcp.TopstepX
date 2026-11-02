@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Unknown tool arguments name themselves** (gh#984). A call that sends an argument the tool does not
+  accept returns a validation error naming that argument and the ones the tool accepts, on every tool.
+  A call that uses only the listed arguments is unchanged.
+
 ## [0.7.3] - 2026-11-01
 
 ### Fixed

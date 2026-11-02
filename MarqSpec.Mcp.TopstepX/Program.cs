@@ -1127,7 +1127,13 @@ public static class Program
         // author remembering a try/catch. A guard written into a tool covers that tool, which is how a
         // 23505 from two overlapping fills reached a caller of get_bars as a raw DbUpdateException while
         // the one method that translated anything sat two tools away.
-        server = server.WithRequestFilters(filters => filters.AddCallToolFilter(StoreFaultGuard.Filter));
+        // Store faults and unknown arguments are both one filter, so a tool added tomorrow is covered
+        // by having been registered. Unknown arguments are checked inside the store guard, before the tool.
+        server = server.WithRequestFilters(filters =>
+        {
+            filters.AddCallToolFilter(StoreFaultGuard.Filter);
+            filters.AddCallToolFilter(UnknownToolArgumentGuard.Filter);
+        });
 
         if (mcp.Transport == McpTransport.Http)
         {

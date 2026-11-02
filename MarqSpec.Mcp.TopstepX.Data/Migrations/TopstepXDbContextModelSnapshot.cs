@@ -507,10 +507,23 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<DateTimeOffset>("HeartbeatAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool?>("HubConnected")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool?>("Listening")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("OwnerId")
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<string>("StopReason")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("StoppedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Venue", "Instrument");
 

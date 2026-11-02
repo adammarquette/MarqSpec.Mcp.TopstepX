@@ -93,6 +93,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`get_recorder_health` reads the recorder's hub state** (gh#869). The server process
+  does not record, so its own holder is `NeverStarted`. `feedConnected` is true only when
+  the recorder has written that its hub is connected and its heartbeat or last tick is
+  within 90 seconds. A lease held while the hub is reconnecting is `Reconnecting`. A
+  released claim stays as a tombstone and is `Stopped`. An expired lease with no stop is
+  `Stopped`. No row stays `NeverStarted`. The process `feed` is the worst instrument.
 - **A database outage on the trading gate refuses instead of throwing** (gh#958, ADR-0024).
   A connection failure, a command timeout, or a store exception before the send returns the
   fail-closed refusal. The writer-lock re-check still refuses on any non-fatal finalise fault,

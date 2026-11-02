@@ -558,7 +558,10 @@ the newest contiguous run of one contract, and the reported window is that run, 
 | `Venue` `Instrument` | | PK |
 | `OwnerId` | `varchar(64)` | the holding process, new on every start |
 | `Generation` | `bigint` | concurrency token; bumped on acquire and takeover |
-| `AcquiredAt` `HeartbeatAt` `ExpiresAt` | `timestamptz` | |
+| `AcquiredAt` `HeartbeatAt` `ExpiresAt` | `timestamptz` | A stop sets `ExpiresAt` to that instant |
+| `HubConnected` `Listening` | `boolean` nullable | The holder's last hub report. Null on older rows |
+| `StoppedAt` | `timestamptz` nullable | Set when the holder releases the claim |
+| `StopReason` | `varchar(64)` nullable | A tape reason name, or `fault`. Null on a kill |
 
 Not market data — the one table here that records something about *this system* rather than about
 the market. It exists because ADR-0016's rule that two subscribers on one tape double every volume
@@ -571,8 +574,10 @@ and does not fault its host (gh#404).
 whole-store claim would outlaw it. Only the overlap that doubles volume is refused.
 
 **A row is held until its `ExpiresAt` has passed**, whatever its holder is doing — a quiet holder
-is a holder, and an unreadable store refuses rather than granting. The absence of a row is the only
-free state: a clean stop deletes its own, so a redeploy does not wait out the expiry. The holder
+is a holder, and an unreadable store refuses rather than granting. A clean stop does not delete
+the row. It sets `ExpiresAt` and `StoppedAt` to the stop and writes `StopReason`, so the next
+start can take the claim at once and health can tell that stop from a recorder that never
+claimed. A kill leaves the row to expire with no `StopReason`. The holder
 renews at a third of the time to live, so two lost renewals are survivable. `Generation` makes the
 takeover of a lapsed row one conditional update, so two starts reclaiming it leave one holder and
 not two; the loser re-reads and is refused.

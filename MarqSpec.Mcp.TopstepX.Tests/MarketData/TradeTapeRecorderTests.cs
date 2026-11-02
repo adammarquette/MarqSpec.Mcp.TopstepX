@@ -2082,7 +2082,7 @@ public sealed class TradeTapeRecorderTests
     public async Task ARefusedRecorder_TakesOverWhenTheHolderReleases_SoARollingRedeployKeepsRecording()
     {
         // The rolling redeploy, end to end and overlapping. The new container starts while the old
-        // one is still draining and is refused; the old one then exits and deletes its row. If the
+        // one is still draining and is refused; the old one then exits and tombstones its row. If the
         // refusal were final, *nothing* would be recording from that moment on — permanently, and
         // a tape gap has no backfill. That is a worse outcome than the double-recording this card
         // set out to prevent, so a refusal is re-attempted on the renewal cadence (gh#404).
@@ -2112,7 +2112,7 @@ public sealed class TradeTapeRecorderTests
 
                 // The old container finishes draining and exits, releasing its claim.
                 await draining.StopAsync(CancellationToken.None);
-                await WaitUntil(() => LeaseRows(database).Count == 0);
+                await WaitUntil(() => LeaseRows(database).Any(row => row.StopReason != null));
 
                 arrivingClock.Advance(TapeLease.DefaultTimeToLive / 3);
 
@@ -2557,7 +2557,7 @@ public sealed class TradeTapeRecorderTests
             await WaitUntil(() => stoppingHub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
 
             await stopping.StopAsync(CancellationToken.None);
-            await WaitUntil(() => LeaseRows(database).Count == 0);
+            await WaitUntil(() => LeaseRows(database).Any(row => row.StopReason != null));
         }
 
         (TradeTapeRecorder next, FakeMarketHub nextHub, TopstepXDbContext nextDatabase, ServiceProvider nextServices, _) =

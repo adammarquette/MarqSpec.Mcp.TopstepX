@@ -232,11 +232,33 @@ public sealed class TapeLeaseTests
             await stopping.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
             await stopping.ReleaseAllAsync(CancellationToken.None);
 
-            Rows(database).Should().BeEmpty("the absence of a row is the free state");
+            TapeLeaseRecord tombstone = Rows(database).Should().ContainSingle().Subject;
+            tombstone.StopReason.Should().Be(nameof(TapeUnavailableReason.Stopped));
+            tombstone.ExpiresAt.Should().Be(_start);
+            tombstone.HubConnected.Should().BeFalse();
             stopping.Held.Should().BeEmpty();
 
             (await next.TryAcquireAsync(Venue, Instrument, CancellationToken.None))
                 .IsGranted.Should().BeTrue("a redeploy must not have to wait out a claim nobody holds");
+        }
+    }
+
+    [Fact]
+    public async Task AHubDrop_IsWrittenOntoTheLiveClaim_WithoutExtendingIt()
+    {
+        FakeTimeProvider clock = new(_start);
+        (TapeLease holder, TopstepXDbContext database, ServiceProvider services) = Build(clock);
+
+        await using (services)
+        await using (database)
+        {
+            await holder.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
+            await holder.WriteFeedAsync(_ => new TapeFeed(false, false), CancellationToken.None);
+
+            TapeLeaseRecord row = Rows(database).Should().ContainSingle().Subject;
+            row.HubConnected.Should().BeFalse();
+            row.Listening.Should().BeFalse();
+            row.ExpiresAt.Should().Be(_start + holder.TimeToLive);
         }
     }
 

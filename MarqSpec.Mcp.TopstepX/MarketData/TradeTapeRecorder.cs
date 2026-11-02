@@ -142,6 +142,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// subscribing to one tape, which doubles every volume (ADR-0016, gh#404).
     /// </summary>
     private readonly TapeLease _lease;
+    private bool _faultStop;
 
     /// <summary>True when this process holds at least one recorder claim.</summary>
     public bool HoldsRecorderLease => _lease.Held.Count > 0;
@@ -478,6 +479,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                         "The trade-tape recorder could not connect the market hub. It stays up and "
                         + "will try the handshake again, and it will not call loginKey.");
                     _tape.Set(TapeAvailability.Reconnecting());
+                    await PublishFeedAsync(stoppingToken).ConfigureAwait(false);
                     _tape.NoteHubConnectionLost();
                     if (_market.StopOnSessionConflict && _probe is not null)
                     {
@@ -548,6 +550,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
         catch (Exception exception)
         {
+            _faultStop = true;
             _tape.Set(TapeAvailability.Stopped());
             _logger.LogError(
                 exception,
@@ -564,11 +567,15 @@ public sealed class TradeTapeRecorder : BackgroundService
                 _loginGate.RestorePriorAutoReconnect(_socketOptions);
             }
 
-            // Every exit, not just the clean one: a claim this process is no longer recording
-            // under would otherwise make the next start wait out the whole expiry for nothing.
+            // Every exit, not just the clean one. The row stays, expired at this instant, with
+            // the stop reason, so health can tell a stop from a recorder that never started.
+            // The next start can take the claim at once because the expiry has passed.
             try
             {
-                await _lease.ReleaseAllAsync(CancellationToken.None).ConfigureAwait(false);
+                string stopReason = _faultStop
+                    ? TapeLease.FaultStop
+                    : _tape.Value.Reason.ToString();
+                await _lease.ReleaseAllAsync(stopReason, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -701,7 +708,12 @@ public sealed class TradeTapeRecorder : BackgroundService
             TapeLeaseRenewal renewal;
             try
             {
-                renewal = await _lease.TryRenewAsync(venue, instrument, stoppingToken)
+                TapeAvailability tape = _tape.For(instrument);
+                TapeFeed feed = new(
+                    tape.Reason is TapeUnavailableReason.None
+                        or TapeUnavailableReason.ConnectedButNotSubscribed,
+                    tape.IsListening);
+                renewal = await _lease.TryRenewAsync(venue, instrument, feed, stoppingToken)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -1042,9 +1054,8 @@ public sealed class TradeTapeRecorder : BackgroundService
             _telemetry.TapeReconnect(TapeTransition.Disconnected);
             _tape.NoteHubConnectionLost();
             _ledger.CloseOpenRangesAt(_clock.GetUtcNow());
-            Enqueue(LifecycleWork.PersistCloses);
-
             _tape.Set(TapeAvailability.Reconnecting());
+            Enqueue(LifecycleWork.PersistCloses);
 
             if (_market.StopOnSessionConflict && _probe is not null)
             {
@@ -1097,8 +1108,12 @@ public sealed class TradeTapeRecorder : BackgroundService
                     case LifecycleWork.RestoreSubscriptions:
                         await RestoreSubscriptionsAsync(stoppingToken).ConfigureAwait(false);
                         break;
+                    case LifecycleWork.PublishFeed:
+                        await PublishFeedAsync(stoppingToken).ConfigureAwait(false);
+                        break;
                     case LifecycleWork.PersistCloses:
                         await _ledger.PersistPendingClosesAsync(stoppingToken).ConfigureAwait(false);
+                        await PublishFeedAsync(stoppingToken).ConfigureAwait(false);
                         break;
                     case LifecycleWork.ProbeSession:
                         await ProbeSessionAsync(stoppingToken).ConfigureAwait(false);
@@ -1159,6 +1174,35 @@ public sealed class TradeTapeRecorder : BackgroundService
             _logger.LogInformation(
                 "Restored trade subscriptions for {Count} contract(s). Connected is not listening.",
                 restored);
+        }
+
+        await PublishFeedAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task PublishFeedAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _lease.WriteFeedAsync(
+                instrument =>
+                {
+                    TapeAvailability tape = _tape.For(instrument);
+                    return new TapeFeed(
+                        tape.Reason is TapeUnavailableReason.None
+                            or TapeUnavailableReason.ConnectedButNotSubscribed,
+                        tape.IsListening);
+                },
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "The trade-tape recorder could not write its hub state onto the tape claim.");
         }
     }
 
@@ -1719,6 +1763,7 @@ public sealed class TradeTapeRecorder : BackgroundService
 
     private async Task ReprobeAfterBackoffAsync(CancellationToken cancellationToken)
     {
+        await PublishFeedAsync(cancellationToken).ConfigureAwait(false);
         if (ConflictArmed || _loginGate.StopLatched)
         {
             return;
@@ -1909,6 +1954,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     private enum LifecycleWork
     {
         RestoreSubscriptions,
+        PublishFeed,
         PersistCloses,
         ProbeSession,
         ReprobeAfterBackoff,

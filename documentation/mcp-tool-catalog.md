@@ -980,7 +980,10 @@ If the tape still produces no cell (a roll inside the bar, or prints that do not
 **refuses** rather than returning empty `cells`. **When this process is not the recorder** for that
 instrument, the closed window is aggregated from stored prints in memory and `live` is false
 (gh#728). Nothing is written. `reason` is a closed code (`listening`, `never_started`,
-`held_by_another_recorder`; the refusing states have codes too and still refuse). `live` true
+`held_by_another_recorder`, `reconnecting`, `connected_but_not_subscribed`, `stopped`,
+`claim_taken_over`, `claim_lapsed`, `stopped_for_session_conflict`;
+`recorded_elsewhere` is health-only, on `get_recorder_health`, and is not a refusal here).
+The refusing states still refuse. `live` true
 means this process is listening, not that the cells are current. A gap at the start, a cut at
 the end, a hole, or a roll sets `covered.narrowed`. That is the only short-window flag.
 `covered.end` is when the data ends. The ask is floored to the bar open before the ledger
@@ -1093,8 +1096,19 @@ cachedAtUtc?, ageMs?, tapeDaysKept?, barBackfill? }`.
 `stopReason` is a closed tag. Production exports no OTLP, so this field and the log line are
 what an operator sees.
 
-`feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
-subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
+`feedConnected` is true when this process's market-data hub is up — listening, or connected and
+not yet subscribed — or, when this process is not the recorder, when every configured instrument's
+lease says the hub is connected and either `HeartbeatAt` or the last tick is within 90 seconds
+(gh#869). A lease held while the hub is reconnecting is not connected: `feed` is `Reconnecting`
+and `listening` is false. `feed` is the worst instrument, not "any lease is live": one `Stopped`
+or `Reconnecting` instrument makes the process feed that reason and `feedConnected` false.
+`NeverStarted` is no row for that instrument. A released claim stays on `TapeLeases` with
+`StopReason` and `ExpiresAt` at the stop, and is `Stopped` (or `StoppedForSessionConflict` when
+that was the reason), not `NeverStarted`. An expired lease with no `StopReason` is a kill or a
+hang and is also `Stopped`. `RecordedElsewhere` means the other process is listening and fresh.
+The server clock is compared with the recorder's `HeartbeatAt` and `ExpiresAt`. A few seconds of
+skew sits inside the 90-second window; the same skew is stated for takeover on the lease.
+`hubReconnects` stays this process's count.
 
 `database` is `Available` or `Unavailable` from a live probe. That probe does not replace the startup
 `StoreAvailability` the other tools use, and a failure carries no connection target.

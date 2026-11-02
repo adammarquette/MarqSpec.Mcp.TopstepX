@@ -44,6 +44,13 @@ public enum TapeUnavailableReason
     /// instrument up (gh#404).
     /// </summary>
     ClaimLapsed = 8,
+
+    /// <summary>
+    /// This process is not the recorder. Another process holds a live tape lease, so the feed
+    /// is that recorder's (gh#869). Distinct from <see cref="NeverStarted"/>, which is no
+    /// recorder at all, and from <see cref="Stopped"/>, which is a recorder whose lease lapsed.
+    /// </summary>
+    RecordedElsewhere = 9,
 }
 
 /// <summary>

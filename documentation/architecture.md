@@ -1387,6 +1387,11 @@ and does not fault the host. Loading the files back with DuckDB or pandas is
 - **Recorder health is a read.** `get_recorder_health` and authenticated `GET /health/recorder` report whether
   the hub is up, the last stored print of each contract active in the elapsed session, `TapeCoverage` holes
   in that session, and a live database probe that does not replace the startup answer (gh#756, R-5.14).
+  A process that is not the recorder reads `TapeLease` instead of its own `NeverStarted` holder.
+  The recorder writes hub-connected and listening on that row, and on release leaves a tombstone
+  with the stop reason and `ExpiresAt` at the stop. Connected requires that flag and a heartbeat
+  or last tick inside 90 seconds. Reconnecting is not connected. The process `feed` is the worst
+  instrument (gh#869).
   `hubReconnects` counts a successful market-hub connect after a connection was lost or a
   connect attempt failed. A clean first connect is zero, and zero is a real count.
   `lastTickAgeSeconds` is the wall-clock `asOfUtc` minus `lastTickUtc`, clamped at zero, and

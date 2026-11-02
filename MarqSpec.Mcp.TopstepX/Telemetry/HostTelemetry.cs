@@ -1615,6 +1615,14 @@ public static class QuoteWriteOutcome
     /// <summary>A price unsubscribe did not finish. Not a store failure.</summary>
     public const string UnsubscribeFailed = "quote_unsubscribe_failed";
 
+    /// <summary>
+    /// The trade subscription for a quote did not finish. The price subscription still stands.
+    /// </summary>
+    public const string TradeSubscribeFailed = "quote_trade_subscribe_failed";
+
+    /// <summary>A trade unsubscribe for a quote did not finish.</summary>
+    public const string TradeUnsubscribeFailed = "quote_trade_unsubscribe_failed";
+
     /// <summary>The shutdown flush did not finish. Not a store failure during the loop.</summary>
     public const string ShutdownFailed = "quote_shutdown_failed";
 
@@ -1628,6 +1636,8 @@ public static class QuoteWriteOutcome
         Subscribed,
         VolumeRejected,
         UnsubscribeFailed,
+        TradeSubscribeFailed,
+        TradeUnsubscribeFailed,
         ShutdownFailed,
     ];
 }

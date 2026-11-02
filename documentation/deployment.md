@@ -103,7 +103,9 @@ nowhere today. Postgres write load is that one batch a second. `LatestQuotes` is
 a tape and it is not pruned.
 
 **Migration.** The Postgres service config does not change. The `LatestQuotes` table
-comes from migration `20261101034408_AddLatestQuotes`, which landed with gh#911. Both
+comes from migration `20261101034408_AddLatestQuotes`, which landed with gh#911.
+`LastAt`, `VolumeAt` and `TradeDate` are added by `20261102060628_AddLatestQuoteFieldTimes`
+(gh#983). Both
 processes apply migrations at startup (`MigrateAsync`, called from `Program` before the
 host listens). The promoted image must contain that migration and the reader. An older
 image ignores the new switches and does not create the table.

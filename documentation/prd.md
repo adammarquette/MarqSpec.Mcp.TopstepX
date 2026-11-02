@@ -612,8 +612,11 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   ([ADR-0017](adr/0017-one-tool-type-per-concern.md)) and the window caps refuse rather than truncate
   (`R-5.4`, `R-1.13`). See [ADR-0022](adr/0022-session-bars-derived-complete-or-absent.md) (gh#501, gh#496).
 - **R-5.14** **`get_recorder_health`** and **`GET /health/recorder`** return the same payload, and the HTTP
-  path stays behind the bearer gate (gh#756). `feedConnected` is true only when the market-data hub is up —
-  listening, or connected and not yet subscribed. `feed` is the process-wide `TapeUnavailableReason` name.
+  path stays behind the bearer gate (gh#756). `feedConnected` is true when this process's hub is up —
+  listening, or connected and not yet subscribed — or when this process is not the recorder and
+  another process holds a live tape lease (`RecordedElsewhere`, gh#869). `NeverStarted` is no
+  recorder at all. A lapsed lease on that process is `Stopped`: the recorder is down.
+  `feed` is a `TapeUnavailableReason` name.
   `database` is `Available` or `Unavailable` from a live probe that does not replace the startup
   `StoreAvailability` the other tools use. A probe that exceeds its short deadline is the same wire answer
   and a distinct `timeout` count; a caller who cancelled is neither. `contracts` lists each configured

@@ -81,6 +81,56 @@ public sealed class RecorderHealthToolTests
     }
 
     [Fact]
+    public async Task GetRecorderHealth_WhenThisProcessIsNotTheRecorder_AndALeaseIsLive_ReportsConnected()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday.AddSeconds(-1)));
+        fixture.Store.Ticks.Add(new ContractLastTick("NQ", Nq, _tuesday.AddSeconds(-2)));
+        fixture.Store.Coverage.Add(Open(_open, "ES", Es));
+        fixture.Store.Coverage.Add(Open(_open, "NQ", Nq));
+        fixture.Store.Leases.Add(new RecorderLease("ES", _tuesday.AddSeconds(-10), _tuesday.AddMinutes(1)));
+        fixture.Store.Leases.Add(new RecorderLease("NQ", _tuesday.AddSeconds(-10), _tuesday.AddMinutes(1)));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeTrue();
+        report.Feed.Should().Be(TapeUnavailableReason.RecordedElsewhere);
+        report.Contracts.Should().OnlyContain(row =>
+            row.Listening && row.Tape == TapeUnavailableReason.RecordedElsewhere);
+        report.Contracts.Should().OnlyContain(row =>
+            row.LastTickAgeSeconds > 0 && row.LastTickAgeSeconds < 3);
+        report.Gaps.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenTheRecorderLeaseHasLapsed_ReportsTheRecorderDown()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday.AddMinutes(-30)));
+        fixture.Store.Leases.Add(new RecorderLease("ES", _tuesday.AddMinutes(-5), _tuesday.AddSeconds(-1)));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeFalse();
+        report.Feed.Should().Be(TapeUnavailableReason.Stopped);
+        report.Contracts.Should().Contain(row =>
+            row.Symbol == "ES" && !row.Listening && row.Tape == TapeUnavailableReason.Stopped);
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenNoRecorderHasClaimedTheTape_StaysNeverStarted()
+    {
+        await using Fixture fixture = Fixture.Open();
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeFalse();
+        report.Feed.Should().Be(TapeUnavailableReason.NeverStarted);
+        report.Contracts.Should().OnlyContain(row =>
+            !row.Listening && row.Tape == TapeUnavailableReason.NeverStarted);
+    }
+
+    [Fact]
     public async Task GetRecorderHealth_WhenTheDatabaseAnswers_ReportsAvailable()
     {
         await using Fixture fixture = Fixture.Open();
@@ -773,6 +823,8 @@ public sealed class RecorderHealthToolTests
 
         public List<CoverageSlice> Coverage { get; } = [];
 
+        public List<RecorderLease> Leases { get; } = [];
+
         public int TapeDaysKept { get; set; }
 
         public void ReleaseProbe() => _release.TrySetResult();
@@ -831,5 +883,14 @@ public sealed class RecorderHealthToolTests
 
         public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
             Task.FromResult(TapeDaysKept);
+
+        public Task<IReadOnlyList<RecorderLease>> LeasesAsync(
+            IReadOnlyCollection<string> instruments,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<IReadOnlyList<RecorderLease>>(
+                Leases.Where(lease => instruments.Contains(lease.Instrument)).ToList());
+        }
     }
 }

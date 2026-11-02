@@ -93,6 +93,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`get_recorder_health` on the server reads the recorder's lease** (gh#869). The server
+  process does not record, so its own holder is `NeverStarted`. A live `TapeLease` is
+  `RecordedElsewhere` and `feedConnected`. A lapsed lease is `Stopped`. No lease stays
+  `NeverStarted`.
 - **A database outage on the trading gate refuses instead of throwing** (gh#958, ADR-0024).
   A connection failure, a command timeout, or a store exception before the send returns the
   fail-closed refusal. The writer-lock re-check still refuses on any non-fatal finalise fault,

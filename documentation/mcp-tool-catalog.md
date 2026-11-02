@@ -1093,8 +1093,13 @@ cachedAtUtc?, ageMs?, tapeDaysKept?, barBackfill? }`.
 `stopReason` is a closed tag. Production exports no OTLP, so this field and the log line are
 what an operator sees.
 
-`feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
-subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
+`feedConnected` is true when this process's market-data hub is up — listening, or connected and
+not yet subscribed — or when this process is not the recorder and another process holds a live
+tape lease (`RecordedElsewhere`, gh#869). `feed` is a `TapeUnavailableReason` name, not a
+sentence. `NeverStarted` means no recorder has claimed the tape. `Stopped` on a process that
+never started means a recorder's lease has lapsed. `RecordedElsewhere` means this process is
+not the recorder and the recorder's lease is still live. `hubReconnects` stays this process's
+count.
 
 `database` is `Available` or `Unavailable` from a live probe. That probe does not replace the startup
 `StoreAvailability` the other tools use, and a failure carries no connection target.

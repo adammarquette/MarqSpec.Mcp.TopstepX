@@ -30,9 +30,14 @@ public static class RecorderHealthReport
     /// <summary>One report.</summary>
     /// <param name="AsOfUtc">When the report was taken, UTC.</param>
     /// <param name="FeedConnected">
-    /// <see langword="true"/> when the hub is up: listening, or connected and not yet subscribed.
+    /// <see langword="true"/> when this process's hub is up, or when this process is not the
+    /// recorder and another process holds a live tape lease.
     /// </param>
-    /// <param name="Feed">The process-wide tape reason. Not a sentence.</param>
+    /// <param name="Feed">
+    /// The tape reason. <see cref="TapeUnavailableReason.RecordedElsewhere"/> is another process's
+    /// live lease. <see cref="TapeUnavailableReason.Stopped"/> after <c>NeverStarted</c> is a
+    /// lapsed lease. Not a sentence.
+    /// </param>
     /// <param name="Database">Whether the live probe connected.</param>
     /// <param name="Session">The elapsed session, or omitted when the calendar cannot name one.</param>
     /// <param name="Contracts">One row per configured symbol, plus each stored contract the probe could read.</param>

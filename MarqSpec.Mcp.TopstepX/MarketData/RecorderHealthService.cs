@@ -106,8 +106,6 @@ public sealed class RecorderHealthService(
     {
         DateTimeOffset asOf = _clock.GetUtcNow();
         TapeAvailability process = _tape.Value;
-        bool feedConnected = process.Reason is TapeUnavailableReason.None
-            or TapeUnavailableReason.ConnectedButNotSubscribed;
 
         ProductSession? open = ProductSessions.Containing(_calendar, asOf);
         ProductSession? named = open ?? ProductSessions.LatestClosed(_calendar, asOf);
@@ -119,6 +117,7 @@ public sealed class RecorderHealthService(
         Probe probe;
         IReadOnlyList<ContractLastTick> ticks = [];
         IReadOnlyList<CoverageSlice> slices = [];
+        IReadOnlyList<RecorderLease> leases = [];
         using CancellationTokenSource deadline = new();
         using ITimer timeout = _clock.CreateTimer(
             static state => ((CancellationTokenSource)state!).Cancel(),
@@ -132,12 +131,16 @@ public sealed class RecorderHealthService(
             try
             {
                 probe = await ProbeAsync(linked.Token).ConfigureAwait(false);
-                if (probe == Probe.Up && window is { } elapsed)
+                if (probe == Probe.Up)
                 {
-                    ticks = await _store.LastTicksAsync(symbols, elapsed.Start, elapsed.End, linked.Token)
-                        .ConfigureAwait(false);
-                    slices = await _store.CoverageAsync(symbols, elapsed.Start, elapsed.End, linked.Token)
-                        .ConfigureAwait(false);
+                    leases = await _store.LeasesAsync(symbols, linked.Token).ConfigureAwait(false);
+                    if (window is { } elapsed)
+                    {
+                        ticks = await _store.LastTicksAsync(symbols, elapsed.Start, elapsed.End, linked.Token)
+                            .ConfigureAwait(false);
+                        slices = await _store.CoverageAsync(symbols, elapsed.Start, elapsed.End, linked.Token)
+                            .ConfigureAwait(false);
+                    }
                 }
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -161,8 +164,38 @@ public sealed class RecorderHealthService(
         }
 
         bool databaseUp = probe == Probe.Up;
+        bool notThisProcess = process.Reason == TapeUnavailableReason.NeverStarted;
+        HashSet<string> liveLease = new(StringComparer.Ordinal);
+        HashSet<string> lapsedLease = new(StringComparer.Ordinal);
+        if (databaseUp && notThisProcess)
+        {
+            foreach (RecorderLease lease in leases)
+            {
+                if (lease.ExpiresAt > asOf)
+                {
+                    liveLease.Add(lease.Instrument);
+                }
+                else
+                {
+                    lapsedLease.Add(lease.Instrument);
+                }
+            }
+        }
+
+        // A live lease is the recorder process, which this one is not. A lapsed lease and no
+        // live one is that recorder down. No lease at all stays NeverStarted.
+        bool recordedElsewhere = liveLease.Count > 0;
+        bool recorderDown = notThisProcess && !recordedElsewhere && lapsedLease.Count > 0;
+        bool feedConnected = process.Reason is TapeUnavailableReason.None
+            or TapeUnavailableReason.ConnectedButNotSubscribed
+            || recordedElsewhere;
+        TapeUnavailableReason feed = recordedElsewhere
+            ? TapeUnavailableReason.RecordedElsewhere
+            : recorderDown
+                ? TapeUnavailableReason.Stopped
+                : process.Reason;
         IReadOnlyList<RecorderHealthReport.ContractStatus> contracts =
-            BuildContracts(ticks, slices, databaseUp, window, asOf);
+            BuildContracts(ticks, slices, databaseUp, window, asOf, liveLease, lapsedLease);
         IReadOnlyList<RecorderHealthReport.Gap>? gaps = databaseUp && named is { } reportedSession
             ? BuildGaps(reportedSession, asOf, slices, contracts)
             : null;
@@ -176,7 +209,7 @@ public sealed class RecorderHealthService(
         RecorderHealthReport.Report report = new(
             asOf,
             feedConnected,
-            process.Reason,
+            feed,
             databaseUp
                 ? RecorderHealthReport.StoreConnectivity.Available
                 : RecorderHealthReport.StoreConnectivity.Unavailable,
@@ -228,7 +261,9 @@ public sealed class RecorderHealthService(
         IReadOnlyList<CoverageSlice> slices,
         bool databaseUp,
         Window? window,
-        DateTimeOffset asOf)
+        DateTimeOffset asOf,
+        HashSet<string> liveLease,
+        HashSet<string> lapsedLease)
     {
         Dictionary<string, Dictionary<string, DateTimeOffset?>> bySymbol = new(StringComparer.Ordinal);
         foreach (InstrumentId instrument in _instruments.Instruments)
@@ -271,14 +306,15 @@ public sealed class RecorderHealthService(
         List<RecorderHealthReport.ContractStatus> rows = [];
         foreach ((string symbol, Dictionary<string, DateTimeOffset?> contracts) in bySymbol)
         {
-            TapeAvailability availability = _tape.For(symbol);
+            (bool listening, TapeUnavailableReason tapeReason) =
+                SymbolStatus(symbol, liveLease, lapsedLease);
             if (contracts.Count == 0)
             {
                 rows.Add(new RecorderHealthReport.ContractStatus(
                     symbol,
                     null,
-                    availability.IsListening,
-                    availability.Reason,
+                    listening,
+                    tapeReason,
                     null,
                     null));
                 continue;
@@ -289,8 +325,8 @@ public sealed class RecorderHealthService(
                 rows.Add(new RecorderHealthReport.ContractStatus(
                     symbol,
                     contractId,
-                    availability.IsListening,
-                    availability.Reason,
+                    listening,
+                    tapeReason,
                     lastTick,
                     TickAgeSeconds(asOf, lastTick)));
             }
@@ -302,6 +338,35 @@ public sealed class RecorderHealthService(
             return symbol != 0 ? symbol : CompareContractId(left.ContractId, right.ContractId);
         });
         return rows;
+    }
+
+    /// <summary>
+    /// This process's tape, unless it never started and the store has another recorder's lease.
+    /// A live lease is that recorder subscribed. A lapsed one, when no lease is still live, is
+    /// the recorder down. This process's own reason wins once it has started.
+    /// </summary>
+    private (bool Listening, TapeUnavailableReason Reason) SymbolStatus(
+        string symbol,
+        HashSet<string> liveLease,
+        HashSet<string> lapsedLease)
+    {
+        TapeAvailability local = _tape.For(symbol);
+        if (local.Reason != TapeUnavailableReason.NeverStarted)
+        {
+            return (local.IsListening, local.Reason);
+        }
+
+        if (liveLease.Contains(symbol))
+        {
+            return (true, TapeUnavailableReason.RecordedElsewhere);
+        }
+
+        if (lapsedLease.Contains(symbol))
+        {
+            return (false, TapeUnavailableReason.Stopped);
+        }
+
+        return (false, TapeUnavailableReason.NeverStarted);
     }
 
     private static double? TickAgeSeconds(DateTimeOffset asOf, DateTimeOffset? lastTick) =>

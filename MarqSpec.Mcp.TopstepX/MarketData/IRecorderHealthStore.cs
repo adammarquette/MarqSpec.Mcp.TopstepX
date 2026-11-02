@@ -17,6 +17,15 @@ public sealed record CoverageSlice(
     DateTimeOffset RangeStart,
     DateTimeOffset RangeEnd);
 
+/// <summary>One persisted tape claim. <see cref="ExpiresAt"/> is exclusive of a lapsed claim.</summary>
+/// <param name="Instrument">The normalised symbol.</param>
+/// <param name="HeartbeatAt">When the holder last renewed it, UTC.</param>
+/// <param name="ExpiresAt">When the claim lapses unless renewed, UTC.</param>
+public sealed record RecorderLease(
+    string Instrument,
+    DateTimeOffset HeartbeatAt,
+    DateTimeOffset ExpiresAt);
+
 /// <summary>
 /// The store reads a recorder-health report needs. One implementation talks to the database;
 /// tests supply the other.
@@ -74,4 +83,16 @@ public interface IRecorderHealthStore
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>How many such receipts are still waiting for a new export.</returns>
     Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Tape claims for the named instruments, live or lapsed. Empty when this store has none.
+    /// The default is empty, so a double that only scripts ticks still compiles.
+    /// </summary>
+    /// <param name="instruments">The configured symbols.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>One row per stored claim. The caller decides which expiry is still live.</returns>
+    Task<IReadOnlyList<RecorderLease>> LeasesAsync(
+        IReadOnlyCollection<string> instruments,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<RecorderLease>>([]);
 }

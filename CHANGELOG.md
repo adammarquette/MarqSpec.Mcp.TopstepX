@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-11-01
+
+### Fixed
+
+- **Production volume size** (gh#975). The template now states production's `postgres-data` as 51200 MB,
+  which is what Railway holds, so the promote plan no longer tries a destructive 51200 → 10240 shrink.
+  Staging stays 10240 MB.
+
 ## [0.7.2] - 2026-11-01
 
 ### Added
@@ -1446,7 +1454,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.3...HEAD
+[0.7.3]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.5.0...v0.7.0

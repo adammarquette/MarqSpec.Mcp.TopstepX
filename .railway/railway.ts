@@ -105,13 +105,16 @@ const PG_WAIT_TIMEOUT = 900;
 export default defineRailway((ctx) => {
   const production = ctx.environment === "production";
 
-  // PRODUCTION AND STAGING: the Postgres volume (10 GiB to start; growing is a non-destructive resize,
-  // shrinking is destructive). Staging got it on 2026-10-29 (gh#846, Adam's call): its recorded tape is meant
+  // PRODUCTION AND STAGING: the Postgres volume (growing is a non-destructive resize, shrinking is
+  // destructive). Production's was grown to 50 GiB outside the template, and the v0.7.2 promote plan then tried
+  // 51200 -> 10240 (run 41378278998), which the apply gate refused. So each size states what Railway holds:
+  // production 51200 MB, staging 10240 MB. Never lower either. Staging got it on 2026-10-29 (gh#846, Adam's call): its recorded tape is meant
   // to survive deploys and restarts. Backups and any tape export stay production-only. Every other
   // environment is DISPOSABLE: Postgres runs on the container's ephemeral storage, so each redeploy starts
   // empty. [pg-volume] enforces all three: production one, staging one, everything else none.
   const persistent = production || ctx.environment === "staging";
-  const pgdata = persistent ? volume("postgres-data", { sizeMB: 10240, region: PG_VOLUME_REGION }) : undefined;
+  const PG_VOLUME_SIZE_MB = production ? 51200 : 10240;
+  const pgdata = persistent ? volume("postgres-data", { sizeMB: PG_VOLUME_SIZE_MB, region: PG_VOLUME_REGION }) : undefined;
 
   const postgres = service("postgres", {
     source: image(POSTGRES_IMAGE),

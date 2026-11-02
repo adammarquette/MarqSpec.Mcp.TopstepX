@@ -120,10 +120,12 @@ one warning when that value is set and differs from the stamp, and logs nothing 
 [`check-deployment.sh`](../scripts/check-deployment.sh) `<url> X.Y.Z` passes when that stamp is the tag.
 
 **Production and staging keep the Postgres data; other environments are disposable.**
-- `production` and `staging` each require exactly one volume (`postgres-data`, 10 GiB, at
+- `production` and `staging` each require exactly one volume (`postgres-data`, at
   `/home/postgres/pgdata`). Staging's was added on 2026-10-29 (gh#846) so its recorded tape is
   meant to survive deploys and Postgres restarts; the first staging deploy after gh#846 checks that.
   Backups and the tape export stay production-only.
+- Volume sizes match what Railway holds: production `postgres-data` is 51200 MB (grown outside the
+  template), staging is 10240 MB. Shrinking a volume is destructive, so never lower either (gh#975).
 - A volume is a paid resource: Railway bills the storage actually used, $0.15 per GB per month
   ([pricing](https://docs.railway.com/reference/pricing/plans)), so a full 10 GiB costs about $1.50 a month.
 - `dev` and PR sandboxes have **no volume, no backups and no tape export**; every redeploy starts empty.

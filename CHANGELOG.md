@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Production volume size** (gh#975). The template now states production's `postgres-data` as 51200 MB,
+  which is what Railway holds, so the promote plan no longer tries a destructive 51200 → 10240 shrink.
+  Staging stays 10240 MB.
+
 ## [0.7.2] - 2026-11-01
 
 ### Added

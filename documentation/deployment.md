@@ -274,6 +274,8 @@ before any production deploy. Production deploys stay manual and need Adam's app
   ([docs](https://docs.railway.com/guides/logs#structured-logs)), and .NET's `json` formatter writes
   `Message`, so every entry showed blank. A plain line becomes the whole message. Every line is level
   `info` in Railway; filter by text such as `fail:` or `warn:`. The AWS path keeps `json` (ADR-0023).
+  EF Core's successful-command line (`Executed DbCommand`, event 20101) logs at Debug, so the recorder's
+  per-print inserts do not reach the console or the rate limit; failed commands still log `fail:`.
 - **Absent:** compose's `MarketData__*`, `Indicators__*`, `KeyLevels__*`, `Trading__Max*`,
   `Trading__DeniedSymbols`, `Trading__KillSwitchFile` and `Embeddings__*`, so code defaults apply.
 

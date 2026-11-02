@@ -2,16 +2,21 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 using MarqSpec.Mcp.TopstepX.Configuration;
+using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Embeddings;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Tools;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
 
@@ -85,6 +90,39 @@ public sealed class CompositionRootTests
             .Get(nameof(IEmbeddingProvider));
 
         options.ShouldRedactHeaderValue("Authorization").Should().BeTrue();
+    }
+
+    [Fact]
+    public void ASuccessfulStoreCommand_LogsAtDebug_SoTheRecorderDoesNotFloodTheConsole()
+    {
+        // The recorder writes one INSERT per print. At EF's default (Information) each one is an
+        // "Executed DbCommand" line, and on Railway that ran into the log rate limit and dropped up to
+        // ~439 lines a second. At Debug the host's Information minimum drops them before any provider.
+        using ServiceProvider provider = Build([], new McpOptions { Transport = McpTransport.Stdio });
+
+        using IServiceScope scope = provider.CreateScope();
+        WarningsConfiguration warnings = scope.ServiceProvider
+            .GetRequiredService<DbContextOptions<TopstepXDbContext>>()
+            .FindExtension<CoreOptionsExtension>()!
+            .WarningsConfiguration;
+
+        warnings.GetLevel(RelationalEventId.CommandExecuted).Should().Be(LogLevel.Debug);
+    }
+
+    [Fact]
+    public void AFailedStoreCommand_KeepsEfCoresOwnLevel()
+    {
+        // Only the success line moves. A failed command is the one the operator needs, so it is not
+        // overridden and still logs at EF's Error.
+        using ServiceProvider provider = Build([], new McpOptions { Transport = McpTransport.Stdio });
+
+        using IServiceScope scope = provider.CreateScope();
+        WarningsConfiguration warnings = scope.ServiceProvider
+            .GetRequiredService<DbContextOptions<TopstepXDbContext>>()
+            .FindExtension<CoreOptionsExtension>()!
+            .WarningsConfiguration;
+
+        warnings.GetLevel(RelationalEventId.CommandError).Should().BeNull();
     }
 
     [Fact]

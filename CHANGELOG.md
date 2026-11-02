@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **EF Core no longer logs every successful command**. `Executed DbCommand` (event 20101) now
+  logs at Debug instead of Information, so the recorder's per-print `INSERT INTO "Trades"` and quote upserts
+  stay out of the console. On Railway they hit the log rate limit and dropped up to ~439 lines a second.
+  Failed commands still log at Error. `Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Debug`
+  brings the lines back.
+
 ## [0.7.3] - 2026-11-01
 
 ### Fixed

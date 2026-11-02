@@ -1,3 +1,4 @@
+using System.Globalization;
 using MarqSpec.Mcp.TopstepX.Data;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -22,7 +23,11 @@ public sealed record LatestQuoteFront(string Venue, string ContractId);
 /// <param name="ReceivedAt">Database <c>clock_timestamp()</c> at upsert.</param>
 /// <param name="AgeSeconds">
 /// Seconds since <paramref name="ReceivedAt"/>, on the database clock, at least zero.
+/// This ages the bid and ask, not last or volume.
 /// </param>
+/// <param name="LastAt">When <paramref name="Last"/> was seen. Null when last is unknown.</param>
+/// <param name="VolumeAt">When <paramref name="Volume"/> was seen. Null when volume is unknown.</param>
+/// <param name="TradeDate">The CME trade date stored with the row. Null when the market was shut.</param>
 public sealed record LatestQuoteRow(
     string Venue,
     string Instrument,
@@ -33,7 +38,10 @@ public sealed record LatestQuoteRow(
     long Volume,
     DateTimeOffset? QuoteTimeUtc,
     DateTimeOffset ReceivedAt,
-    double AgeSeconds);
+    double AgeSeconds,
+    DateTimeOffset? LastAt = null,
+    DateTimeOffset? VolumeAt = null,
+    DateOnly? TradeDate = null);
 
 /// <summary>The latest-quote table. One upsert statement for a batch, then a read by contract.</summary>
 public interface ILatestQuoteStore
@@ -70,25 +78,109 @@ public sealed class LatestQuoteStore(TopstepXDbContext database) : ILatestQuoteS
 {
     private readonly TopstepXDbContext _database = database;
 
-    private const string UpsertSql = """
+    private static readonly string UpsertSql = """
         INSERT INTO "LatestQuotes" (
             "Venue", "ContractId", "Instrument", "Bid", "Ask", "Last", "Volume",
-            "QuoteTimeUtc", "ReceivedAt")
+            "QuoteTimeUtc", "ReceivedAt", "LastAt", "VolumeAt", "TradeDate")
         SELECT a.venue, a.contract_id, a.instrument, a.bid, a.ask, a.last_price, a.volume,
-               a.quote_time, clock_timestamp()
+               a.quote_time, clock_timestamp(), a.last_at, a.volume_at, a.trade_date
         FROM unnest(
-            @venues, @contracts, @instruments, @bids, @asks, @lasts, @volumes, @quoteTimes)
-            AS a(venue, contract_id, instrument, bid, ask, last_price, volume, quote_time)
+            @venues, @contracts, @instruments, @bids, @asks, @lasts, @volumes, @quoteTimes,
+            @lastAts, @volumeAts, @tradeDates)
+            AS a(
+                venue, contract_id, instrument, bid, ask, last_price, volume, quote_time,
+                last_at, volume_at, trade_date)
         ON CONFLICT ("Venue", "ContractId") DO UPDATE SET
             "Instrument" = excluded."Instrument",
             "Bid" = excluded."Bid",
             "Ask" = excluded."Ask",
-            "Last" = excluded."Last",
-            "Volume" = excluded."Volume",
-            "QuoteTimeUtc" = excluded."QuoteTimeUtc",
+            "Last" = CASE
+                WHEN excluded."Last" <> 0
+                    AND (
+                        "LatestQuotes"."LastAt" IS NULL
+                        OR excluded."LastAt" >= "LatestQuotes"."LastAt")
+                    THEN excluded."Last"
+                WHEN excluded."Last" <> 0
+                    THEN "LatestQuotes"."Last"
+                WHEN "LatestQuotes"."LastAt" IS NOT NULL
+                    AND "LatestQuotes"."TradeDate" IS NOT NULL
+                    AND "LatestQuotes"."TradeDate" = excluded."TradeDate"
+                    AND "LatestQuotes"."LastAt"
+                        >= excluded."ReceivedAt" - make_interval(secs => 
+        """ + CarrySeconds + """
+                    )
+                    THEN "LatestQuotes"."Last"
+                ELSE 0
+            END,
+            "Volume" = CASE
+                WHEN excluded."Volume" <> 0
+                    AND (
+                        "LatestQuotes"."VolumeAt" IS NULL
+                        OR excluded."VolumeAt" >= "LatestQuotes"."VolumeAt")
+                    THEN excluded."Volume"
+                WHEN excluded."Volume" <> 0
+                    THEN "LatestQuotes"."Volume"
+                WHEN "LatestQuotes"."VolumeAt" IS NOT NULL
+                    AND "LatestQuotes"."TradeDate" IS NOT NULL
+                    AND "LatestQuotes"."TradeDate" = excluded."TradeDate"
+                    AND "LatestQuotes"."VolumeAt"
+                        >= excluded."ReceivedAt" - make_interval(secs => 
+        """ + CarrySeconds + """
+                    )
+                    THEN "LatestQuotes"."Volume"
+                ELSE 0
+            END,
+            "LastAt" = CASE
+                WHEN excluded."Last" <> 0
+                    AND (
+                        "LatestQuotes"."LastAt" IS NULL
+                        OR excluded."LastAt" >= "LatestQuotes"."LastAt")
+                    THEN excluded."LastAt"
+                WHEN excluded."Last" <> 0
+                    THEN "LatestQuotes"."LastAt"
+                WHEN "LatestQuotes"."LastAt" IS NOT NULL
+                    AND "LatestQuotes"."TradeDate" IS NOT NULL
+                    AND "LatestQuotes"."TradeDate" = excluded."TradeDate"
+                    AND "LatestQuotes"."LastAt"
+                        >= excluded."ReceivedAt" - make_interval(secs => 
+        """ + CarrySeconds + """
+                    )
+                    THEN "LatestQuotes"."LastAt"
+                ELSE NULL
+            END,
+            "VolumeAt" = CASE
+                WHEN excluded."Volume" <> 0
+                    AND (
+                        "LatestQuotes"."VolumeAt" IS NULL
+                        OR excluded."VolumeAt" >= "LatestQuotes"."VolumeAt")
+                    THEN excluded."VolumeAt"
+                WHEN excluded."Volume" <> 0
+                    THEN "LatestQuotes"."VolumeAt"
+                WHEN "LatestQuotes"."VolumeAt" IS NOT NULL
+                    AND "LatestQuotes"."TradeDate" IS NOT NULL
+                    AND "LatestQuotes"."TradeDate" = excluded."TradeDate"
+                    AND "LatestQuotes"."VolumeAt"
+                        >= excluded."ReceivedAt" - make_interval(secs => 
+        """ + CarrySeconds + """
+                    )
+                    THEN "LatestQuotes"."VolumeAt"
+                ELSE NULL
+            END,
+            "QuoteTimeUtc" = CASE
+                WHEN excluded."QuoteTimeUtc" IS NULL
+                    THEN "LatestQuotes"."QuoteTimeUtc"
+                WHEN "LatestQuotes"."QuoteTimeUtc" IS NULL
+                    OR excluded."QuoteTimeUtc" >= "LatestQuotes"."QuoteTimeUtc"
+                    THEN excluded."QuoteTimeUtc"
+                ELSE "LatestQuotes"."QuoteTimeUtc"
+            END,
+            "TradeDate" = excluded."TradeDate",
             "ReceivedAt" = excluded."ReceivedAt"
         WHERE "LatestQuotes"."ReceivedAt" <= excluded."ReceivedAt"
         """;
+
+    private static string CarrySeconds =>
+        ((int)LatestQuoteCarry.MaxAge.TotalSeconds).ToString(CultureInfo.InvariantCulture);
 
     private const string FrontSql = """
         SELECT "Venue", "ContractId"
@@ -102,7 +194,8 @@ public sealed class LatestQuoteStore(TopstepXDbContext database) : ILatestQuoteS
         SELECT "Venue", "Instrument", "ContractId", "Bid", "Ask", "Last", "Volume",
                "QuoteTimeUtc", "ReceivedAt",
                GREATEST(EXTRACT(EPOCH FROM (clock_timestamp() - "ReceivedAt")), 0)::float8
-                   AS "AgeSeconds"
+                   AS "AgeSeconds",
+               "LastAt", "VolumeAt", "TradeDate"
         FROM "LatestQuotes"
         WHERE "Venue" = {0} AND "ContractId" = {1}
         """;
@@ -133,6 +226,18 @@ public sealed class LatestQuoteStore(TopstepXDbContext database) : ILatestQuoteS
             new("quoteTimes", NpgsqlDbType.Array | NpgsqlDbType.TimestampTz)
             {
                 Value = quotes.Select(q => q.QuoteTimeUtc).ToArray(),
+            },
+            new("lastAts", NpgsqlDbType.Array | NpgsqlDbType.TimestampTz)
+            {
+                Value = quotes.Select(q => q.LastAt).ToArray(),
+            },
+            new("volumeAts", NpgsqlDbType.Array | NpgsqlDbType.TimestampTz)
+            {
+                Value = quotes.Select(q => q.VolumeAt).ToArray(),
+            },
+            new("tradeDates", NpgsqlDbType.Array | NpgsqlDbType.Date)
+            {
+                Value = quotes.Select(q => q.TradeDate).ToArray(),
             },
         ];
 
@@ -183,7 +288,10 @@ public sealed class LatestQuoteStore(TopstepXDbContext database) : ILatestQuoteS
             row.Volume,
             row.QuoteTimeUtc,
             row.ReceivedAt,
-            row.AgeSeconds);
+            row.AgeSeconds,
+            row.LastAt,
+            row.VolumeAt,
+            row.TradeDate);
     }
 
     private static NpgsqlParameter TextArray(string name, IEnumerable<string> values) =>
@@ -220,5 +328,11 @@ public sealed class LatestQuoteStore(TopstepXDbContext database) : ILatestQuoteS
         public DateTimeOffset ReceivedAt { get; set; }
 
         public double AgeSeconds { get; set; }
+
+        public DateTimeOffset? LastAt { get; set; }
+
+        public DateTimeOffset? VolumeAt { get; set; }
+
+        public DateOnly? TradeDate { get; set; }
     }
 }

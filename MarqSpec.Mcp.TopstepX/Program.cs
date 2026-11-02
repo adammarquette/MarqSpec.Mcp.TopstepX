@@ -1151,7 +1151,16 @@ public static class Program
         // author remembering a try/catch. A guard written into a tool covers that tool, which is how a
         // 23505 from two overlapping fills reached a caller of get_bars as a raw DbUpdateException while
         // the one method that translated anything sat two tools away.
-        server = server.WithRequestFilters(filters => filters.AddCallToolFilter(StoreFaultGuard.Filter));
+        // Two filters. StoreFaultGuard is added first, so it is the outermost: the SDK wraps from the
+        // end of the list, and the last filter added is the innermost. UnknownToolArgumentGuard therefore
+        // runs inside the store guard, before the tool. A trading call with an extra key is refused here
+        // as an unexpected argument, before RefuseIfDisabledOrHalted inside the order tool. A call whose
+        // names are valid still reaches that gate.
+        server = server.WithRequestFilters(filters =>
+        {
+            filters.AddCallToolFilter(StoreFaultGuard.Filter);
+            filters.AddCallToolFilter(UnknownToolArgumentGuard.Filter);
+        });
 
         if (mcp.Transport == McpTransport.Http)
         {

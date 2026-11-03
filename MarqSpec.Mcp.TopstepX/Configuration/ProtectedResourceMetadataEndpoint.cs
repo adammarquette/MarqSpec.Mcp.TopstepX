@@ -68,7 +68,7 @@ public static class ProtectedResourceMetadataEndpoint
     private sealed record ProtectedResourceMetadata(
         [property: JsonPropertyName("resource")] string Resource,
         [property: JsonPropertyName("authorization_servers")] string[] AuthorizationServers,
-        [property: JsonPropertyName("scopes_supported"), JsonIgnore(Condition = JsonIgnoreCondition.WhenNull)]
+        [property: JsonPropertyName("scopes_supported"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         string[]? ScopesSupported,
         [property: JsonPropertyName("bearer_methods_supported")] string[] BearerMethodsSupported);
 }

@@ -163,12 +163,15 @@ public static class Program
         // makes that requirement mean something at request time (ADR-0007). The gate is global in both
         // modes. The terminal branches above it are the only unauthenticated paths. Endpoints mapped after
         // it — `/mcp` and `GET /health/recorder` — stay behind it.
-        if (mcp.Auth.Mode == McpAuthMode.OAuth)
+        if (mcp.Auth.Mode is McpAuthMode.OAuth or McpAuthMode.OAuthWithStaticToken)
         {
             // The RFC 9728 document the 401 names; a connector reads it before it has a token, so it is the
-            // second terminal branch in front of the gate and the last one (gh#512).
+            // second terminal branch in front of the gate and the last one (gh#512). Under the migration mode
+            // the gate also admits the static token, compared in fixed time, before it reads a JWT.
             app.UseProtectedResourceMetadata(mcp.OAuth);
-            app.UseOAuthBearerGate(mcp.OAuth);
+            app.UseOAuthBearerGate(
+                mcp.OAuth,
+                mcp.Auth.Mode == McpAuthMode.OAuthWithStaticToken ? mcp.HttpBearerToken : null);
         }
         else
         {
@@ -755,9 +758,10 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        // The JWT bearer handler the OAuth gate authenticates with, registered only in the mode that uses
-        // it: the static mode's container is byte for byte what it was, and stdio's too.
-        if (mcp.Transport == McpTransport.Http && mcp.Auth.Mode == McpAuthMode.OAuth)
+        // The JWT bearer handler the OAuth gate authenticates with, registered only in the modes that use
+        // it (OAuth, and OAuthWithStaticToken): the static mode's container is byte for byte what it was, and
+        // stdio's too.
+        if (mcp.Transport == McpTransport.Http && (mcp.Auth.Mode is McpAuthMode.OAuth or McpAuthMode.OAuthWithStaticToken))
         {
             services.AddOAuthBearerAuthentication(mcp.OAuth);
         }

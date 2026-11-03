@@ -114,6 +114,9 @@ services:
       Mcp__OAuth__ClientIds: "${Mcp__OAuth__ClientIds:-}"
       Mcp__OAuth__RequiredScope: "${Mcp__OAuth__RequiredScope:-topstepx-mcp/read}"
       Mcp__OAuth__ResourceUrl: "${Mcp__OAuth__ResourceUrl:-}"
+      Mcp__OAuth__Audience: "${Mcp__OAuth__Audience:-}"
+      Mcp__OAuth__Subjects: "${Mcp__OAuth__Subjects:-}"
+      Mcp__OAuth__MetadataUrl: "${Mcp__OAuth__MetadataUrl:-}"
 
       MarketData__SessionCloseCentral: "${MarketData__SessionCloseCentral:-16:00}"
       MarketData__Holidays: "${MarketData__Holidays:-}"

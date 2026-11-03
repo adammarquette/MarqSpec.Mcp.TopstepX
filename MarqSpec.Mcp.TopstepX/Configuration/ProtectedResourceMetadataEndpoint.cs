@@ -51,7 +51,9 @@ public static class ProtectedResourceMetadataEndpoint
         ProtectedResourceMetadata document = new(
             oauth.ResourceUrl,
             [oauth.Issuer],
-            [oauth.RequiredScope],
+            // Omitted when no scope is required: a connector asks for what is listed, and an issuer that
+            // does not define the scope refuses the whole authorization.
+            oauth.RequiresScope ? new[] { oauth.RequiredScope } : null,
             [HeaderMethod]);
 
         app.MapWhen(IsTheDocument, branch => branch.Run(context => context.Response.WriteAsJsonAsync(document)));
@@ -66,6 +68,7 @@ public static class ProtectedResourceMetadataEndpoint
     private sealed record ProtectedResourceMetadata(
         [property: JsonPropertyName("resource")] string Resource,
         [property: JsonPropertyName("authorization_servers")] string[] AuthorizationServers,
-        [property: JsonPropertyName("scopes_supported")] string[] ScopesSupported,
+        [property: JsonPropertyName("scopes_supported"), JsonIgnore(Condition = JsonIgnoreCondition.WhenNull)]
+        string[]? ScopesSupported,
         [property: JsonPropertyName("bearer_methods_supported")] string[] BearerMethodsSupported);
 }

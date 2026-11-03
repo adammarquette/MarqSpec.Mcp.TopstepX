@@ -26,9 +26,18 @@ public enum McpAuthMode
 
     /// <summary>
     /// OAuth 2.1 resource server: a JWT access token the configured issuer signed, checked for the expected
-    /// client and scope. The mode a non-loopback instance runs in, with Amazon Cognito issuing the tokens.
+    /// audience (or, for Cognito, client) and scope. The mode a non-loopback instance runs in.
     /// </summary>
     OAuth = 1,
+
+    /// <summary>
+    /// <see cref="OAuth"/>, plus the static token as a second credential: a request carrying exactly
+    /// <see cref="McpOptions.HttpBearerToken"/> is admitted, anything else must be an acceptable access token.
+    /// A <b>migration</b> mode, chosen by name, so that clients that hold the static token keep working while
+    /// a deployment moves to OAuth. It keeps the shared secret's exposure for as long as it runs; move to
+    /// <see cref="OAuth"/> once nothing depends on the token.
+    /// </summary>
+    OAuthWithStaticToken = 2,
 }
 
 /// <summary>The <c>Mcp:Auth</c> section.</summary>
@@ -44,7 +53,7 @@ public sealed class McpAuthOptions
 /// <remarks>
 /// <para>
 /// <b>Under HTTP, exactly one authentication mode is configured</b>, and both directions of "both" refuse at
-/// startup. ADR-0021's coupling — <i>a target group in front of 8080 ⇒ the OAuth mode must be configured,
+/// startup, unless both are asked for by name with <see cref="McpAuthMode.OAuthWithStaticToken"/>. ADR-0021's coupling — <i>a target group in front of 8080 ⇒ the OAuth mode must be configured,
 /// never the static token</i> — is a property this validation checks rather than a sentence a README
 /// describes: a static token beside <c>Mcp__Auth__Mode=OAuth</c> is a variable left behind, and an OAuth
 /// key beside <c>Mcp__Auth__Mode=StaticToken</c> is the dangerous direction, a public listener on the static
@@ -135,8 +144,26 @@ public sealed class McpOptions : IValidatableObject
 
                 break;
 
+            case McpAuthMode.OAuthWithStaticToken:
+                // Both on purpose, so both must be complete: a fallback with no token would be a gate with a
+                // blank second key, and an incomplete OAuth section would be the static gate under another name.
+                if (!hasStaticToken)
+                {
+                    yield return new ValidationResult(
+                        "Mcp__HttpBearerToken is required when Mcp__Auth__Mode=OAuthWithStaticToken: it is the static "
+                        + "token the fallback accepts. Use Mcp__Auth__Mode=OAuth for OAuth alone.");
+                }
+
+                foreach (string problem in OAuth.Problems())
+                {
+                    yield return new ValidationResult(problem.Replace(
+                        "Mcp__Auth__Mode=OAuth", "Mcp__Auth__Mode=OAuthWithStaticToken", StringComparison.Ordinal));
+                }
+
+                break;
+
             default:
-                yield return new ValidationResult("Mcp__Auth__Mode must be StaticToken or OAuth.");
+                yield return new ValidationResult("Mcp__Auth__Mode must be StaticToken, OAuth or OAuthWithStaticToken.");
                 break;
         }
     }

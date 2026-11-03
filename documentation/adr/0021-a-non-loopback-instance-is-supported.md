@@ -326,6 +326,40 @@ that point `serverAuth` goes back to OAuth, `[static-token-required]` goes back 
 
 Assisted-by: grok-bot:sgt-squash
 
+## Update (2026-11-03) — the OAuth mode accepts any audience-bound issuer, and a named migration mode
+
+**Why.** The exception above ends when a provider exists, and Cognito is no longer assumed: there is no AWS
+account. The operator chose **WorkOS AuthKit**, one issuer to share across MarqSpec deployments. Its access
+tokens carry `aud` (the resource indicator), `client_id` (a URL for a CIMD client) and only AuthKit's own
+scopes, so the Cognito-shaped check refused every one of them. Keycloak, Auth0 and Entra ID differ in the same
+ways (an audience, the client as `azp`, Entra's `scp`).
+
+**What changes in the app (gh#997).**
+- `Mcp__OAuth__Audience`, optional. Set, the JWT handler requires `aud` to carry it, compared ordinally and
+  whole, and `AudienceBoundAccessTokenPolicy` checks `sub`, the scope under `scope` or Entra's `scp`, and
+  `token_use` only when the issuer writes one. `Mcp__OAuth__ClientIds` becomes optional: blank accepts any
+  client the issuer minted a token for this audience, which dynamic client registration needs; a list still
+  narrows it, read from `client_id` or else `azp`. An audience equal to a listed client id is refused at
+  startup, because that is an ID token's `aud`. Unset, nothing changes: the Cognito shape and its tests stand.
+- With an audience, `Mcp__OAuth__RequiredScope` defaults to **none**, and the challenge and RFC 9728 document
+  then name no scope, because a connector requests what it is told and AuthKit refuses a scope it doesn't
+  define. The audience is the binding; `Mcp__OAuth__Subjects`, a `sub` allowlist, is what keeps an issuer
+  with open sign-up from admitting strangers, and a single-operator deployment sets it.
+- `Mcp__OAuth__MetadataUrl` reads RFC 8414 metadata for an issuer without OpenID discovery. A host-root issuer
+  with a trailing slash (Auth0's spelling) is now accepted; one after a path is still refused.
+- `Mcp__Auth__Mode=OAuthWithStaticToken`, a **migration** mode chosen by name. The gate admits exactly the
+  static token, compared in fixed time, and sends everything else through the OAuth path; a refusal carries
+  the OAuth challenge. Startup requires both halves complete. This relaxes *exactly one mode* only when both
+  are asked for by name: an OAuth key left beside `Mode=StaticToken`, or a token left beside `Mode=OAuth`,
+  still refuses. It keeps the shared secret's exposure while it runs, so it is a step, not a destination.
+
+**What does not change.** `.railway/railway.ts` and `evaluate-template.mjs` still require `StaticToken`
+everywhere; this exception still stands. Moving Railway to OAuth is its own change, once the issuer exists:
+`serverAuth` to `OAuthWithStaticToken` then `OAuth`, the template check widened to match, and
+`check-deployment.sh`'s token exchange pointed at the new issuer's deploy-check client.
+
+Assisted-by: claude-code:cloud
+
 ## Follow-ups
 
 - gh#510 lands as a dated update on ADR-0007; when it does, a dated update here says which of the three

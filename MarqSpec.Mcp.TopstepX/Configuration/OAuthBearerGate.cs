@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
@@ -21,11 +22,20 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// <para>
 /// <b>What is validated, and where.</b> The JWT bearer handler does the cryptography — signature against the
 /// key set discovered from <c>{issuer}/.well-known/openid-configuration</c>, <c>iss</c> against the
-/// configured issuer, lifetime with a 60 s skew, RS256 only, signed tokens only, an <c>exp</c> required. It
-/// does not validate an audience, because a Cognito access token has none; <see cref="CognitoAccessTokenPolicy"/>
-/// is what replaces that check, and it runs inside the handler's <c>OnTokenValidated</c> so that no
-/// principal is ever "authenticated" without it. Turning <c>ValidateAudience</c> off with nothing in its
-/// place would accept every token the pool ever signed.
+/// configured issuer, lifetime with a 60 s skew, RS256 only, signed tokens only, an <c>exp</c> required.
+/// With <see cref="OAuthOptions.Audience"/> set it also requires <c>aud</c> to carry that value, ordinally,
+/// and <see cref="AudienceBoundAccessTokenPolicy"/> checks the rest. With it unset the issuer is Cognito,
+/// whose access token has no audience, and <see cref="CognitoAccessTokenPolicy"/> is what replaces that
+/// check. Either policy runs inside the handler's <c>OnTokenValidated</c> so that no principal is ever
+/// "authenticated" without it. Turning <c>ValidateAudience</c> off with nothing in its place would accept
+/// every token the issuer ever signed.
+/// </para>
+/// <para>
+/// <b>The static-token fallback.</b> Under <see cref="McpAuthMode.OAuthWithStaticToken"/> a request whose
+/// <c>Authorization</c> header is exactly the configured static bearer token, compared in fixed time, is
+/// admitted before the JWT handler runs; everything else goes through the OAuth path and, refused, gets the
+/// same OAuth challenge. It exists so that clients holding the static token keep working while a deployment
+/// moves to OAuth. It is a migration mode, and it keeps the shared secret's exposure for as long as it runs.
 /// </para>
 /// <para>
 /// <b>What reaches a log line.</b> On success, <c>sub</c> and <c>client_id</c> as a scope on everything the
@@ -53,6 +63,12 @@ public static class OAuthBearerGate
     /// <c>AnotherAlgorithmUnderThePublishedKey_IsRefused</c> rows do now.
     /// </remarks>
     private const string Algorithm = SecurityAlgorithms.RsaSha256;
+
+    /// <summary>The <c>auth.method</c> log-scope value for a request the JWT path admitted.</summary>
+    public const string OAuthMethod = "oauth";
+
+    /// <summary>The <c>auth.method</c> log-scope value for a request the static-token fallback admitted.</summary>
+    public const string StaticTokenMethod = "static_token";
 
     /// <summary>The category the JWT bearer handler logs under, filtered to Warning in this mode.</summary>
     private const string AuthenticationLogCategory = "Microsoft.AspNetCore.Authentication";
@@ -88,8 +104,18 @@ public static class OAuthBearerGate
                 Uri issuer = new(oauth.Issuer, UriKind.Absolute);
                 IReadOnlySet<string> clients = oauth.AcceptedClientIds();
                 string scope = oauth.RequiredScope;
+                bool audienceBound = oauth.IsAudienceBound;
+                string audience = oauth.Audience;
+                IReadOnlySet<string> subjects = oauth.AcceptedSubjects();
 
                 options.Authority = oauth.Issuer;
+                if (!string.IsNullOrWhiteSpace(oauth.MetadataUrl))
+                {
+                    // An issuer that publishes RFC 8414 metadata rather than OpenID discovery. The document
+                    // supplies jwks_uri only: the issuer is still the configured string, by the delegate below.
+                    options.MetadataAddress = oauth.MetadataUrl;
+                }
+
                 // Plain http is accepted for a loopback stub only, and options validation is what enforces
                 // the loopback half; this mirrors the scheme rather than deciding anything of its own.
                 options.RequireHttpsMetadata = string.Equals(issuer.Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal);
@@ -110,9 +136,11 @@ public static class OAuthBearerGate
                             ? issuer
                             : throw new SecurityTokenInvalidIssuerException(
                                 "The iss claim is not the configured Mcp__OAuth__Issuer."),
-                    // A Cognito access token carries no aud. The audience check is CognitoAccessTokenPolicy,
-                    // below, and it is not optional.
-                    ValidateAudience = false,
+                    // Audience-bound: aud must carry the configured value, compared ordinally and whole by the
+                    // delegate — no trailing-slash leniency, no case folding. Cognito: a Cognito access token
+                    // carries no aud, and the audience check is CognitoAccessTokenPolicy, below, which is not
+                    // optional.
+                    ValidateAudience = audienceBound,
                     ValidateIssuerSigningKey = true,
                     RequireSignedTokens = true,
                     RequireExpirationTime = true,
@@ -121,11 +149,31 @@ public static class OAuthBearerGate
                     ValidAlgorithms = [Algorithm],
                     NameClaimType = CognitoAccessTokenPolicy.SubjectClaim,
                 };
+
+                if (audienceBound)
+                {
+                    // A token with no aud reaches the delegate with nothing to match, and is refused.
+                    options.TokenValidationParameters.ValidAudience = audience;
+                    options.TokenValidationParameters.AudienceValidator = (audiences, _, _) =>
+                        audiences is not null
+                        && audiences.Any(entry => string.Equals(entry, audience, StringComparison.Ordinal));
+                }
+
                 options.Events = new JwtBearerEvents
                 {
                     OnTokenValidated = context =>
                     {
-                        string? reason = CognitoAccessTokenPolicy.Reject(context.Principal!, clients, scope);
+                        string? reason = audienceBound
+                            ? AudienceBoundAccessTokenPolicy.Reject(context.Principal!, clients, scope)
+                            : CognitoAccessTokenPolicy.Reject(context.Principal!, clients, scope);
+                        if (reason is null && subjects.Count > 0)
+                        {
+                            string? subject = context.Principal!.FindFirst(CognitoAccessTokenPolicy.SubjectClaim)?.Value;
+                            if (subject is null || !subjects.Contains(subject))
+                            {
+                                reason = $"the {CognitoAccessTokenPolicy.SubjectClaim} claim is not one of the configured subjects";
+                            }
+                        }
                         if (reason is not null)
                         {
                             context.Fail(reason);
@@ -144,11 +192,29 @@ public static class OAuthBearerGate
     /// </summary>
     /// <param name="app">The application. Install this <b>after</b> the terminal branches and before <c>MapMcp</c>.</param>
     /// <param name="oauth">The OAuth section.</param>
+    /// <param name="staticToken">
+    /// The static bearer token also accepted under <see cref="McpAuthMode.OAuthWithStaticToken"/>, or
+    /// <c>null</c> for OAuth alone. Blank is refused rather than read as "none".
+    /// </param>
     /// <exception cref="ArgumentException">The section is unusable — startup should already have refused.</exception>
-    public static void UseOAuthBearerGate(this WebApplication app, OAuthOptions oauth)
+    public static void UseOAuthBearerGate(this WebApplication app, OAuthOptions oauth, string? staticToken = null)
     {
         ArgumentNullException.ThrowIfNull(app);
         ArgumentNullException.ThrowIfNull(oauth);
+
+        if (staticToken is not null && string.IsNullOrWhiteSpace(staticToken))
+        {
+            // Belt and braces again: a blank fallback must never become a way in.
+            throw new ArgumentException(
+                "The static-token fallback requires a token. Refusing to install a gate whose fallback is blank.",
+                nameof(staticToken));
+        }
+
+        byte[]? fallback = staticToken is null ? null : Encoding.UTF8.GetBytes(staticToken);
+        Dictionary<string, object> staticTokenScope = new(StringComparer.Ordinal)
+        {
+            ["auth.method"] = StaticTokenMethod,
+        };
 
         string? problem = oauth.Problems().FirstOrDefault();
         if (problem is not null)
@@ -166,6 +232,17 @@ public static class OAuthBearerGate
 
         app.Use(async (context, next) =>
         {
+            if (fallback is not null && BearerTokenGate.Matches(context.Request.Headers.Authorization, fallback))
+            {
+                // Nothing to name the caller by but the method; the token itself never reaches a log line.
+                using (logger.BeginScope(staticTokenScope))
+                {
+                    await next(context).ConfigureAwait(false);
+                }
+
+                return;
+            }
+
             AuthenticateResult result = await context.AuthenticateAsync(JwtBearerDefaults.AuthenticationScheme)
                 .ConfigureAwait(false);
 
@@ -186,14 +263,15 @@ public static class OAuthBearerGate
 
             context.User = result.Principal;
 
-            // The policy has already required both to be present and single-valued. They are still the
+            // The policy has already required sub, single-valued, and the client too under Cognito; an
+            // audience-bound token with no client list may carry none, which logs as empty. They are still the
             // caller's strings: escape them before they become a scope on every line this request logs.
             Dictionary<string, object> scope = new(StringComparer.Ordinal)
             {
+                ["auth.method"] = OAuthMethod,
                 ["auth.sub"] = LogText.Sanitize(
                     result.Principal.FindFirst(CognitoAccessTokenPolicy.SubjectClaim)?.Value),
-                ["auth.client_id"] = LogText.Sanitize(
-                    result.Principal.FindFirst(CognitoAccessTokenPolicy.ClientIdClaim)?.Value),
+                ["auth.client_id"] = LogText.Sanitize(AudienceBoundAccessTokenPolicy.ClientId(result.Principal)),
             };
 
             using (logger.BeginScope(scope))

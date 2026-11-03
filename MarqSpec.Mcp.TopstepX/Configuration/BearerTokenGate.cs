@@ -52,7 +52,7 @@ public static class BearerTokenGate
 
         app.Use(async (context, next) =>
         {
-            if (!IsAuthorised(context.Request.Headers.Authorization, expected))
+            if (!Matches(context.Request.Headers.Authorization, expected))
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 context.Response.Headers.WWWAuthenticate = "Bearer";
@@ -64,7 +64,15 @@ public static class BearerTokenGate
         });
     }
 
-    private static bool IsAuthorised(StringValues header, byte[] expected)
+    /// <summary>
+    /// Whether the <c>Authorization</c> header is exactly one <c>Bearer</c> value equal to
+    /// <paramref name="expected"/>, compared in fixed time. Shared with the OAuth gate's static-token fallback,
+    /// so there is one comparison to get right.
+    /// </summary>
+    /// <param name="header">The request's <c>Authorization</c> values.</param>
+    /// <param name="expected">The configured token's UTF-8 bytes.</param>
+    /// <returns><c>true</c> when the header carries the token.</returns>
+    internal static bool Matches(StringValues header, byte[] expected)
     {
         string? value = header.Count == 1 ? header[0] : null;
 

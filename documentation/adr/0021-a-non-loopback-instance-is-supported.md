@@ -326,6 +326,50 @@ that point `serverAuth` goes back to OAuth, `[static-token-required]` goes back 
 
 Assisted-by: grok-bot:sgt-squash
 
+## Update (2026-11-05) — staging-first OAuth migration (gh#997)
+
+**Why.** The exception above ends when a provider exists, and Cognito is no longer assumed: there is no AWS
+account. The operator chose **WorkOS AuthKit**. Its access tokens carry `aud`, `client_id` (a URL for a CIMD
+client) and only AuthKit's own scopes, so the Cognito-shaped check refused every one of them. Keycloak, Auth0
+and Entra ID differ in the same ways (an audience, the client as `azp`, Entra's `scp`).
+
+**What changes in the app.**
+- `Mcp__OAuth__Audience`, optional. Set, the JWT handler requires `aud` to carry it, compared ordinally and
+  whole. `AudienceBoundAccessTokenPolicy` checks `sub` (exactly one; a duplicate is not a subject), the
+  scope under `scope` or Entra's `scp`, and `token_use` only when the issuer writes one. `ClientIds` is
+  optional with an audience: blank accepts any client, which dynamic registration needs. An audience equal
+  to a listed client id is refused at startup (that is an ID token's `aud`). Unset, the Cognito shape stands.
+- With an audience, `RequiredScope` defaults to **none**. Startup **refuses** an audience when `Subjects`,
+  `ClientIds` and `RequiredScope` are all empty: open sign-up would otherwise admit anyone who can get a
+  token for that audience. At least one of the three is required. Set `Audience` equal to `ResourceUrl`
+  unless the issuer names its API another way; a mismatch logs a startup warning (RFC 8707) and does not
+  refuse.
+- `Mcp__OAuth__MetadataUrl` reads RFC 8414 metadata. A host-root issuer with a trailing slash is accepted.
+- `Mcp__Auth__Mode=OAuthWithStaticToken` is a **migration** mode, **for staging first**. The gate admits
+  exactly the static token, compared in fixed time, and sends everything else through OAuth. A refusal,
+  including a bad or rotated static token, carries the OAuth challenge. A static client that only understood
+  a bare `Bearer` 401 — Trader Jon's client — is steered into OAuth discovery. Startup requires both halves
+  complete, and logs a warning while the mode is on. An OAuth key beside `StaticToken`, or a token beside
+  `OAuth`, still refuses.
+- Refusals record `mcp.oauth.refusals` and an `oauth.refusal` span, tagged `operation`, `refusal` (audience,
+  subject, client, token_use, and the other closed reasons) and `replay=false`. Admits record
+  `mcp.oauth.admits` tagged `auth.method` (`static_token` or `oauth`). Neither carries a token, a subject
+  value, a client id, or an account id.
+
+**Production stays `StaticToken` until a separate ADR.** This update does not put the migration mode on
+production. The 2026-10-29 exception still covers production. Enabling `OAuthWithStaticToken` or `OAuth`
+there is a later decision, not this one.
+
+**Exit criterion.** The mode does not turn itself off. Leave it — set `Mcp__Auth__Mode=OAuth` and remove
+`Mcp__HttpBearerToken` — once `mcp.oauth.admits` with `auth.method=static_token` has stayed at zero for 14
+days of staging use and no static client remains. That counter is the off-signal.
+
+**What the Railway template does not do yet.** `.railway/railway.ts` still requires `StaticToken` in every
+environment. Carrying the staging keys is a follow-up. Until it lands, do not set the OAuth variables in the
+dashboard: the next plan would show drift.
+
+Assisted-by: grok-bot:major-maker
+
 ## Follow-ups
 
 - gh#510 lands as a dated update on ADR-0007; when it does, a dated update here says which of the three

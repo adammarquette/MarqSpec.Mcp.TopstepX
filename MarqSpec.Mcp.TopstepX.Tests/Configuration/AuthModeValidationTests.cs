@@ -280,4 +280,193 @@ public sealed class AuthModeValidationTests
             ["Mcp:HttpBearerToken"] = "a-token",
         }).Should().NotThrow();
     }
+
+    // ── an issuer that carries an audience (gh#997) ──────────────────────────────────────────────────────
+
+    private static Dictionary<string, string?> AudienceBound(params (string Key, string? Value)[] overrides)
+    {
+        Dictionary<string, string?> settings = CompleteOAuth(
+            ("Mcp:OAuth:Issuer", "https://auth.example.test/realms/marqspec"),
+            ("Mcp:OAuth:ClientIds", null),
+            ("Mcp:OAuth:Audience", "https://topstepx-mcp.example.test/mcp"),
+            ("Mcp:OAuth:Subjects", "user_01OPERATOR"));
+        foreach ((string key, string? value) in overrides)
+        {
+            settings[key] = value;
+        }
+
+        return settings;
+    }
+
+    [Fact]
+    public void AnAudienceBoundConfiguration_Starts_WithNoClientIds()
+    {
+        // Dynamic registration mints client ids nobody can list. Subjects are what lets this start:
+        // audience with no subjects, no client ids and no required scope is refused below.
+        McpOptions options = Start(AudienceBound());
+
+        options.OAuth.IsAudienceBound.Should().BeTrue();
+        options.OAuth.ClientIdList().Should().BeEmpty();
+    }
+
+    [Fact]
+    public void AnAudienceBoundConfiguration_Starts_WithClientIdsToo()
+    {
+        Starting(AudienceBound(("Mcp:OAuth:ClientIds", "connector-client"))).Should().NotThrow();
+    }
+
+    [Fact]
+    public void AnAudienceWithNoSubjectNoClientAndNoScope_IsRefused()
+    {
+        Starting(AudienceBound(
+                ("Mcp:OAuth:Subjects", null),
+                ("Mcp:OAuth:ClientIds", null),
+                ("Mcp:OAuth:RequiredScope", null)))
+            .Should().Throw<OptionsValidationException>()
+            .WithMessage("*Mcp__OAuth__Subjects*Mcp__OAuth__ClientIds*Mcp__OAuth__RequiredScope*");
+    }
+
+    [Theory]
+    [InlineData("Mcp:OAuth:Subjects", "user_01A")]
+    [InlineData("Mcp:OAuth:ClientIds", "connector-client")]
+    [InlineData("Mcp:OAuth:RequiredScope", "mcp:read")]
+    public void AnAudienceBoundConfiguration_Starts_WhenOneRestrictionIsSet(string key, string value)
+    {
+        Starting(AudienceBound(
+                ("Mcp:OAuth:Subjects", null),
+                ("Mcp:OAuth:ClientIds", null),
+                ("Mcp:OAuth:RequiredScope", null),
+                (key, value)))
+            .Should().NotThrow();
+    }
+
+    [Fact]
+    public void WithoutAnAudience_TheClientIdsAreStillRequired()
+    {
+        // The Cognito shape is unchanged: no aud in the token, so the list is the audience check.
+        Starting(AudienceBound(("Mcp:OAuth:Audience", null)))
+            .Should().Throw<OptionsValidationException>().WithMessage("*Mcp__OAuth__ClientIds*");
+    }
+
+    [Theory]
+    [InlineData("https://topstepx-mcp.example.test/mcp other")]
+    [InlineData("https://topstepx-mcp.example.test/mcp\t")]
+    public void AnAudienceWithWhitespace_IsRefused(string audience)
+    {
+        Starting(AudienceBound(("Mcp:OAuth:Audience", audience)))
+            .Should().Throw<OptionsValidationException>().WithMessage("*Mcp__OAuth__Audience*");
+    }
+
+    [Theory]
+    [InlineData("https://tenant.us.auth0.com/")]
+    [InlineData("https://tenant.us.auth0.com")]
+    public void AHostRootIssuer_IsAccepted_WithOrWithoutItsTrailingSlash(string issuer)
+    {
+        // Auth0's iss is the tenant root with a slash; it is that issuer's spelling, kept as entered. A slash
+        // after a path stays refused (the theory above).
+        Starting(AudienceBound(("Mcp:OAuth:Issuer", issuer))).Should().NotThrow();
+    }
+
+    [Fact]
+    public void AnAudienceBoundIssuer_RequiresNoScope_ByDefault()
+    {
+        McpOptions options = Start(AudienceBound(("Mcp:OAuth:RequiredScope", "")));
+
+        options.OAuth.RequiresScope.Should().BeFalse();
+        options.OAuth.Challenge().Should().NotContain("scope=");
+    }
+
+    [Fact]
+    public void AnAudienceBoundIssuer_KeepsAScopeSetExplicitly()
+    {
+        Start(AudienceBound(("Mcp:OAuth:RequiredScope", "mcp:read"))).OAuth.RequiredScope.Should().Be("mcp:read");
+    }
+
+    [Fact]
+    public void TheSubjects_BindFromACommaSeparatedList()
+    {
+        Start(AudienceBound(("Mcp:OAuth:Subjects", " user_01A , user_01B,, ")))
+            .OAuth.AcceptedSubjects().Should().BeEquivalentTo(new[] { "user_01A", "user_01B" });
+    }
+
+    [Fact]
+    public void AnRfc8414MetadataUrl_IsAccepted()
+    {
+        Starting(AudienceBound(("Mcp:OAuth:MetadataUrl", "https://auth.example.test/.well-known/oauth-authorization-server")))
+            .Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData("http://auth.example.test/.well-known/oauth-authorization-server")]
+    [InlineData("not a url")]
+    public void AMetadataUrlThatIsNotHttps_IsRefused(string metadataUrl)
+    {
+        Starting(AudienceBound(("Mcp:OAuth:MetadataUrl", metadataUrl)))
+            .Should().Throw<OptionsValidationException>().WithMessage("*Mcp__OAuth__MetadataUrl*");
+    }
+
+    [Fact]
+    public void ASubjectListBesideTheStaticMode_IsRefused()
+    {
+        Starting(Http(
+                McpAuthMode.StaticToken,
+                ("Mcp:HttpBearerToken", "a-token"),
+                ("Mcp:OAuth:Subjects", "user_01A")))
+            .Should().Throw<OptionsValidationException>().WithMessage("*Mcp__OAuth__Subjects*");
+    }
+
+    [Fact]
+    public void AnAudienceEqualToAClientId_IsRefused()
+    {
+        // An ID token's aud is its client id; that audience would let ID tokens through as access tokens.
+        Starting(AudienceBound(
+                ("Mcp:OAuth:ClientIds", "connector-client"),
+                ("Mcp:OAuth:Audience", "connector-client")))
+            .Should().Throw<OptionsValidationException>().WithMessage("*Mcp__OAuth__Audience*");
+    }
+
+    [Fact]
+    public void AnAudienceBesideTheStaticMode_IsRefused()
+    {
+        Starting(Http(
+                McpAuthMode.StaticToken,
+                ("Mcp:HttpBearerToken", "a-token"),
+                ("Mcp:OAuth:Audience", "https://topstepx-mcp.example.test/mcp")))
+            .Should().Throw<OptionsValidationException>().WithMessage("*Mcp__OAuth__Audience*");
+    }
+
+    // ── the migration mode: OAuth plus the static token, by name ─────────────────────────────────────────
+
+    [Fact]
+    public void TheMigrationMode_Starts_WithBothComplete()
+    {
+        McpOptions options = Start(AudienceBound(
+            ("Mcp:Auth:Mode", nameof(McpAuthMode.OAuthWithStaticToken)),
+            ("Mcp:HttpBearerToken", "a-token")));
+
+        options.Auth.Mode.Should().Be(McpAuthMode.OAuthWithStaticToken);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void TheMigrationMode_RefusesToStart_WithoutTheStaticToken(string? token)
+    {
+        Starting(AudienceBound(
+                ("Mcp:Auth:Mode", nameof(McpAuthMode.OAuthWithStaticToken)),
+                ("Mcp:HttpBearerToken", token)))
+            .Should().Throw<OptionsValidationException>().WithMessage("*Mcp__HttpBearerToken*");
+    }
+
+    [Fact]
+    public void TheMigrationMode_RefusesToStart_WithAnIncompleteOAuthSection()
+    {
+        Starting(AudienceBound(
+                ("Mcp:Auth:Mode", nameof(McpAuthMode.OAuthWithStaticToken)),
+                ("Mcp:HttpBearerToken", "a-token"),
+                ("Mcp:OAuth:Issuer", null)))
+            .Should().Throw<OptionsValidationException>()
+            .WithMessage("*Mcp__OAuth__Issuer is required when Mcp__Auth__Mode=OAuthWithStaticToken*");
+    }
 }

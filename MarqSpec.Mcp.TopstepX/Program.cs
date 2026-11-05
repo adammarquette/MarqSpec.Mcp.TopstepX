@@ -164,12 +164,16 @@ public static class Program
         // makes that requirement mean something at request time (ADR-0007). The gate is global in both
         // modes. The terminal branches above it are the only unauthenticated paths. Endpoints mapped after
         // it — `/mcp` and `GET /health/recorder` — stay behind it.
-        if (mcp.Auth.Mode == McpAuthMode.OAuth)
+        if (mcp.Auth.Mode is McpAuthMode.OAuth or McpAuthMode.OAuthWithStaticToken)
         {
             // The RFC 9728 document the 401 names; a connector reads it before it has a token, so it is the
-            // second terminal branch in front of the gate and the last one (gh#512).
+            // second terminal branch in front of the gate and the last one (gh#512). Under the migration mode
+            // the gate also admits the static token, compared in fixed time, before it reads a JWT.
             app.UseProtectedResourceMetadata(mcp.OAuth);
-            app.UseOAuthBearerGate(mcp.OAuth);
+            WarnOnOAuthStartup(app, mcp);
+            app.UseOAuthBearerGate(
+                mcp.OAuth,
+                mcp.Auth.Mode == McpAuthMode.OAuthWithStaticToken ? mcp.HttpBearerToken : null);
         }
         else
         {
@@ -183,6 +187,36 @@ public static class Program
         // it is not on the 30 s probe, and it is worth a span: IsTraced excludes only the exact probe path
         // (gh#756, R-5.14).
         app.MapRecorderHealth();
+    }
+
+    /// <summary>
+    /// Startup warnings for the OAuth gate (gh#997). Neither stops the process: the migration mode is
+    /// chosen on purpose, and an audience that is not the resource URL can still be what the issuer mints.
+    /// </summary>
+    private static void WarnOnOAuthStartup(WebApplication app, McpOptions mcp)
+    {
+        ILogger logger = app.Services.GetRequiredService<ILoggerFactory>()
+            .CreateLogger(typeof(OAuthBearerGate).FullName!);
+
+        if (mcp.Auth.Mode == McpAuthMode.OAuthWithStaticToken)
+        {
+            // The off-signal is mcp.oauth.admits{auth.method=static_token} staying at zero. The mode does
+            // not turn itself off. A bad or rotated static token gets the OAuth challenge, so a static
+            // client (Trader Jon's) is steered into discovery instead of a bare Bearer 401.
+            logger.LogWarning(
+                "Mcp__Auth__Mode=OAuthWithStaticToken is on. Staging first; production stays StaticToken "
+                + "until a separate ADR. Leave it when mcp.oauth.admits auth.method=static_token stays at "
+                + "zero for 14 days and no static client remains. A 401 on the static token carries the "
+                + "OAuth challenge, so Trader Jon's client is steered into OAuth discovery.");
+        }
+
+        if (mcp.OAuth.IsAudienceBound
+            && !string.Equals(mcp.OAuth.Audience, mcp.OAuth.ResourceUrl, StringComparison.Ordinal))
+        {
+            logger.LogWarning(
+                "Mcp__OAuth__Audience does not equal Mcp__OAuth__ResourceUrl. RFC 8707 asks for a token "
+                + "whose audience is the resource URL; a connector compares the two.");
+        }
     }
 
     /// <summary>Runs the built host, treating a shutdown asked for during startup as a shutdown.</summary>
@@ -780,9 +814,11 @@ public static class Program
             .ValidateDataAnnotations()
             .ValidateOnStart();
 
-        // The JWT bearer handler the OAuth gate authenticates with, registered only in the mode that uses
-        // it: the static mode's container is byte for byte what it was, and stdio's too.
-        if (mcp.Transport == McpTransport.Http && mcp.Auth.Mode == McpAuthMode.OAuth)
+        // The JWT bearer handler the OAuth gate authenticates with, registered only in the modes that use
+        // it (OAuth, and OAuthWithStaticToken): the static mode's container is byte for byte what it was, and
+        // stdio's too.
+        if (mcp.Transport == McpTransport.Http
+            && mcp.Auth.Mode is McpAuthMode.OAuth or McpAuthMode.OAuthWithStaticToken)
         {
             services.AddOAuthBearerAuthentication(mcp.OAuth);
         }

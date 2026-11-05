@@ -372,6 +372,38 @@ A `list_instruments` call answered in the same run; a token from an unlisted cli
 above. The refusal log names the claim and never the token. **Nothing here has been measured against a real
 Cognito pool** — the stub honours the same discovery contract, and the first real measurement is gh#517's.
 
+**Any issuer that puts an audience in its tokens (gh#997).** Set `Mcp__OAuth__Audience` and the server checks
+`aud` instead of the Cognito shape: the audience must be carried exactly (ordinal, no trailing-slash leniency),
+`sub` must be present, and `token_use` is checked only when the issuer writes one. `Mcp__OAuth__ClientIds`
+becomes optional (blank accepts any client, which CIMD and dynamic registration need; a list narrows it, read
+from `client_id` or else `azp`), and `Mcp__OAuth__RequiredScope` defaults to **none**, so the challenge and the
+metadata document name no scope for the connector to request. Startup refuses an audience when
+`Subjects`, `ClientIds` and `RequiredScope` are all empty. `Mcp__OAuth__Subjects` limits the endpoint to
+listed `sub` values; set it whenever the issuer's sign-up is open. WorkOS AuthKit, the target provider:
+
+```bash
+Mcp__Transport=Http Mcp__Auth__Mode=OAuth \
+  Mcp__OAuth__Issuer=https://<project>.authkit.app \
+  Mcp__OAuth__Audience=https://topstepx-mcp.marqspec.com/mcp \
+  Mcp__OAuth__ResourceUrl=https://topstepx-mcp.marqspec.com/mcp \
+  Mcp__OAuth__Subjects=<your WorkOS user id, user_…> \
+  dotnet run --project MarqSpec.Mcp.TopstepX
+```
+
+Keycloak (`Issuer=https://<host>/realms/<realm>`, an audience mapper adding the resource URL), Auth0 (the
+tenant root, trailing slash kept) and Entra ID (scope under `scp`) fit the same keys.
+`Mcp__OAuth__MetadataUrl` points discovery at an RFC 8414 `oauth-authorization-server` document for an issuer
+that has no OpenID discovery.
+
+**Moving clients over: `Mcp__Auth__Mode=OAuthWithStaticToken`.** Both credentials, asked for by name: a request
+carrying exactly `Mcp__HttpBearerToken` is admitted (fixed-time compare, logged as `auth.method=static_token`,
+the token never), and anything else goes through OAuth and is refused with the OAuth challenge. That
+challenge is also what a bad static token gets, so a client that expected a bare `Bearer` 401 (Trader
+Jon's) is steered into OAuth discovery. The mode is for staging first; production stays `StaticToken`
+until a separate ADR. Startup
+requires both halves complete. It keeps the shared secret's exposure while it runs; switch to `OAuth` when
+nothing depends on the token.
+
 **Telemetry is off here, and everywhere, until you name a collector.** Set `Otel__Endpoint` — a collector's
 `http://host:4317` for OTLP over gRPC, or its `:4318` with `Otel__Protocol=http` — and this server exports
 traces, metrics and logs over OTLP: a span per `tools/call` tagged `mcp.method.name`, the Npgsql and

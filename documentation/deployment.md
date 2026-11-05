@@ -261,7 +261,7 @@ before any production deploy. Production deploys stay manual and need Adam's app
   `Mcp__OAuth__*` key, in **every** environment, production included. This is
   [ADR-0021's exception](adr/0021-a-non-loopback-instance-is-supported.md) (staging 2026-10-28, production
   2026-10-29 on [#851](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/851)). It is
-  **temporary**, until an OAuth provider is chosen (ApiaryKeeper's Keycloak is a candidate). The check fails
+  **temporary**, until the OAuth move below lands (WorkOS AuthKit, gh#997). The check fails
   any other mode (`[static-token-required]`) and a missing or literal token (`[static-token-secret]`). The
   app's OAuth mode is unchanged and unused on Railway.
 - **Forwarded headers:** `ASPNETCORE_FORWARDEDHEADERS_ENABLED` is true on `server` and false on `recorder`.
@@ -425,6 +425,48 @@ is a possible later option; it needs Adam's approval and a scrub spec.
 - the GitHub `staging` environment's required reviewer, `adammarquette` (it gates the staging deploy);
 - variables `RAILWAY_STAGING_BASE_URL` / `RAILWAY_PRODUCTION_BASE_URL` on those environments;
 - each `RAILWAY_TOKEN` as a Railway project token scoped to that one environment.
+
+### Moving the server to OAuth with WorkOS AuthKit (gh#997)
+
+The app accepts AuthKit tokens since gh#997. The Railway template does **not** yet: `[static-token-required]`
+still holds every environment on the static token, so don't set these variables in the dashboard until the
+template follow-up lands, or the next plan shows drift. Names only here, never values.
+
+**In the WorkOS dashboard (operator, once per environment):**
+- Connect → Configuration: add the MCP endpoint exactly as users type it, `https://topstepx-mcp.marqspec.com/mcp`
+  (staging: its own host), as a **Resource Indicator**, and make it the default for clients that omit `resource`.
+- Enable **Client ID Metadata Documents** (CIMD). Enable **Dynamic Client Registration** too if a client you use
+  has no CIMD support yet.
+- Restrict sign-up to yourself (or invite-only), and note your user id (`user_…`) for `Mcp__OAuth__Subjects`.
+
+**On `server`, once the template allows it:**
+
+| Variable | Value |
+|---|---|
+| `Mcp__Auth__Mode` | `OAuthWithStaticToken` on staging first, then `OAuth`. Production stays `StaticToken` |
+| `Mcp__OAuth__Issuer` | the AuthKit domain, `https://<project>.authkit.app`, no trailing slash |
+| `Mcp__OAuth__Audience` | the resource indicator, byte for byte. A mismatch with `ResourceUrl` warns |
+| `Mcp__OAuth__ResourceUrl` | the same URL |
+| `Mcp__OAuth__Subjects` | your WorkOS user id. Required here, because the next two stay unset |
+| `Mcp__HttpBearerToken` | kept from `MCP_HTTP_BEARER_TOKEN` while the mode is `OAuthWithStaticToken`, removed with it after |
+
+`Mcp__OAuth__ClientIds` and `Mcp__OAuth__RequiredScope` stay unset: CIMD clients have ids nobody can list, and
+AuthKit grants only its own scopes. Audience with all three of `Subjects`, `ClientIds` and `RequiredScope`
+empty refuses startup. None of these values is a secret; the WorkOS API key never reaches this process.
+Keys come from `{Issuer}/.well-known/openid-configuration`; if AuthKit answers that path with 404, set
+`Mcp__OAuth__MetadataUrl` to `{Issuer}/.well-known/oauth-authorization-server`.
+
+**Staging first.** Do not set this mode on production. The off-signal is `mcp.oauth.admits` with
+`auth.method=static_token` staying at zero for 14 days of staging use, and no static client left. The mode
+does not turn itself off. A bad or rotated static token gets the OAuth challenge, not a bare `Bearer` 401,
+so Trader Jon's client is steered into OAuth discovery.
+
+**Then, in claude.ai:** add a custom connector with the URL above and no client id or secret; Claude registers
+through CIMD or DCR and runs the AuthKit sign-in.
+
+**Not covered yet:** `check-deployment.sh` exchanges a Cognito-style client-credentials token. AuthKit's
+machine tokens carry the environment client id as `aud`, not the resource indicator, so the deploy check keeps
+using the static token until that follow-up decides how it authenticates.
 
 ## Verify a running instance
 

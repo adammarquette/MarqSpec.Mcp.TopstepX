@@ -38,6 +38,7 @@ internal sealed class StubIssuer : IAsyncDisposable
     private readonly string _advertisedSuffix;
     private int _discoveryRequests;
     private int _jwksRequests;
+    private int _rfc8414Requests;
 
     private StubIssuer(WebApplication app, RSA rsa, string issuer, string advertisedSuffix)
     {
@@ -59,6 +60,18 @@ internal sealed class StubIssuer : IAsyncDisposable
 
     /// <summary>How many times the key set has been fetched.</summary>
     public int JwksRequests => Volatile.Read(ref _jwksRequests);
+
+    /// <summary>How many times the RFC 8414 metadata document has been fetched.</summary>
+    public int Rfc8414Requests => Volatile.Read(ref _rfc8414Requests);
+
+    /// <summary>The next JWKS fetch answers 500. Discovery still succeeds.</summary>
+    public bool FailJwks { get; set; }
+
+    /// <summary>The next RFC 8414 metadata fetch answers 500.</summary>
+    public bool FailRfc8414 { get; set; }
+
+    /// <summary>The RFC 8414 document this issuer serves, under its own path.</summary>
+    public string Rfc8414Url => Issuer + "/.well-known/oauth-authorization-server";
 
     /// <summary>
     /// What the discovery document says its own <c>issuer</c> is. Normally <see cref="Issuer"/>; a test can
@@ -89,31 +102,55 @@ internal sealed class StubIssuer : IAsyncDisposable
         app.MapGet(pool + "/.well-known/openid-configuration", (HttpContext _) =>
         {
             Interlocked.Increment(ref self!._discoveryRequests);
-            string issuer = self.Issuer;
-            return Results.Json(new
-            {
-                issuer = self.AdvertisedIssuer,
-                jwks_uri = issuer + "/.well-known/jwks.json",
-                authorization_endpoint = issuer + "/oauth2/authorize",
-                token_endpoint = issuer + "/oauth2/token",
-                response_types_supported = new[] { "code" },
-                subject_types_supported = new[] { "public" },
-                id_token_signing_alg_values_supported = new[] { "RS256" },
-                code_challenge_methods_supported = new[] { "S256" },
-            });
+            return Results.Json(Document(self!));
+        });
+
+        // What Mcp__OAuth__MetadataUrl points at. Counted apart from OpenID discovery so a test can say
+        // which address the handler fetched.
+        app.MapGet(pool + "/.well-known/oauth-authorization-server", (HttpContext _) =>
+        {
+            Interlocked.Increment(ref self!._rfc8414Requests);
+            return self!.FailRfc8414
+                ? Results.StatusCode(StatusCodes.Status500InternalServerError)
+                : Results.Json(Document(self));
         });
 
         app.MapGet(pool + "/.well-known/jwks.json", (HttpContext _) =>
         {
             Interlocked.Increment(ref self!._jwksRequests);
+            if (self!.FailJwks)
+            {
+                return Results.StatusCode(StatusCodes.Status500InternalServerError);
+            }
+
             return Results.Json(new
             {
                 keys = new[]
                 {
-                    new { kty = published.Kty, kid = published.Kid, use = "sig", alg = "RS256", n = published.N, e = published.E },
+                    new
+                    {
+                        kty = published.Kty,
+                        kid = published.Kid,
+                        use = "sig",
+                        alg = "RS256",
+                        n = published.N,
+                        e = published.E,
+                    },
                 },
             });
         });
+
+        static object Document(StubIssuer issuer) => new
+        {
+            issuer = issuer.AdvertisedIssuer,
+            jwks_uri = issuer.Issuer + "/.well-known/jwks.json",
+            authorization_endpoint = issuer.Issuer + "/oauth2/authorize",
+            token_endpoint = issuer.Issuer + "/oauth2/token",
+            response_types_supported = new[] { "code" },
+            subject_types_supported = new[] { "public" },
+            id_token_signing_alg_values_supported = new[] { "RS256" },
+            code_challenge_methods_supported = new[] { "S256" },
+        };
 
         await app.StartAsync();
         self = new StubIssuer(app, rsa, app.Urls.First() + pool, advertisedSuffix);
@@ -127,6 +164,19 @@ internal sealed class StubIssuer : IAsyncDisposable
     /// <summary>A token shaped like a Cognito access token for this issuer, with every claim overridable.</summary>
     public TokenShape Valid() => new() { Issuer = Issuer };
 
+    /// <summary>
+    /// A token shaped like a Keycloak or Auth0 access token for this issuer: an audience, the client under
+    /// <c>azp</c> rather than <c>client_id</c>, and no <c>token_use</c>.
+    /// </summary>
+    public TokenShape ValidForAudience(string audience) => new()
+    {
+        Issuer = Issuer,
+        Audiences = [audience],
+        ClientId = null,
+        AuthorizedParty = "connector-client",
+        TokenUse = null,
+    };
+
     /// <summary>Mints a token. Unsigned when the shape says so; otherwise signed with the published key unless told otherwise.</summary>
     public string Mint(TokenShape shape)
     {
@@ -138,6 +188,17 @@ internal sealed class StubIssuer : IAsyncDisposable
         Put(claims, "client_id", shape.ClientId);
         Put(claims, "token_use", shape.TokenUse);
         Put(claims, "scope", shape.Scope);
+        Put(claims, "azp", shape.AuthorizedParty);
+        Put(claims, "scp", shape.EntraScope);
+        if (shape.Audiences is not null)
+        {
+            // One entry is written as a string and more as an array, as issuers do; the handler reads both.
+            // An array goes in as a JsonElement, the one shape the handler is certain to write as a JSON array.
+            claims["aud"] = shape.Audiences.Length == 1
+                ? (object)shape.Audiences[0]
+                : JsonSerializer.SerializeToElement(shape.Audiences);
+        }
+
         claims["version"] = 2;
         claims["jti"] = Guid.NewGuid().ToString("D");
 
@@ -205,7 +266,7 @@ internal sealed class StubIssuer : IAsyncDisposable
 /// <summary>
 /// One token's claims, defaulting to a valid Cognito-shaped access token; a test moves one thing.
 /// </summary>
-internal sealed class TokenShape
+internal sealed record TokenShape
 {
     /// <summary>The <c>iss</c> claim. <c>null</c> omits it.</summary>
     public string? Issuer { get; init; }
@@ -217,6 +278,15 @@ internal sealed class TokenShape
     public string? TokenUse { get; init; } = "access";
 
     public string? Scope { get; init; } = "topstepx-mcp/read";
+
+    /// <summary>The <c>aud</c> claim. <c>null</c> omits it, as a Cognito access token does.</summary>
+    public string[]? Audiences { get; init; }
+
+    /// <summary>The <c>azp</c> claim. <c>null</c> omits it.</summary>
+    public string? AuthorizedParty { get; init; }
+
+    /// <summary>Entra ID's <c>scp</c> claim. <c>null</c> omits it.</summary>
+    public string? EntraScope { get; init; }
 
     public DateTime? IssuedAt { get; init; }
 

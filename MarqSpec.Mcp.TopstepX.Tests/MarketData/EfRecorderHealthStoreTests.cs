@@ -103,6 +103,46 @@ public sealed class EfRecorderHealthStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task LeasesAsync_ReturnsTheStoredClaim()
+    {
+        DateTimeOffset heartbeat = _tuesday.AddSeconds(-10);
+        DateTimeOffset expires = _tuesday.AddMinutes(1);
+        _database.TapeLeases.Add(new TapeLeaseRecord
+        {
+            Venue = Venue,
+            Instrument = "ES",
+            OwnerId = "recorder",
+            Generation = 1,
+            AcquiredAt = heartbeat,
+            HeartbeatAt = heartbeat,
+            ExpiresAt = expires,
+            HubConnected = true,
+            Listening = true,
+        });
+        _database.TapeLeases.Add(new TapeLeaseRecord
+        {
+            Venue = "other",
+            Instrument = "ES",
+            OwnerId = "elsewhere",
+            Generation = 1,
+            AcquiredAt = heartbeat,
+            HeartbeatAt = heartbeat,
+            ExpiresAt = expires,
+            HubConnected = true,
+        });
+        await _database.SaveChangesAsync();
+
+        IReadOnlyList<RecorderLease> leases = await new EfRecorderHealthStore(_database)
+            .LeasesAsync(Venue, _es, CancellationToken.None);
+
+        leases.Should().ContainSingle();
+        leases[0].Instrument.Should().Be("ES");
+        leases[0].Venue.Should().Be(Venue);
+        leases[0].HubConnected.Should().BeTrue();
+        leases[0].ExpiresAt.Should().Be(expires);
+    }
+
+    [Fact]
     public async Task DatabaseConnectedAsync_WhenTheInMemoryStoreIsOpen_ReturnsTrue()
     {
         bool connected = await new EfRecorderHealthStore(_database)

@@ -53,7 +53,26 @@ public sealed class TapeLeaseRecord
 
     /// <summary>
     /// When the claim lapses unless renewed, exclusive. Always UTC. A start may take the row over
-    /// only at or after this instant.
+    /// only at or after this instant. A clean stop sets this to the stop instant so the next
+    /// start does not wait, and the row stays as a tombstone.
     /// </summary>
     public required DateTimeOffset ExpiresAt { get; set; }
+
+    /// <summary>
+    /// Whether the holder last reported its market hub connected. Null on a row written before
+    /// this column. A live claim with this false is reconnecting, not connected.
+    /// </summary>
+    public bool? HubConnected { get; set; }
+
+    /// <summary>Whether the holder last reported this instrument subscribed.</summary>
+    public bool? Listening { get; set; }
+
+    /// <summary>When the holder released the claim. Null while the claim is held.</summary>
+    public DateTimeOffset? StoppedAt { get; set; }
+
+    /// <summary>
+    /// Why the holder released the claim: a tape-unavailable reason name, or <c>fault</c>.
+    /// Null while the claim is held, and on a kill that left the row to expire.
+    /// </summary>
+    public string? StopReason { get; set; }
 }

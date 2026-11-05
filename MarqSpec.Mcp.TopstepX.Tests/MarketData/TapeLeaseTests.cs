@@ -1,10 +1,16 @@
 using FluentAssertions;
+using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Data;
 using MarqSpec.Mcp.TopstepX.Data.Entities;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
+using MarqSpec.Mcp.TopstepX.Telemetry;
+using MarqSpec.Mcp.TopstepX.Tools;
+using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Time.Testing;
 
 namespace MarqSpec.Mcp.TopstepX.Tests.MarketData;
@@ -230,13 +236,36 @@ public sealed class TapeLeaseTests
         await using (database)
         {
             await stopping.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
-            await stopping.ReleaseAllAsync(CancellationToken.None);
+            await stopping.ReleaseAllAsync(
+                nameof(TapeUnavailableReason.Stopped), CancellationToken.None);
 
-            Rows(database).Should().BeEmpty("the absence of a row is the free state");
+            TapeLeaseRecord tombstone = Rows(database).Should().ContainSingle().Subject;
+            tombstone.StopReason.Should().Be(nameof(TapeUnavailableReason.Stopped));
+            tombstone.ExpiresAt.Should().Be(_start);
+            tombstone.HubConnected.Should().BeFalse();
             stopping.Held.Should().BeEmpty();
 
             (await next.TryAcquireAsync(Venue, Instrument, CancellationToken.None))
                 .IsGranted.Should().BeTrue("a redeploy must not have to wait out a claim nobody holds");
+        }
+    }
+
+    [Fact]
+    public async Task AHubDrop_IsWrittenOntoTheLiveClaim_WithoutExtendingIt()
+    {
+        FakeTimeProvider clock = new(_start);
+        (TapeLease holder, TopstepXDbContext database, ServiceProvider services) = Build(clock);
+
+        await using (services)
+        await using (database)
+        {
+            await holder.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
+            await holder.WriteFeedAsync(_ => new TapeFeed(false, false), CancellationToken.None);
+
+            TapeLeaseRecord row = Rows(database).Should().ContainSingle().Subject;
+            row.HubConnected.Should().BeFalse();
+            row.Listening.Should().BeFalse();
+            row.ExpiresAt.Should().Be(_start + holder.TimeToLive);
         }
     }
 
@@ -256,7 +285,8 @@ public sealed class TapeLeaseTests
             clock.Advance(evicted.TimeToLive);
             await took.TryAcquireAsync(Venue, Instrument, CancellationToken.None);
 
-            await evicted.ReleaseAllAsync(CancellationToken.None);
+            await evicted.ReleaseAllAsync(
+                nameof(TapeUnavailableReason.Stopped), CancellationToken.None);
 
             Rows(database).Should().ContainSingle(row => row.OwnerId == took.OwnerId);
         }
@@ -441,6 +471,133 @@ public sealed class TapeLeaseTests
             lease.MayWrite(Venue, "NQ", _start).Should().BeFalse(
                 "holding one instrument is not a licence to record another");
         }
+    }
+
+    [Fact]
+    public async Task AKilledRecordersRestart_DoesNotReportListening_BeforeItConnects()
+    {
+        // A kill leaves the row expired with the hub flags still true. The next start
+        // takes that row. Until its subscription is confirmed, health must not say listening.
+        FakeTimeProvider clock = new(_start);
+        (TapeLease restart, TopstepXDbContext database, ServiceProvider services) = Build(clock);
+
+        await using (services)
+        await using (database)
+        {
+            database.TapeLeases.Add(new TapeLeaseRecord
+            {
+                Venue = ProjectXMarketDataGateway.Venue,
+                Instrument = Instrument,
+                OwnerId = "the-process-that-was-killed",
+                Generation = 4,
+                AcquiredAt = _start.AddMinutes(-2),
+                HeartbeatAt = _start.AddMinutes(-2),
+                ExpiresAt = _start,
+                HubConnected = true,
+                Listening = true,
+            });
+            await database.SaveChangesAsync();
+
+            (await restart.TryAcquireAsync(
+                    ProjectXMarketDataGateway.Venue, Instrument, CancellationToken.None))
+                .IsGranted.Should().BeTrue();
+
+            TapeLeaseRecord row = Rows(database).Should().ContainSingle().Subject;
+            row.OwnerId.Should().Be(restart.OwnerId);
+            row.HubConnected.Should().BeFalse();
+            row.Listening.Should().BeFalse();
+            row.StopReason.Should().BeNull();
+            row.StoppedAt.Should().BeNull();
+
+            RecorderHealthReport.Report report = await HealthReport(database, clock);
+            report.FeedConnected.Should().BeFalse();
+            report.Feed.Should().Be(TapeUnavailableReason.Reconnecting);
+            report.Contracts.Should().ContainSingle(contract => contract.Symbol == Instrument)
+                .Which.Listening.Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task ATakeoverOfATombstone_ClearsTheOldStop_SoALaterKillDoesNotReplayIt()
+    {
+        FakeTimeProvider clock = new(_start);
+        (TapeLease restart, TopstepXDbContext database, ServiceProvider services) = Build(clock);
+
+        await using (services)
+        await using (database)
+        {
+            database.TapeLeases.Add(new TapeLeaseRecord
+            {
+                Venue = ProjectXMarketDataGateway.Venue,
+                Instrument = Instrument,
+                OwnerId = "the-process-that-stopped",
+                Generation = 2,
+                AcquiredAt = _start.AddMinutes(-1),
+                HeartbeatAt = _start,
+                ExpiresAt = _start,
+                HubConnected = false,
+                Listening = false,
+                StoppedAt = _start,
+                StopReason = nameof(TapeUnavailableReason.StoppedForSessionConflict),
+            });
+            await database.SaveChangesAsync();
+
+            (await restart.TryAcquireAsync(
+                    ProjectXMarketDataGateway.Venue, Instrument, CancellationToken.None))
+                .IsGranted.Should().BeTrue();
+
+            TapeLeaseRecord held = Rows(database).Should().ContainSingle().Subject;
+            held.StopReason.Should().BeNull();
+            held.StoppedAt.Should().BeNull();
+            held.HubConnected.Should().BeFalse();
+            held.Listening.Should().BeFalse();
+
+            clock.Advance(restart.TimeToLive);
+            RecorderLease lapsed = new(
+                Instrument,
+                held.HeartbeatAt,
+                held.ExpiresAt,
+                ProjectXMarketDataGateway.Venue,
+                held.HubConnected,
+                held.Listening,
+                held.StoppedAt,
+                held.StopReason);
+            RecorderHealthService.RemoteFeed feed = RecorderHealthService.ClassifyLease(
+                lapsed,
+                clock.GetUtcNow(),
+                lastTick: null,
+                RecorderHealthService.RemoteFeedFreshFor);
+
+            feed.Listening.Should().BeFalse();
+            feed.Reason.Should().Be(
+                TapeUnavailableReason.Stopped,
+                "the old session-conflict reason was the previous holder's, and this one was killed");
+        }
+    }
+
+    private static async Task<RecorderHealthReport.Report> HealthReport(
+        TopstepXDbContext database,
+        TimeProvider clock)
+    {
+        database.ChangeTracker.Clear();
+        using HostTelemetry telemetry = new();
+        IOptions<MarketDataOptions> options =
+            Microsoft.Extensions.Options.Options.Create(new MarketDataOptions
+            {
+                Instruments = Instrument,
+                MaxRows = 5_000,
+                SessionCloseCentral = "16:00",
+            });
+        RecorderHealthService health = new(
+            new EfRecorderHealthStore(database),
+            new TapeAvailabilityHolder(),
+            new InstrumentRegistry(options),
+            BarSessionCalendar.Parse("16:00", []),
+            clock,
+            telemetry,
+            new RecorderHealthMemo(),
+            new BarBackfillStatus());
+        return await health.ReadAsync(CancellationToken.None);
     }
 
     private static List<TapeLeaseRecord> Rows(TopstepXDbContext database)

@@ -321,6 +321,52 @@ public sealed class HostTelemetryTests
         span.GetTagItem(HostTelemetry.SymbolTag).Should().BeNull();
     }
 
+    [Theory]
+    [InlineData(OAuthRefusalReason.Audience)]
+    [InlineData(OAuthRefusalReason.Subject)]
+    [InlineData(OAuthRefusalReason.Client)]
+    [InlineData(OAuthRefusalReason.TokenUse)]
+    public void AnOAuthRefusal_RecordsOperationReasonAndReplayFalse(string reason)
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> refusals = Collect(telemetry, HostTelemetry.OAuthRefusalsInstrument);
+
+        List<Activity> spans = [];
+        using ActivityListener listener = Listen(spans, telemetry.Activities);
+
+        using (telemetry.OAuthRefusal(reason))
+        {
+        }
+
+        CollectedMeasurement<long> measurement = refusals.LastMeasurement!;
+        measurement.Value.Should().Be(1);
+        measurement.Tags[HostTelemetry.OperationTag].Should().Be(OAuthGateOperation.Authenticate);
+        measurement.Tags[HostTelemetry.RefusalTag].Should().Be(reason);
+        measurement.Tags[HostTelemetry.ReplayTag].Should().Be(ExecutionWriteReplay.False);
+        measurement.Tags.Keys.Should().NotContain("account");
+
+        Activity span = spans.Should().ContainSingle().Subject;
+        span.OperationName.Should().Be("oauth.refusal");
+        span.GetTagItem(HostTelemetry.ReplayTag).Should().Be(ExecutionWriteReplay.False);
+        span.GetTagItem(HostTelemetry.RefusalTag).Should().Be(reason);
+    }
+
+    [Theory]
+    [InlineData(OAuthAuthMethod.StaticToken)]
+    [InlineData(OAuthAuthMethod.OAuth)]
+    public void AnOAuthAdmit_IsCountedByAuthMethod(string method)
+    {
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> admits = Collect(telemetry, HostTelemetry.OAuthAdmitsInstrument);
+
+        telemetry.OAuthAdmit(method);
+
+        CollectedMeasurement<long> measurement = admits.LastMeasurement!;
+        measurement.Value.Should().Be(1);
+        measurement.Tags[HostTelemetry.AuthMethodTag].Should().Be(method);
+        measurement.Tags.Keys.Should().NotContain("account");
+    }
+
     [Fact]
     public void NoSpanIsAllocatedWhenNothingIsListening()
     {

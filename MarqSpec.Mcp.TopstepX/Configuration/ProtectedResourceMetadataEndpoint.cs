@@ -30,7 +30,8 @@ public static class ProtectedResourceMetadataEndpoint
     /// <summary>The well-known path for the resource itself.</summary>
     public const string Path = "/.well-known/oauth-protected-resource";
 
-    /// <summary>The RFC 9728 path-suffixed form for a resource at <c>/mcp</c>, and what the challenge names.</summary>
+    /// <summary>The RFC 9728 path-suffixed form for a resource at <c>/mcp</c>, and what the challenge
+    /// names.</summary>
     public const string McpPath = Path + McpOptions.McpEndpointPath;
 
     /// <summary>The one way a token is presented: the <c>Authorization</c> header.</summary>
@@ -51,7 +52,9 @@ public static class ProtectedResourceMetadataEndpoint
         ProtectedResourceMetadata document = new(
             oauth.ResourceUrl,
             [oauth.Issuer],
-            [oauth.RequiredScope],
+            // Omitted when no scope is required: a connector asks for what is listed, and an issuer that
+            // does not define the scope refuses the whole authorization.
+            oauth.RequiresScope ? new[] { oauth.RequiredScope } : null,
             [HeaderMethod]);
 
         app.MapWhen(IsTheDocument, branch => branch.Run(context => context.Response.WriteAsJsonAsync(document)));
@@ -66,6 +69,8 @@ public static class ProtectedResourceMetadataEndpoint
     private sealed record ProtectedResourceMetadata(
         [property: JsonPropertyName("resource")] string Resource,
         [property: JsonPropertyName("authorization_servers")] string[] AuthorizationServers,
-        [property: JsonPropertyName("scopes_supported")] string[] ScopesSupported,
+        [property: JsonPropertyName("scopes_supported")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        string[]? ScopesSupported,
         [property: JsonPropertyName("bearer_methods_supported")] string[] BearerMethodsSupported);
 }

@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Staging Railway template carries the OAuth migration references** (gh#997). Staging's server
+  is `OAuthWithStaticToken` with shared `MCP_OAUTH_ISSUER`, `MCP_OAUTH_AUDIENCE`,
+  `MCP_OAUTH_RESOURCE_URL` and `MCP_OAUTH_SUBJECTS`, and the static token stays required.
+  Production's evaluated template is unchanged. An audience without an issuer fails the template
+  check by name.
 - **Audience-bound OAuth, and a static-token migration mode** (gh#997). With `Mcp__OAuth__Audience` set,
   the HTTP gate accepts access tokens from any OAuth 2.1 / OIDC issuer that puts an audience in them
   (WorkOS AuthKit, Keycloak, Auth0, Entra ID). `Mcp__Auth__Mode=OAuthWithStaticToken` also admits the

@@ -45,6 +45,12 @@ const SHARED = {
   // Every environment's server (ADR-0021 exception, 2026-10-28, production too since 2026-10-29); the server
   // check pins which role may use which token.
   MCP_HTTP_BEARER_TOKEN: ["Mcp__HttpBearerToken"],
+  // Staging migration mode only (gh#997). Public configuration, still references: the file must not
+  // carry an issuer, audience, resource URL or subject list of its own.
+  MCP_OAUTH_ISSUER: ["Mcp__OAuth__Issuer"],
+  MCP_OAUTH_AUDIENCE: ["Mcp__OAuth__Audience"],
+  MCP_OAUTH_RESOURCE_URL: ["Mcp__OAuth__ResourceUrl"],
+  MCP_OAUTH_SUBJECTS: ["Mcp__OAuth__Subjects"],
   TAPE_EXPORT_DRIVE_SERVICE_ACCOUNT_JSON: ["TapeExport__Drive__ServiceAccountJson"],
   TAPE_EXPORT_DRIVE_FOLDER_ID: ["TapeExport__Drive__FolderId"],
 };
@@ -377,15 +383,45 @@ const server = byName.server;
 if (server) {
   const env = server.variables ?? {};
   const mode = literal(env.Mcp__Auth__Mode);
-  // ADR-0021 exception (2026-10-28; production too since 2026-10-29, gh#851/gh#855), TEMPORARY until an OAuth
-  // provider is chosen: every environment's server runs StaticToken on its own shared MCP_HTTP_BEARER_TOKEN.
-  // KEEP IN SYNC: .railway/railway.ts serverAuth. When a provider exists, this goes back to requiring OAuth.
-  if (mode !== "StaticToken")
-    fail(`[static-token-required] server: Mcp__Auth__Mode must be StaticToken in every environment until an OAuth provider is chosen (ADR-0021 exception); ${environment} got ${JSON.stringify(env.Mcp__Auth__Mode)}`);
-  if (!isShared(env.Mcp__HttpBearerToken, "MCP_HTTP_BEARER_TOKEN"))
-    fail(`[static-token-secret] server: Mcp__HttpBearerToken must be ctx.shared.MCP_HTTP_BEARER_TOKEN in ${environment} (not the recorder's token, never a literal, never missing)`);
-  for (const k of Object.keys(env)) if (/^mcp(__|:)oauth(__|:)/i.test(k))
-    fail(`[static-token-no-oauth] server: ${k} must not be set beside Mcp__Auth__Mode=StaticToken (McpOptions refuses it)`);
+  const oauthKeys = Object.keys(env).filter((k) => /^mcp(__|:)oauth(__|:)/i.test(k));
+  // ADR-0021 (2026-11-05, gh#997): staging may run OAuthWithStaticToken. Every other environment stays
+  // StaticToken. KEEP IN SYNC: .railway/railway.ts serverAuth.
+  if (environment === "staging" && mode === "OAuthWithStaticToken") {
+    if (!isShared(env.Mcp__HttpBearerToken, "MCP_HTTP_BEARER_TOKEN"))
+      fail("[static-token-secret] server: Mcp__HttpBearerToken must be "
+        + "ctx.shared.MCP_HTTP_BEARER_TOKEN in staging (migration mode keeps the static token)");
+    const pairFaults = [
+      ["Mcp__OAuth__Issuer", "MCP_OAUTH_ISSUER"],
+      ["Mcp__OAuth__Audience", "MCP_OAUTH_AUDIENCE"],
+    ].flatMap(([key, shared]) => {
+      if (!Object.prototype.hasOwnProperty.call(env, key)) return [`${key} is missing`];
+      if (!isShared(env[key], shared)) return [`${key} must be ctx.shared.${shared}, not a literal`];
+      return [];
+    });
+    if (pairFaults.length)
+      fail("[oauth-pair] server: staging OAuthWithStaticToken requires Mcp__OAuth__Issuer and "
+        + `Mcp__OAuth__Audience together; ${pairFaults.join("; ")}`);
+    if (!isShared(env.Mcp__OAuth__ResourceUrl, "MCP_OAUTH_RESOURCE_URL"))
+      fail("[oauth-resource] server: Mcp__OAuth__ResourceUrl must be ctx.shared.MCP_OAUTH_RESOURCE_URL "
+        + "in staging migration mode (the app requires it; never a literal URL)");
+    const subjects = isShared(env.Mcp__OAuth__Subjects, "MCP_OAUTH_SUBJECTS");
+    const scope = literal(env.Mcp__OAuth__RequiredScope);
+    if (!subjects && !(typeof scope === "string" && scope.length > 0))
+      fail("[oauth-restriction] server: staging audience needs Mcp__OAuth__Subjects or "
+        + "Mcp__OAuth__RequiredScope; both are empty, so open sign-up would be admitted (gh#997)");
+  } else if (mode !== "StaticToken") {
+    fail("[static-token-required] server: Mcp__Auth__Mode must be StaticToken outside staging "
+      + "(staging may use OAuthWithStaticToken, gh#997); "
+      + `${environment} got ${JSON.stringify(env.Mcp__Auth__Mode)}`);
+  } else {
+    if (!isShared(env.Mcp__HttpBearerToken, "MCP_HTTP_BEARER_TOKEN"))
+      fail("[static-token-secret] server: Mcp__HttpBearerToken must be "
+        + `ctx.shared.MCP_HTTP_BEARER_TOKEN in ${environment} `
+        + "(not the recorder's token, never a literal, never missing)");
+    for (const k of oauthKeys)
+      fail("[static-token-no-oauth] server: " + k
+        + " must not be set beside Mcp__Auth__Mode=StaticToken (McpOptions refuses it)");
+  }
   if (literal(env.ASPNETCORE_FORWARDEDHEADERS_ENABLED) !== "true") fail("server: behind Railway's edge, ASPNETCORE_FORWARDEDHEADERS_ENABLED must be true");
   if (literal(env.MarketData__RecordTape) !== "false") fail("server: MarketData__RecordTape must be false; the recorder owns the tape");
   // The server lists get_quote. It must not write quotes: that would open a hub beside the recorder.

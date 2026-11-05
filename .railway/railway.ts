@@ -189,16 +189,27 @@ export default defineRailway((ctx) => {
   // container mid-migration. 3990 >= store wait (90) + migration (3600) + 300 s warm-up, which the check requires.
   const HEALTHCHECK_TIMEOUT = 3990;
 
-  // ADR-0021 EXCEPTION (2026-10-28, widened to production 2026-10-29 on gh#851/gh#855), TEMPORARY: no
-  // OAuth provider is chosen yet, so EVERY environment's server runs the static gate on its own
-  // environment's shared MCP_HTTP_BEARER_TOKEN, with NO Mcp__OAuth__* key beside it (McpOptions refuses
-  // that). The app's OAuth path is unchanged; when a provider exists (ApiaryKeeper's Keycloak is a
-  // candidate), this block goes back to OAuth.
-  // KEEP IN SYNC: evaluate-template.mjs [static-token-required] requires exactly this shape.
-  const serverAuth = {
-    Mcp__Auth__Mode: "StaticToken",
-    Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
-  } as const;
+  // ADR-0021 (2026-11-05, gh#997): staging may run the migration mode. Production, and every other
+  // environment, stays StaticToken until a separate ADR. Values are shared references only — never a
+  // literal issuer, audience, subject or token. The static token stays required in the migration mode.
+  // KEEP IN SYNC: evaluate-template.mjs [static-token-required] and [oauth-pair].
+  // Cast: spreading the union would type the OAuth keys as possibly undefined, which the
+  // SDK's env record rejects. The values themselves are unchanged.
+  const serverAuth = (
+    ctx.environment === "staging"
+      ? {
+          Mcp__Auth__Mode: "OAuthWithStaticToken",
+          Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
+          Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,
+          Mcp__OAuth__Audience: ctx.shared.MCP_OAUTH_AUDIENCE,
+          Mcp__OAuth__ResourceUrl: ctx.shared.MCP_OAUTH_RESOURCE_URL,
+          Mcp__OAuth__Subjects: ctx.shared.MCP_OAUTH_SUBJECTS,
+        }
+      : {
+          Mcp__Auth__Mode: "StaticToken",
+          Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
+        }
+  ) as Record<string, string | { type: "sharedReference"; name: string }>;
 
   const server = service("server", {
     source: server_image(),

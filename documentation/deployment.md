@@ -257,13 +257,13 @@ before any production deploy. Production deploys stay manual and need Adam's app
   while the old deployment keeps serving. The alternative, a pre-deploy migration command, would need an image
   entrypoint that migrates and exits (no such mode today); revisit with #767. The timeout is per command, so a
   migration of several long commands can still exceed it; watch first-deploy logs.
-- **Auth:** the server runs `StaticToken` on its environment's shared `MCP_HTTP_BEARER_TOKEN`, with no
-  `Mcp__OAuth__*` key, in **every** environment, production included. This is
-  [ADR-0021's exception](adr/0021-a-non-loopback-instance-is-supported.md) (staging 2026-10-28, production
-  2026-10-29 on [#851](https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/issues/851)). It is
-  **temporary**, until the OAuth move below lands (WorkOS AuthKit, gh#997). The check fails
-  any other mode (`[static-token-required]`) and a missing or literal token (`[static-token-secret]`). The
-  app's OAuth mode is unchanged and unused on Railway.
+- **Auth:** production, and every environment that is not staging, runs `StaticToken` on that
+  environment's shared `MCP_HTTP_BEARER_TOKEN`, with no `Mcp__OAuth__*` key. Staging runs
+  `OAuthWithStaticToken` (gh#997): the same static token, plus shared references for
+  `Mcp__OAuth__Issuer`, `Mcp__OAuth__Audience`, `Mcp__OAuth__ResourceUrl` and `Mcp__OAuth__Subjects`.
+  The file never contains those values. Production's evaluated template is unchanged. Issuer and
+  audience are a pair (`[oauth-pair]`). Audience with no subjects and no required scope is refused
+  (`[oauth-restriction]`). Production stays `StaticToken` until a separate ADR.
 - **Forwarded headers:** `ASPNETCORE_FORWARDEDHEADERS_ENABLED` is true on `server` and false on `recorder`.
 - **Restarts:** Railway's default (`ON_FAILURE`, 10) for all three services, left **unstated**: Railway
   stores a default as null, so stating it is a diff in every plan and a redeploy on every apply
@@ -292,18 +292,21 @@ confirm `RAILWAY_PUBLIC_DOMAIN` is the host connectors use, because `check-deplo
 exactly. This is an ADR-0025 open item.
 
 **Shared variables.** Set them per environment in Railway. CI rejects any literal secret or unknown reference.
-Staging's are `POSTGRES_PASSWORD`, the three `PROJECTX_*`, `MCP_HTTP_BEARER_TOKEN` and
-`MCP_RECORDER_BEARER_TOKEN`.
-Production's are the same names, each with its own value. `MCP_HTTP_BEARER_TOKEN` is **required** in
-production; don't delete it. No environment needs `MCP_OAUTH_ISSUER` or `MCP_OAUTH_CLIENT_IDS` (the template
-rejects them).
+Staging's are `POSTGRES_PASSWORD`, the three `PROJECTX_*`, `MCP_HTTP_BEARER_TOKEN`,
+`MCP_RECORDER_BEARER_TOKEN`, and the four `MCP_OAUTH_*` references below.
+Production's are the first five names, each with its own value. `MCP_HTTP_BEARER_TOKEN` is **required**
+in production; don't delete it. Production does not reference `MCP_OAUTH_*`.
 
 | Shared variable | Feeds |
 |---|---|
 | `POSTGRES_PASSWORD` | `postgres`, and the password in `ConnectionStrings__Default` |
 | `PROJECTX_API_KEY`, `PROJECTX_API_SECRET`, `PROJECTX_DATA_TIER` | `ProjectX__*` (the tier is never defaulted, R-7.2) |
-| `MCP_HTTP_BEARER_TOKEN` | `server`'s `Mcp__HttpBearerToken`, **every environment** (ADR-0021 exception, temporary) |
+| `MCP_HTTP_BEARER_TOKEN` | `server`'s `Mcp__HttpBearerToken` in every environment |
 | `MCP_RECORDER_BEARER_TOKEN` | `recorder`'s `Mcp__HttpBearerToken` |
+| `MCP_OAUTH_ISSUER` | staging `server`'s `Mcp__OAuth__Issuer` only. A reference, never a literal |
+| `MCP_OAUTH_AUDIENCE` | staging `server`'s `Mcp__OAuth__Audience` only. Required with the issuer |
+| `MCP_OAUTH_RESOURCE_URL` | staging `server`'s `Mcp__OAuth__ResourceUrl` only |
+| `MCP_OAUTH_SUBJECTS` | staging `server`'s `Mcp__OAuth__Subjects`. A reference, not a value |
 
 The database host is the typed reference `postgres.env.RAILWAY_PRIVATE_DOMAIN`, read into the connection
 string as a same-service reference. It runs over the private network, so no `SSL Mode` is needed.
@@ -428,9 +431,9 @@ is a possible later option; it needs Adam's approval and a scrub spec.
 
 ### Moving the server to OAuth with WorkOS AuthKit (gh#997)
 
-The app accepts AuthKit tokens since gh#997. The Railway template does **not** yet: `[static-token-required]`
-still holds every environment on the static token, so don't set these variables in the dashboard until the
-template follow-up lands, or the next plan shows drift. Names only here, never values.
+The app accepts AuthKit tokens (gh#997). Staging's template now references the migration-mode keys.
+Production's template does not. Set the staging shared variables before the next staging apply, or the
+plan cannot resolve them. Names only here, never values. Do not set them on production.
 
 **In the WorkOS dashboard (operator, once per environment):**
 - Connect → Configuration: add the MCP endpoint exactly as users type it, `https://topstepx-mcp.marqspec.com/mcp`
@@ -482,13 +485,15 @@ MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=… \
 CI runs [`check-deployment-selftest.sh`](../scripts/check-deployment-selftest.sh) against a loopback
 fixture so that gate can still fail without a live deployment.
 
-Every Railway server runs the static token (ADR-0021 exception), so check staging and production with the
-static-token mode instead. That mode needs `MCP_CHECK_ENVIRONMENT` set to `staging` or `production` and
-refuses anything else. `railway-staging.yml` runs it after the seed, using the `staging` environment secret
-`MCP_HTTP_BEARER_TOKEN`. For production, pass production's own token the same way (no workflow runs it yet):
+Production still runs the static token. Staging's template is the migration mode, so check staging
+with `OAuthWithStaticToken` (issuer and audience together, plus the static token) and production with
+`StaticToken`. `railway-staging.yml` runs the staging form after the seed. The bearer token is the
+`staging` environment secret `MCP_HTTP_BEARER_TOKEN`. Issuer and audience are variables, not secrets.
+For production, pass production's own token (no workflow runs it yet):
 
 ```bash
-MCP_CHECK_AUTH_MODE=StaticToken MCP_CHECK_ENVIRONMENT=staging MCP_CHECK_BEARER_TOKEN=… \
+MCP_CHECK_AUTH_MODE=OAuthWithStaticToken MCP_CHECK_ENVIRONMENT=staging \
+  MCP_CHECK_BEARER_TOKEN=… MCP_CHECK_OAUTH_ISSUER=… MCP_CHECK_OAUTH_AUDIENCE=… \
   scripts/check-deployment.sh https://staging-topstepx-mcp.marqspec.com 0.4.0
 MCP_CHECK_AUTH_MODE=StaticToken MCP_CHECK_ENVIRONMENT=production MCP_CHECK_BEARER_TOKEN=… \
   scripts/check-deployment.sh https://your-production-host.example 0.4.0

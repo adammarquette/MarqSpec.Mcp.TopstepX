@@ -133,18 +133,20 @@ jobs:
           DIGEST: ${{ inputs.digest }}
         run: scripts/railway/wait-for-health.sh "$BASE_URL" "$VERSION" "$DIGEST" 120
 
-      # An authenticated MCP call, not just /health. Staging and production both run the static token until an
-      # OAuth provider is chosen (ADR-0021 2026-10-29 update, #855), so check-deployment.sh runs in
-      # StaticToken mode here, for staging. MCP_HTTP_BEARER_TOKEN is a `staging` environment secret holding
-      # the same value as Railway's staging shared MCP_HTTP_BEARER_TOKEN; it reaches the script only via env:,
-      # and the script never prints it. This job checks staging only.
-      - name: MCP answers with the static token (staging only)
+      # An authenticated MCP call, not just /health. Staging's template runs OAuthWithStaticToken
+      # (gh#997): the check expects the OAuth challenge and then presents the static token.
+      # MCP_HTTP_BEARER_TOKEN is a `staging` environment secret. Issuer and audience are vars, not
+      # secrets. This job checks staging only. Do not dispatch until those vars exist and the image
+      # contains the audience-bound gate.
+      - name: MCP answers with the static token (staging migration mode)
         env:
           BASE_URL: ${{ vars.RAILWAY_STAGING_BASE_URL }}
           VERSION: ${{ inputs.version }}
-          MCP_CHECK_AUTH_MODE: StaticToken
+          MCP_CHECK_AUTH_MODE: OAuthWithStaticToken
           MCP_CHECK_ENVIRONMENT: staging
           MCP_CHECK_BEARER_TOKEN: ${{ secrets.MCP_HTTP_BEARER_TOKEN }}
+          MCP_CHECK_OAUTH_ISSUER: ${{ vars.MCP_OAUTH_ISSUER }}
+          MCP_CHECK_OAUTH_AUDIENCE: ${{ vars.MCP_OAUTH_AUDIENCE }}
         run: scripts/check-deployment.sh "$BASE_URL" "$VERSION"
 
       # The record railway-promote.yml requires: a successful `staging` GitHub deployment whose payload names

@@ -759,4 +759,17 @@ stop_fixture
 expect_rejected "StaticToken with no token" \
   "UNSET  MCP_CHECK_BEARER_TOKEN"
 
-ok "check-deployment.sh accepts a sound deployment in each mode and rejects fourteen known faults by name."
+# Staging migration mode: audience without issuer fails before any request. No fixture — nothing is sent.
+GATE_STATUS=0
+: >"$OUT"
+: >"$ERR"
+env CURL_HOME="" MCP_CHECK_AUTH_MODE=OAuthWithStaticToken MCP_CHECK_ENVIRONMENT=staging \
+  MCP_CHECK_BEARER_TOKEN="$FIXTURE_ACCESS_TOKEN" \
+  MCP_CHECK_OAUTH_AUDIENCE="https://topstepx-mcp.example.test/mcp" \
+  bash "$GATE" "http://127.0.0.1:9" "$FIXTURE_VERSION" >"$OUT" 2>"$ERR" || GATE_STATUS=$?
+expect_rejected "audience without issuer in migration mode" \
+  "OAUTH PAIR" \
+  "Issuer set: 0" \
+  "NOTHING HAS BEEN SENT"
+
+ok "check-deployment.sh accepts a sound deployment in each mode and rejects fifteen known faults by name."

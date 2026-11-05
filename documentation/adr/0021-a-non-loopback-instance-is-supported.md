@@ -364,9 +364,9 @@ there is a later decision, not this one.
 `Mcp__HttpBearerToken` — once `mcp.oauth.admits` with `auth.method=static_token` has stayed at zero for 14
 days of staging use and no static client remains. That counter is the off-signal.
 
-**What the Railway template does not do yet.** `.railway/railway.ts` still requires `StaticToken` in every
-environment. Carrying the staging keys is a follow-up. Until it lands, do not set the OAuth variables in the
-dashboard: the next plan would show drift.
+**Railway.** Staging's template carries `OAuthWithStaticToken` and shared references for the issuer,
+the audience, the resource URL and the subject list. Production's evaluated template is unchanged and
+stays `StaticToken`. The values are not in the file.
 
 Assisted-by: grok-bot:major-maker
 

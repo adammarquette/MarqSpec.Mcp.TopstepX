@@ -3,8 +3,10 @@ using FluentAssertions;
 using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
+using MarqSpec.Mcp.TopstepX.Tools;
 using Microsoft.Extensions.Diagnostics.Metrics.Testing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -92,6 +94,170 @@ public sealed class LatestQuoteWriterTests
     }
 
     [Fact]
+    public async Task ATradeFillsLast_AndGetQuoteOmitsAVolumeTheQuoteDidNotCarry()
+    {
+        HoldingStore store = new();
+        using HostTelemetry telemetry = new();
+        (LatestQuoteWriter writer, FakeMarketHub hub, FakeTimeProvider clock) = BuildClock(
+            McpTransport.Http, recordTape: true, recordQuotes: true, store, telemetry);
+        hub.SimulateMarketReconnect();
+
+        await writer.StartAsync(CancellationToken.None);
+        await WaitUntil(() => hub.TradeSubscriptions.Contains(EsContract));
+
+        DateTime stamp = new(2026, 11, 1, 15, 0, 0, DateTimeKind.Utc);
+        hub.RaiseQuote(new PriceUpdate
+        {
+            ContractId = EsContract,
+            Symbol = "F.US.EP",
+            BestBid = 7650.5m,
+            BestAsk = 7650.75m,
+            LastPrice = 0m,
+            Volume = 0m,
+            Timestamp = stamp,
+        });
+        hub.Raise(new TradeUpdate
+        {
+            ContractId = EsContract,
+            Price = 7650.5m,
+            Volume = 2m,
+            Timestamp = stamp.AddSeconds(1),
+        });
+        hub.RaiseQuote(new PriceUpdate
+        {
+            ContractId = EsContract,
+            Symbol = "F.US.EP",
+            BestBid = 7650.75m,
+            BestAsk = 7651m,
+            LastPrice = 0m,
+            Volume = 0m,
+            Timestamp = stamp.AddSeconds(2),
+        });
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await WaitUntil(() => store.Row is not null);
+
+        MarketDataOptions options = new()
+        {
+            Instruments = "ES",
+            SessionCloseCentral = "16:00",
+            GetQuoteEnabled = true,
+            LatestQuoteStaleAfter = TimeSpan.FromSeconds(15),
+        };
+        QuoteTools tool = new(new LatestQuoteReader(
+            store,
+            new InstrumentRegistry(Options.Create(options)),
+            Options.Create(options),
+            BarSessionCalendar.Parse("16:00", []),
+            clock,
+            telemetry,
+            NullLogger<LatestQuoteReader>.Instance));
+
+        ToolPayloads.Quote quote = await tool.GetQuote("ES", CancellationToken.None);
+
+        quote.Status.Should().Be(LatestQuoteStatus.Ok);
+        quote.Bid.Should().Be(7650.75m);
+        quote.Ask.Should().Be(7651m);
+        quote.Last.Should().Be(7650.5m);
+        quote.LastAt.Should().NotBeNull();
+        quote.Volume.Should().BeNull();
+        quote.AgeSeconds.Should().Be(0);
+
+        await writer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task AFailedTradeSubscription_IsCounted_AndThePriceSubscriptionStands()
+    {
+        RecordingStore store = new();
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> failures = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.QuoteFailuresInstrument);
+        (LatestQuoteWriter writer, FakeMarketHub hub, _) = BuildClock(
+            McpTransport.Http, recordTape: true, recordQuotes: true, store, telemetry);
+        hub.TradeSubscribeThrows = new InvalidOperationException("trade hub refused");
+        hub.SimulateMarketReconnect();
+
+        await writer.StartAsync(CancellationToken.None);
+        await WaitUntil(() => Counted(failures, QuoteWriteOutcome.TradeSubscribeFailed) >= 1);
+
+        hub.PriceSubscriptionIds.Should().Contain(EsContract);
+        await writer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task AFailedTradeUnsubscribe_IsCountedWhenAContractIsReleased()
+    {
+        RecordingStore store = new();
+        using HostTelemetry telemetry = new();
+        using MetricCollector<long> failures = new(
+            telemetry, HostTelemetry.Name, HostTelemetry.QuoteFailuresInstrument);
+        (LatestQuoteWriter writer, FakeMarketHub hub, _) = BuildClock(
+            McpTransport.Http, recordTape: true, recordQuotes: true, store, telemetry);
+        hub.SimulateMarketReconnect();
+
+        await writer.StartAsync(CancellationToken.None);
+        await WaitUntil(() => hub.TradeSubscriptions.Contains(EsContract));
+        hub.TradeUnsubscribeThrows = new InvalidOperationException("trade unsub refused");
+
+        await writer.StopAsync(CancellationToken.None);
+
+        Counted(failures, QuoteWriteOutcome.TradeUnsubscribeFailed).Should().BeGreaterThan(0);
+    }
+
+    [Fact]
+    public async Task AHubReconnect_DoesNotKeepACarriedLast()
+    {
+        RecordingStore store = new();
+        (LatestQuoteWriter writer, FakeMarketHub hub, FakeTimeProvider clock) = BuildClock(
+            McpTransport.Http, recordTape: true, recordQuotes: true, store);
+        hub.SimulateMarketReconnect();
+
+        await writer.StartAsync(CancellationToken.None);
+        await WaitUntil(() => hub.TradeSubscriptions.Contains(EsContract));
+        hub.RaiseQuote(new PriceUpdate
+        {
+            ContractId = EsContract,
+            BestBid = 10m,
+            BestAsk = 10.25m,
+            LastPrice = 0m,
+            Volume = 0m,
+            Timestamp = new DateTime(2026, 11, 1, 15, 0, 0, DateTimeKind.Utc),
+        });
+        hub.Raise(new TradeUpdate
+        {
+            ContractId = EsContract,
+            Price = 10.5m,
+            Volume = 1m,
+            Timestamp = new DateTime(2026, 11, 1, 15, 0, 1, DateTimeKind.Utc),
+        });
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await WaitUntil(() => store.Batches.Count >= 1);
+        store.Batches[0].Should().ContainSingle().Which.Last.Should().Be(10.5m);
+
+        hub.SimulateMarketDisconnect();
+        hub.SimulateMarketReconnect();
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await WaitUntil(() => hub.TradeSubscriptions.Contains(EsContract));
+        hub.RaiseQuote(new PriceUpdate
+        {
+            ContractId = EsContract,
+            BestBid = 11m,
+            BestAsk = 11.25m,
+            LastPrice = 0m,
+            Volume = 0m,
+            Timestamp = new DateTime(2026, 11, 1, 15, 0, 2, DateTimeKind.Utc),
+        });
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await WaitUntil(() => store.Batches.Count >= 2);
+
+        LatestQuoteDraft after = store.Batches[^1].Should().ContainSingle().Subject;
+        after.Bid.Should().Be(11m);
+        after.Last.Should().Be(0);
+
+        await writer.StopAsync(CancellationToken.None);
+    }
+
+    [Fact]
     public async Task AThrowingStore_IsLoggedAndRetried_AndTheWriterStaysRunning()
     {
         ThrowingStore store = new();
@@ -171,6 +337,8 @@ public sealed class LatestQuoteWriterTests
             && !hub.PriceSubscriptionIds.Contains(EsContract));
 
         hub.PriceUnsubscribes.Should().BeGreaterThan(0);
+        hub.TradeSubscriptions.Should().Contain(NextContract);
+        hub.TradeSubscriptions.Should().NotContain(EsContract);
         hub.MarketConnects.Should().Be(0);
         hub.TransitionsIntoConnected.Should().Be(1);
 
@@ -476,7 +644,8 @@ public sealed class LatestQuoteWriterTests
             store,
             resolveFront ?? ((instrument, _) => Task.FromResult<string?>(
                 instrument.Symbol == "ES" ? EsContract : null)),
-            "projectx");
+            "projectx",
+            BarSessionCalendar.Parse(options.SessionCloseCentral, []));
         return (writer, hub, clock);
     }
 
@@ -512,6 +681,58 @@ public sealed class LatestQuoteWriterTests
         catch (OperationCanceledException exception) when (exception.CancellationToken == timeout.Token)
         {
             throw new InvalidOperationException("Timed out waiting for: " + conditionExpression);
+        }
+    }
+
+    private sealed class HoldingStore : ILatestQuoteStore
+    {
+        public LatestQuoteRow? Row { get; private set; }
+
+        public Task<int> UpsertAsync(
+            IReadOnlyList<LatestQuoteDraft> quotes,
+            CancellationToken cancellationToken)
+        {
+            LatestQuoteDraft quote = quotes[0];
+            Row = new LatestQuoteRow(
+                quote.Venue,
+                quote.Instrument,
+                quote.ContractId,
+                quote.Bid,
+                quote.Ask,
+                quote.Last,
+                quote.Volume,
+                quote.QuoteTimeUtc,
+                quote.ReceivedAt,
+                0,
+                quote.LastAt,
+                quote.VolumeAt,
+                quote.TradeDate);
+            return Task.FromResult(quotes.Count);
+        }
+
+        public Task<LatestQuoteFront?> FindFrontAsync(
+            string instrument,
+            CancellationToken cancellationToken)
+        {
+            if (Row is null || !string.Equals(Row.Instrument, instrument, StringComparison.Ordinal))
+            {
+                return Task.FromResult<LatestQuoteFront?>(null);
+            }
+
+            return Task.FromResult<LatestQuoteFront?>(new LatestQuoteFront(Row.Venue, Row.ContractId));
+        }
+
+        public Task<LatestQuoteRow?> FindAsync(
+            string venue,
+            string contractId,
+            CancellationToken cancellationToken)
+        {
+            if (Row is null || Row.Venue != venue || Row.ContractId != contractId)
+            {
+                return Task.FromResult<LatestQuoteRow?>(null);
+            }
+
+            return Task.FromResult<LatestQuoteRow?>(Row);
         }
     }
 

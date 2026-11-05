@@ -4,6 +4,7 @@ using FluentAssertions;
 using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -38,8 +39,7 @@ public sealed class LatestQuoteSpanTests
         subscribe.Status.Should().NotBe(ActivityStatusCode.Error);
 
         hub.RaiseQuote(Quote(10m));
-        clock.Advance(TimeSpan.FromSeconds(1));
-        await WaitUntil(() => Span(stopped, "quote.flush") is not null);
+        await WaitForFlush(stopped, clock);
 
         Activity flush = Span(stopped, "quote.flush")!;
         flush.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(QuoteWriteOutcome.Written);
@@ -61,8 +61,7 @@ public sealed class LatestQuoteSpanTests
         await writer.StartAsync(CancellationToken.None);
         await WaitUntil(() => hub.PriceSubscriptionIds.Contains(EsContract));
         hub.RaiseQuote(Quote(10m));
-        clock.Advance(TimeSpan.FromSeconds(1));
-        await WaitUntil(() => Span(stopped, "quote.flush") is not null);
+        await WaitForFlush(stopped, clock);
 
         Activity flush = Span(stopped, "quote.flush")!;
         flush.GetTagItem(HostTelemetry.OutcomeTag).Should().Be(QuoteWriteOutcome.Failed);
@@ -120,7 +119,8 @@ public sealed class LatestQuoteSpanTests
             telemetry,
             store,
             (instrument, _) => Task.FromResult<string?>(instrument.Symbol == "ES" ? EsContract : null),
-            "projectx");
+            "projectx",
+            BarSessionCalendar.Parse(options.SessionCloseCentral, []));
         return (writer, hub, clock);
     }
 
@@ -148,6 +148,27 @@ public sealed class LatestQuoteSpanTests
 
         ActivitySource.AddActivityListener(listener);
         return listener;
+    }
+
+    /// <summary>
+    /// Advances the fake clock until a flush span exists. One advance can land before the
+    /// writer has started its delay, and then the delay waits for a second advance.
+    /// </summary>
+    private static async Task WaitForFlush(List<Activity> stopped, FakeTimeProvider clock)
+    {
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        try
+        {
+            while (Span(stopped, "quote.flush") is null)
+            {
+                clock.Advance(TimeSpan.FromSeconds(1));
+                await Task.Delay(10, timeout.Token);
+            }
+        }
+        catch (OperationCanceledException exception) when (exception.CancellationToken == timeout.Token)
+        {
+            throw new InvalidOperationException("Timed out waiting for a quote.flush span.");
+        }
     }
 
     private static async Task WaitUntil(

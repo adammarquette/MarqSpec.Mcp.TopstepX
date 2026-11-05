@@ -77,6 +77,18 @@ page against either**, so check it against the code, never against another docum
   So the answer is "retry", and the retry is served from what the other writer committed. **A defect in this
   server is still a defect**: an invariant violation propagates unchanged rather than being dressed up as a
   transient store condition an operator would retry forever.
+- **An unexpected argument is a validation error, and it names the argument.** A call that sends a name the
+  tool's schema does not list — `unit` on `get_latest_bars`, for example — comes back naming each unexpected
+  argument and the arguments that tool accepts (`symbol`, `resolutionMinutes`, `count` for that one). A
+  missing required argument is named the same way. SDK 2.3.0 ignores an extra key and reports a missing
+  required argument only as "An error occurred invoking '<tool>'." This server refuses both before the tool
+  runs. Refusing an unknown key is a deliberate break: a call that bound before, because the extra key was
+  ignored, now fails (gh#984). The same filter covers every tool. It runs inside the store-fault guard and
+  before the tool. `RefuseIfDisabledOrHalted` runs inside the order tools, so a trading call that also sends
+  an unknown key is answered as an unexpected argument before the trading-disabled refusal. A call whose
+  names are valid still reaches that gate. A schema with `additionalProperties` true still accepts an extra
+  key. `_meta` and progress tokens travel in `params._meta`, not in the arguments, so this filter does not
+  see them.
 - **A missing number means *cannot measure*.** Never a substituted default, and the caller is expected to say
   so rather than proceed. **How that reaches the wire depends on where the value sits**, and the two forms
   need different tests:
@@ -307,11 +319,17 @@ The front itself can be as late as `MarketData__LatestQuoteFrontRefresh` (fiftee
 If the old unsubscribe fails, both contracts can keep ticking and the answer can move
 between them (gh#922, ADR-0016).
 
-Returns `{ symbol, status, contractId, bid, ask, last, volume, quoteTimeUtc, ageSeconds, stale, reason }`.
-Prices are raw decimals in the contract's price units (`R-5.2`). `volume` is session volume, in
-contracts. `ageSeconds` is how long ago the database accepted the row. `stale` is true when that
-age is past `MarketData__LatestQuoteStaleAfter` (shipped as 15 seconds). A stale row is still
-returned.
+Returns `{ symbol, status, contractId, bid, ask, last, lastAt, volume, quoteTimeUtc, ageSeconds,
+stale, reason }`. Prices are raw decimals in the contract's price units (`R-5.2`). `ageSeconds`
+is how long ago the database accepted the bid and ask. It does not date `last` or `volume`.
+`stale` is that age past `MarketData__LatestQuoteStaleAfter` (shipped as 15 seconds). A stale
+row is still returned. `lastAt` is when the last trade or the quote that carried `last` was
+seen. A later bid or ask keeps that last only inside the same CME session
+(`BarSessionCalendar.TradeDateFor`) and for 30 minutes (`LatestQuoteCarry.MaxAge`). A zero bid
+or ask means that side is gone and is omitted. `volume` is session volume from a quote. It is
+omitted unless a quote carried it, which is the usual case: a trade print is not session volume
+(gh#983). A carried volume follows the same session and 30-minute limit. A price at or below
+zero is not treated as a last. Calendar spreads are outside this.
 
 `status` is `ok`, `missing`, `unknown_symbol`, or `failed`. `missing` means the symbol is served
 and the table has no row for it. `unknown_symbol` means the symbol is not served. `failed` means
@@ -980,7 +998,10 @@ If the tape still produces no cell (a roll inside the bar, or prints that do not
 **refuses** rather than returning empty `cells`. **When this process is not the recorder** for that
 instrument, the closed window is aggregated from stored prints in memory and `live` is false
 (gh#728). Nothing is written. `reason` is a closed code (`listening`, `never_started`,
-`held_by_another_recorder`; the refusing states have codes too and still refuse). `live` true
+`held_by_another_recorder`, `reconnecting`, `connected_but_not_subscribed`, `stopped`,
+`claim_taken_over`, `claim_lapsed`, `stopped_for_session_conflict`;
+`recorded_elsewhere` is health-only, on `get_recorder_health`, and is not a refusal here).
+The refusing states still refuse. `live` true
 means this process is listening, not that the cells are current. A gap at the start, a cut at
 the end, a hole, or a roll sets `covered.narrowed`. That is the only short-window flag.
 `covered.end` is when the data ends. The ask is floored to the bar open before the ledger
@@ -1093,8 +1114,25 @@ cachedAtUtc?, ageMs?, tapeDaysKept?, barBackfill? }`.
 `stopReason` is a closed tag. Production exports no OTLP, so this field and the log line are
 what an operator sees.
 
-`feedConnected` is true only when the market-data hub is up — listening, or connected and not yet
-subscribed. `feed` is the process-wide `TapeUnavailableReason` name. It is not a sentence.
+`feedConnected` is true when this process's market-data hub is up — listening, or connected and
+not yet subscribed — or, when this process is not the recorder, when every configured instrument's
+lease says the hub is connected and either `HeartbeatAt` or the last tick is within 90 seconds
+(gh#869). A lease held while the hub is reconnecting is not connected: `feed` is `Reconnecting`
+and `listening` is false. `feed` is the worst instrument, not "any lease is live": one `Stopped`
+or `Reconnecting` instrument makes the process feed that reason and `feedConnected` false.
+`NeverStarted` is no row for that instrument. A released claim stays on `TapeLeases` with
+`StopReason` and `ExpiresAt` at the stop, and is `Stopped` (or `StoppedForSessionConflict` when
+that was the reason), not `NeverStarted`. An expired lease with no `StopReason` is a kill or a
+hang and is also `Stopped`. A takeover clears `HubConnected`, `Listening`, `StopReason` and
+`StoppedAt`. The new holder publishes hub-connected and listening only after its subscription
+is confirmed, so a killed recorder's restart is not listening before it connects.
+`RecordedElsewhere` means the other process is listening and fresh. The server clock is compared
+with the recorder's `HeartbeatAt` and `ExpiresAt`. A heartbeat or last tick up to 90 seconds
+ahead of the server is still fresh, so that much clock skew does not flap a live lease to
+`Reconnecting`. Skew past the window is not fresh. The same residual skew, for takeover, is
+stated on the lease. A connected and subscribed hub that receives no ticks stays green: the
+window shows the process is alive, and `lastTickAgeSeconds` is how old the last print is.
+`hubReconnects` stays this process's count.
 
 `database` is `Available` or `Unavailable` from a live probe. That probe does not replace the startup
 `StoreAvailability` the other tools use, and a failure carries no connection target.

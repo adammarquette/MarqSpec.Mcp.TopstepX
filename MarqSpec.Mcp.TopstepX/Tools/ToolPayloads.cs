@@ -1320,13 +1320,17 @@ public static class ToolPayloads
     /// <param name="ContractId">
     /// The front contract. Omitted from the wire when there is none.
     /// </param>
-    /// <param name="Bid">Best bid, in the contract's price units. Omitted unless the status is ok.</param>
-    /// <param name="Ask">Best ask. Omitted unless the status is ok.</param>
-    /// <param name="Last">Last trade. Omitted unless the status is ok.</param>
-    /// <param name="Volume">Session volume, in contracts. Omitted unless the status is ok.</param>
+    /// <param name="Bid">Best bid, in the contract's price units. Omitted when that side is absent.</param>
+    /// <param name="Ask">Best ask. Omitted when that side is absent.</param>
+    /// <param name="Last">Last trade. Omitted when it is unknown or too old to carry.</param>
+    /// <param name="LastAt">When <paramref name="Last"/> was seen. Omitted when last is omitted.</param>
+    /// <param name="Volume">
+    /// Session volume from a quote, in contracts. Omitted unless a quote carried it.
+    /// </param>
     /// <param name="QuoteTimeUtc">The venue stamp. Omitted when the row had none, or there is no row.</param>
     /// <param name="AgeSeconds">
-    /// Seconds since the database accepted the row. Omitted when there is no row.
+    /// Seconds since the database accepted the bid and ask. Omitted when there is no row.
+    /// This does not date last or volume.
     /// </param>
     /// <param name="Stale">
     /// True when the row is older than the stale window. False when there is no row.
@@ -1339,6 +1343,7 @@ public static class ToolPayloads
         decimal? Bid,
         decimal? Ask,
         decimal? Last,
+        DateTimeOffset? LastAt,
         long? Volume,
         DateTimeOffset? QuoteTimeUtc,
         double? AgeSeconds,

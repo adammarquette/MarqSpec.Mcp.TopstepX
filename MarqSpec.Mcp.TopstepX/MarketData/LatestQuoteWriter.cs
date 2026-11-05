@@ -3,6 +3,7 @@ using MarqSpec.Client.ProjectX.Api.Models;
 using MarqSpec.Client.ProjectX.WebSocket;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using MarqSpec.Mcp.TopstepX.Venue;
 using Microsoft.Extensions.DependencyInjection;
@@ -44,6 +45,7 @@ public sealed class LatestQuoteWriter : BackgroundService
     private readonly TimeProvider _clock;
     private readonly ILogger<LatestQuoteWriter> _logger;
     private readonly HostTelemetry _telemetry;
+    private readonly BarSessionCalendar _calendar;
     private readonly LatestQuoteCoalescer _coalescer = new();
     private readonly object _sync = new();
     // _live and _instrumentByContract are touched only under _sync, including the hub thread.
@@ -69,6 +71,7 @@ public sealed class LatestQuoteWriter : BackgroundService
     /// <param name="clock">The flush clock.</param>
     /// <param name="logger">The logger. Vendor error text is not written.</param>
     /// <param name="telemetry">Write counts.</param>
+    /// <param name="calendar">The CME session calendar. A carried last stops at its boundary.</param>
     public LatestQuoteWriter(
         IServiceScopeFactory scopes,
         InstrumentRegistry registry,
@@ -76,7 +79,8 @@ public sealed class LatestQuoteWriter : BackgroundService
         IOptions<McpOptions> mcp,
         TimeProvider clock,
         ILogger<LatestQuoteWriter> logger,
-        HostTelemetry telemetry)
+        HostTelemetry telemetry,
+        BarSessionCalendar calendar)
     {
         ArgumentNullException.ThrowIfNull(scopes);
         ArgumentNullException.ThrowIfNull(registry);
@@ -85,6 +89,7 @@ public sealed class LatestQuoteWriter : BackgroundService
         ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(telemetry);
+        ArgumentNullException.ThrowIfNull(calendar);
         _scopes = scopes;
         _registry = registry;
         _market = market.Value;
@@ -92,6 +97,7 @@ public sealed class LatestQuoteWriter : BackgroundService
         _clock = clock;
         _logger = logger;
         _telemetry = telemetry;
+        _calendar = calendar;
     }
 
     /// <summary>The test constructor. The hub is the double the test raises quotes on.</summary>
@@ -105,6 +111,7 @@ public sealed class LatestQuoteWriter : BackgroundService
     /// <param name="store">Where flushes go.</param>
     /// <param name="resolveFront">The front contract id, or null when the venue has none.</param>
     /// <param name="venue">The venue id stored on the row.</param>
+    /// <param name="calendar">The CME session calendar. A carried last stops at its boundary.</param>
     internal LatestQuoteWriter(
         IProjectXWebSocketClient hub,
         InstrumentRegistry registry,
@@ -115,7 +122,8 @@ public sealed class LatestQuoteWriter : BackgroundService
         HostTelemetry telemetry,
         ILatestQuoteStore store,
         Func<InstrumentId, CancellationToken, Task<string?>> resolveFront,
-        string venue)
+        string venue,
+        BarSessionCalendar calendar)
     {
         ArgumentNullException.ThrowIfNull(hub);
         ArgumentNullException.ThrowIfNull(registry);
@@ -125,6 +133,7 @@ public sealed class LatestQuoteWriter : BackgroundService
         ArgumentNullException.ThrowIfNull(telemetry);
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(resolveFront);
+        ArgumentNullException.ThrowIfNull(calendar);
         ArgumentException.ThrowIfNullOrWhiteSpace(venue);
         _registry = registry;
         _market = market.Value;
@@ -132,6 +141,7 @@ public sealed class LatestQuoteWriter : BackgroundService
         _clock = clock;
         _logger = logger;
         _telemetry = telemetry;
+        _calendar = calendar;
         _hub = hub;
         _store = store;
         _resolveFront = resolveFront;
@@ -227,6 +237,7 @@ public sealed class LatestQuoteWriter : BackgroundService
         }
 
         _hub.PriceUpdateReceived += OnPrice;
+        _hub.TradeUpdateReceived += OnTrade;
         _hub.ConnectionStatusChanged += OnConnectionStatusChanged;
     }
 
@@ -238,6 +249,7 @@ public sealed class LatestQuoteWriter : BackgroundService
         }
 
         _hub.PriceUpdateReceived -= OnPrice;
+        _hub.TradeUpdateReceived -= OnTrade;
         _hub.ConnectionStatusChanged -= OnConnectionStatusChanged;
     }
 
@@ -344,6 +356,7 @@ public sealed class LatestQuoteWriter : BackgroundService
             try
             {
                 await _hub.SubscribeToPriceUpdatesAsync(pair.Key, cancellationToken).ConfigureAwait(false);
+                await SubscribeTradesAsync(pair.Key, cancellationToken).ConfigureAwait(false);
                 NoteSubscribed(pair.Key);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -531,8 +544,11 @@ public sealed class LatestQuoteWriter : BackgroundService
                     _logger.LogWarning(ex, "A latest-quote unsubscribe did not finish.");
                     _telemetry.QuoteFailure(QuoteWriteOutcome.UnsubscribeFailed, ex.GetType().Name);
                 }
+
+                await UnsubscribeTradesAsync(contractId, cancellationToken).ConfigureAwait(false);
             }
 
+            _coalescer.Forget(Volatile.Read(ref _venue) ?? FallbackVenueId, contractId);
             lock (_sync)
             {
                 _live.Remove(contractId);
@@ -633,16 +649,109 @@ public sealed class LatestQuoteWriter : BackgroundService
             return;
         }
 
+        DateTimeOffset received = _clock.GetUtcNow();
+        DateTimeOffset? venueTime = VenueTime(update);
+        DateTimeOffset seen = venueTime ?? received;
+        bool hasLast = update.LastPrice > 0;
+        bool hasVolume = volume > 0;
         _coalescer.Offer(new LatestQuoteDraft(
             Volatile.Read(ref _venue) ?? FallbackVenueId,
             instrument,
             update.ContractId,
             update.BestBid,
             update.BestAsk,
-            update.LastPrice,
-            volume,
-            VenueTime(update),
-            _clock.GetUtcNow()));
+            hasLast ? update.LastPrice : 0,
+            hasVolume ? volume : 0,
+            venueTime,
+            received,
+            hasLast ? seen : null,
+            hasVolume ? seen : null,
+            BookKnown: true,
+            TradeDate: _calendar.TradeDateFor(seen)));
+    }
+
+    private void OnTrade(object? sender, TradeUpdate update)
+    {
+        // A non-positive price is how a calendar spread prints. Those are not served here.
+        if (string.IsNullOrWhiteSpace(update.ContractId) || update.Price <= 0)
+        {
+            return;
+        }
+
+        string? instrument;
+        lock (_sync)
+        {
+            if (!_instrumentByContract.TryGetValue(update.ContractId, out instrument))
+            {
+                return;
+            }
+        }
+
+        // The trade price is the last. Its size is one print, not session volume.
+        DateTimeOffset received = _clock.GetUtcNow();
+        DateTimeOffset? venueTime = update.Timestamp.Year >= 2000
+            ? ProjectXMapping.ToUtc(update.Timestamp)
+            : null;
+        DateTimeOffset seen = venueTime ?? received;
+        _coalescer.Offer(new LatestQuoteDraft(
+            Volatile.Read(ref _venue) ?? FallbackVenueId,
+            instrument,
+            update.ContractId,
+            Bid: 0,
+            Ask: 0,
+            update.Price,
+            Volume: 0,
+            venueTime,
+            received,
+            seen,
+            VolumeAt: null,
+            BookKnown: false,
+            TradeDate: _calendar.TradeDateFor(seen)));
+    }
+
+    private async Task SubscribeTradesAsync(string contractId, CancellationToken cancellationToken)
+    {
+        if (_hub is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _hub.SubscribeToTradeUpdatesAsync(contractId, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "A latest-quote trade subscription did not finish.");
+            _telemetry.QuoteFailure(QuoteWriteOutcome.TradeSubscribeFailed, ex.GetType().Name);
+        }
+    }
+
+    private async Task UnsubscribeTradesAsync(string contractId, CancellationToken cancellationToken)
+    {
+        if (_hub is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _hub.UnsubscribeFromTradeUpdatesAsync(contractId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "A latest-quote trade unsubscribe did not finish.");
+            _telemetry.QuoteFailure(QuoteWriteOutcome.TradeUnsubscribeFailed, ex.GetType().Name);
+        }
     }
 
     private static bool TryVolume(decimal volume, out long contracts)
@@ -677,6 +786,7 @@ public sealed class LatestQuoteWriter : BackgroundService
             }
 
             _retries.Clear();
+            _coalescer.Clear();
         }
     }
 
@@ -778,6 +888,8 @@ public sealed class LatestQuoteWriter : BackgroundService
                 _logger.LogWarning(ex, "A latest-quote unsubscribe did not finish.");
                 _telemetry.QuoteFailure(QuoteWriteOutcome.UnsubscribeFailed, ex.GetType().Name);
             }
+
+            await UnsubscribeTradesAsync(contractId, unsubscribe.Token).ConfigureAwait(false);
         }
     }
 

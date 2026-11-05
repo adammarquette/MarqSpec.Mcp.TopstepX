@@ -35,7 +35,7 @@ public sealed class UnconfiguredMarketDataGateway : IMarketDataGateway
         + "already in the store - work normally.";
 
     /// <inheritdoc />
-    public string VenueId => "projectx";
+    public string VenueId => ProjectXMarketDataGateway.Venue;
 
     /// <inheritdoc />
     public Task<IReadOnlyList<VenueContract>> ResolveContractsAsync(

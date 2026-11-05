@@ -189,6 +189,125 @@ public sealed class LatestQuoteStoreTests(SeriesStoreFixture fixture) : IAsyncLi
         rows[0].Bid.Should().BeOneOf(1m, 2m);
     }
 
+    [Fact]
+    public async Task AZeroLast_KeepsAFreshSameSessionLast_AndDropsItAcrossTheSessionOrAge()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        LatestQuoteStore store = new(database);
+        DateTimeOffset seen = DateTimeOffset.UtcNow;
+        DateOnly session = new(2026, 10, 30);
+
+        await store.UpsertAsync(
+            [Draft(bid: 10m, last: 7650.5m, volume: 100, lastAt: seen, volumeAt: seen, tradeDate: session)],
+            CancellationToken.None);
+
+        await store.UpsertAsync(
+            [Draft(bid: 11m, last: 0m, volume: 0, quoteTime: seen.AddSeconds(2), tradeDate: session)],
+            CancellationToken.None);
+
+        await using TopstepXDbContext kept = _fixture.CreateContext();
+        Data.Entities.LatestQuoteRecord fresh = await kept.LatestQuotes.AsNoTracking().SingleAsync();
+        fresh.Bid.Should().Be(11m);
+        fresh.Last.Should().Be(7650.5m);
+        fresh.Volume.Should().Be(100L);
+        fresh.LastAt.Should().BeCloseTo(seen, TimeSpan.FromSeconds(1));
+        fresh.QuoteTimeUtc.Should().BeCloseTo(seen.AddSeconds(2), TimeSpan.FromSeconds(1));
+
+        int older = await store.UpsertAsync(
+            [Draft(
+                bid: 12m,
+                last: 1m,
+                volume: 1,
+                lastAt: seen.AddMinutes(-5),
+                volumeAt: seen.AddMinutes(-5),
+                quoteTime: seen.AddMinutes(-5),
+                tradeDate: session)],
+            CancellationToken.None);
+        older.Should().Be(1);
+        await using TopstepXDbContext still = _fixture.CreateContext();
+        Data.Entities.LatestQuoteRecord held = await still.LatestQuotes.AsNoTracking().SingleAsync();
+        held.Bid.Should().Be(12m);
+        held.Last.Should().Be(7650.5m);
+        held.Volume.Should().Be(100L);
+        held.QuoteTimeUtc.Should().BeCloseTo(seen.AddSeconds(2), TimeSpan.FromSeconds(1));
+
+        await store.UpsertAsync(
+            [Draft(bid: 13m, last: 0m, volume: 0, tradeDate: session.AddDays(3))],
+            CancellationToken.None);
+        await using TopstepXDbContext nextSession = _fixture.CreateContext();
+        Data.Entities.LatestQuoteRecord cleared = await nextSession.LatestQuotes.AsNoTracking().SingleAsync();
+        cleared.Bid.Should().Be(13m);
+        cleared.Last.Should().Be(0m);
+        cleared.Volume.Should().Be(0L);
+        cleared.LastAt.Should().BeNull();
+
+        await store.UpsertAsync(
+            [Draft(bid: 14m, last: 20m, volume: 8, lastAt: seen, volumeAt: seen, tradeDate: session)],
+            CancellationToken.None);
+        int staleSeconds = (int)LatestQuoteCarry.MaxAge.TotalSeconds + 60;
+        await database.Database.ExecuteSqlRawAsync(
+            """
+            UPDATE "LatestQuotes"
+            SET "LastAt" = clock_timestamp() - make_interval(secs => {0}),
+                "VolumeAt" = clock_timestamp() - make_interval(secs => {0}),
+                "TradeDate" = {1}
+            WHERE "ContractId" = {2}
+            """,
+            staleSeconds,
+            session,
+            "CON.F.US.EP.Z26");
+        await store.UpsertAsync(
+            [Draft(bid: 15m, last: 0m, volume: 0, tradeDate: session)],
+            CancellationToken.None);
+
+        await using TopstepXDbContext aged = _fixture.CreateContext();
+        Data.Entities.LatestQuoteRecord expired = await aged.LatestQuotes.AsNoTracking().SingleAsync();
+        expired.Bid.Should().Be(15m);
+        expired.Last.Should().Be(0m);
+        expired.Volume.Should().Be(0L);
+        ((int)LatestQuoteCarry.MaxAge.TotalSeconds).Should().Be(1_800);
+    }
+
+    [Fact]
+    public async Task AnOlderLastOnTheNextSession_DoesNotKeepThePreviousLast()
+    {
+        await using TopstepXDbContext database = _fixture.CreateContext();
+        LatestQuoteStore store = new(database);
+        DateTimeOffset seen = DateTimeOffset.UtcNow;
+        DateOnly first = new(2026, 10, 30);
+        DateOnly next = first.AddDays(3);
+
+        await store.UpsertAsync(
+            [Draft(
+                bid: 10m,
+                last: 100m,
+                volume: 50,
+                lastAt: seen,
+                volumeAt: seen,
+                tradeDate: first)],
+            CancellationToken.None);
+
+        await store.UpsertAsync(
+            [Draft(
+                bid: 11m,
+                last: 1m,
+                volume: 1,
+                lastAt: seen.AddMinutes(-5),
+                volumeAt: seen.AddMinutes(-5),
+                quoteTime: seen.AddMinutes(-5),
+                tradeDate: next)],
+            CancellationToken.None);
+
+        await using TopstepXDbContext check = _fixture.CreateContext();
+        Data.Entities.LatestQuoteRecord row = await check.LatestQuotes.AsNoTracking().SingleAsync();
+        row.Bid.Should().Be(11m);
+        row.Last.Should().Be(0m);
+        row.LastAt.Should().BeNull();
+        row.Volume.Should().Be(0L);
+        row.VolumeAt.Should().BeNull();
+        row.TradeDate.Should().Be(next);
+    }
+
     private static async Task<double> AgeSeconds(TopstepXDbContext database, string contractId)
     {
         List<double> ages = await database.Database.SqlQueryRaw<double>(
@@ -206,17 +325,27 @@ public sealed class LatestQuoteStoreTests(SeriesStoreFixture fixture) : IAsyncLi
     private static LatestQuoteDraft Draft(
         decimal bid,
         string contract = "CON.F.US.EP.Z26",
-        string instrument = "ES") =>
+        string instrument = "ES",
+        decimal? last = null,
+        long volume = 3,
+        DateTimeOffset? lastAt = null,
+        DateTimeOffset? volumeAt = null,
+        DateTimeOffset? quoteTime = null,
+        DateOnly? tradeDate = null) =>
         new(
             "projectx",
             instrument,
             contract,
             bid,
             bid + 0.25m,
-            bid,
-            3L,
+            last ?? bid,
+            volume,
+            quoteTime ?? _quoteTime,
             _quoteTime,
-            _quoteTime);
+            lastAt,
+            volumeAt,
+            BookKnown: true,
+            tradeDate);
 
     private sealed class CountingCommands : DbCommandInterceptor
     {

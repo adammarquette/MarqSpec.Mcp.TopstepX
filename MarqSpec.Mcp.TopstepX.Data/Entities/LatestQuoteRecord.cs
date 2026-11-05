@@ -28,11 +28,29 @@ public sealed class LatestQuoteRecord
     /// <summary>Best ask, in the contract's price units.</summary>
     public required decimal Ask { get; set; }
 
-    /// <summary>Last trade, in the contract's price units.</summary>
+    /// <summary>Last trade, in the contract's price units. Zero means unknown.</summary>
     public required decimal Last { get; set; }
 
-    /// <summary>Session volume from the quote, in contracts. Zero is what the venue sent.</summary>
+    /// <summary>
+    /// When <see cref="Last"/> was seen. Null when last is unknown, including rows written
+    /// before this column existed.
+    /// </summary>
+    public DateTimeOffset? LastAt { get; set; }
+
+    /// <summary>
+    /// Session volume from a quote, in contracts. Zero means the quote did not carry it.
+    /// A trade print is not session volume.
+    /// </summary>
     public required long Volume { get; set; }
+
+    /// <summary>When <see cref="Volume"/> was seen. Null when volume is unknown.</summary>
+    public DateTimeOffset? VolumeAt { get; set; }
+
+    /// <summary>
+    /// The CME trade date of the event that wrote the row. Null when the market was shut.
+    /// A carried last or volume is kept only while this still matches.
+    /// </summary>
+    public DateOnly? TradeDate { get; set; }
 
     /// <summary>The venue quote time, UTC, when the payload carried one.</summary>
     public DateTimeOffset? QuoteTimeUtc { get; set; }

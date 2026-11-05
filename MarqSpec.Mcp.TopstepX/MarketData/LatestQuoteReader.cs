@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using MarqSpec.Mcp.TopstepX.Configuration;
 using MarqSpec.Mcp.TopstepX.Domain;
+using MarqSpec.Mcp.TopstepX.Domain.MarketData;
 using MarqSpec.Mcp.TopstepX.Telemetry;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -14,12 +15,16 @@ namespace MarqSpec.Mcp.TopstepX.MarketData;
 /// <see cref="LatestQuoteStatus.UnknownSymbol"/>, or <see cref="LatestQuoteStatus.Failed"/>.
 /// </param>
 /// <param name="ContractId">The stored front, when a row named one.</param>
-/// <param name="Bid">Best bid, in the contract's price units. Null unless the status is ok.</param>
-/// <param name="Ask">Best ask.</param>
-/// <param name="Last">Last trade.</param>
-/// <param name="Volume">Session volume, in contracts.</param>
+/// <param name="Bid">Best bid, in the contract's price units. Null when that side is absent.</param>
+/// <param name="Ask">Best ask. Null when that side is absent.</param>
+/// <param name="Last">Last trade. Null when it is unknown or too old to carry.</param>
+/// <param name="LastAt">When <paramref name="Last"/> was seen. Null when last is omitted.</param>
+/// <param name="Volume">Session volume from a quote. Null when the quote did not carry it.</param>
 /// <param name="QuoteTimeUtc">The venue stamp, when the row had one.</param>
-/// <param name="AgeSeconds">Seconds since the database accepted the row. Null when there is no row.</param>
+/// <param name="AgeSeconds">
+/// Seconds since the database accepted the bid and ask. Null when there is no row.
+/// This does not date last or volume.
+/// </param>
 /// <param name="Stale">True when the row is older than the configured stale window.</param>
 /// <param name="Reason">Why a failed read failed. Null unless the status is failed.</param>
 public sealed record LatestQuoteReading(
@@ -29,6 +34,7 @@ public sealed record LatestQuoteReading(
     decimal? Bid,
     decimal? Ask,
     decimal? Last,
+    DateTimeOffset? LastAt,
     long? Volume,
     DateTimeOffset? QuoteTimeUtc,
     double? AgeSeconds,
@@ -60,6 +66,8 @@ public sealed class LatestQuoteReader
     private readonly ILatestQuoteStore _store;
     private readonly InstrumentRegistry _registry;
     private readonly MarketDataOptions _market;
+    private readonly BarSessionCalendar _calendar;
+    private readonly TimeProvider _clock;
     private readonly HostTelemetry _telemetry;
     private readonly ILogger<LatestQuoteReader> _logger;
 
@@ -67,23 +75,31 @@ public sealed class LatestQuoteReader
     /// <param name="store">The latest-quote table.</param>
     /// <param name="registry">The configured instruments.</param>
     /// <param name="market">The stale window.</param>
+    /// <param name="calendar">The CME session calendar. A carried last stops at its boundary.</param>
+    /// <param name="clock">The clock a carried last is aged on.</param>
     /// <param name="telemetry">The read span and counter.</param>
     /// <param name="logger">Store failures are logged with the exception. It is not venue text.</param>
     public LatestQuoteReader(
         ILatestQuoteStore store,
         InstrumentRegistry registry,
         IOptions<MarketDataOptions> market,
+        BarSessionCalendar calendar,
+        TimeProvider clock,
         HostTelemetry telemetry,
         ILogger<LatestQuoteReader> logger)
     {
         ArgumentNullException.ThrowIfNull(store);
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(market);
+        ArgumentNullException.ThrowIfNull(calendar);
+        ArgumentNullException.ThrowIfNull(clock);
         ArgumentNullException.ThrowIfNull(telemetry);
         ArgumentNullException.ThrowIfNull(logger);
         _store = store;
         _registry = registry;
         _market = market.Value;
+        _calendar = calendar;
+        _clock = clock;
         _telemetry = telemetry;
         _logger = logger;
     }
@@ -103,6 +119,7 @@ public sealed class LatestQuoteReader
             return new LatestQuoteReading(
                 symbol ?? string.Empty,
                 LatestQuoteStatus.UnknownSymbol,
+                null,
                 null,
                 null,
                 null,
@@ -160,14 +177,20 @@ public sealed class LatestQuoteReader
 
         bool stale = row.AgeSeconds > _market.LatestQuoteStaleAfter.TotalSeconds;
         Mark(span, stale ? QuoteReadOutcome.Stale : QuoteReadOutcome.Fresh);
+        DateTimeOffset now = _clock.GetUtcNow();
+        DateOnly? session = _calendar.TradeDateFor(now);
+        bool keepLast = row.Last != 0 && LatestQuoteCarry.Keep(row.LastAt, row.TradeDate, now, session);
+        bool keepVolume = row.Volume != 0
+            && LatestQuoteCarry.Keep(row.VolumeAt, row.TradeDate, now, session);
         return new LatestQuoteReading(
             instrument.Symbol,
             LatestQuoteStatus.Ok,
             row.ContractId,
-            row.Bid,
-            row.Ask,
-            row.Last,
-            row.Volume,
+            row.Bid == 0 ? null : row.Bid,
+            row.Ask == 0 ? null : row.Ask,
+            keepLast ? row.Last : null,
+            keepLast ? row.LastAt : null,
+            keepVolume ? row.Volume : null,
             row.QuoteTimeUtc,
             row.AgeSeconds,
             stale,
@@ -197,6 +220,7 @@ public sealed class LatestQuoteReader
             null,
             null,
             null,
+            null,
             false,
             reason);
     }
@@ -208,5 +232,17 @@ public sealed class LatestQuoteReader
     }
 
     private static LatestQuoteReading Missing(string symbol, string? contractId) =>
-        new(symbol, LatestQuoteStatus.Missing, contractId, null, null, null, null, null, null, false, null);
+        new(
+            symbol,
+            LatestQuoteStatus.Missing,
+            contractId,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            false,
+            null);
 }

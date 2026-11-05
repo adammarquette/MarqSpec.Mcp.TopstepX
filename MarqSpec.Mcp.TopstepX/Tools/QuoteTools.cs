@@ -25,9 +25,10 @@ public sealed class QuoteTools(LatestQuoteReader reader)
     [McpServerTool(ReadOnly = true, Idempotent = true, Title = "Get quote")]
     [Description(
         "Reads the latest stored bid, ask and last for an instrument. Prices are raw decimals in the "
-        + "contract's price units, not tick-rounded. `volume` is session volume, in contracts. "
-        + "`ageSeconds` is how long ago the database accepted the row. `stale` is true when that age "
-        + "is past the server's stale window; a stale quote is still the quote. "
+        + "contract's price units, not tick-rounded. `lastAt` is when that last was seen. "
+        + "`volume` is session volume and is omitted unless a quote carried it, which is the usual case. "
+        + "`ageSeconds` dates the bid and ask, not last or volume. "
+        + "`stale` is true when that age is past the server's stale window. A stale quote is still returned. "
         + "status is ok when a row was stored, missing when this server serves the symbol and the "
         + "table has no row, or reports the symbol as not served. status failed means the store "
         + "did not answer, which is not a miss. None of those throw.")]
@@ -43,6 +44,7 @@ public sealed class QuoteTools(LatestQuoteReader reader)
             reading.Bid,
             reading.Ask,
             reading.Last,
+            reading.LastAt,
             reading.Volume,
             reading.QuoteTimeUtc,
             reading.AgeSeconds,

@@ -171,6 +171,17 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Backfill passes by stop reason (gh#899).</summary>
     public const string BarBackfillStopsInstrument = "mcp.bars.backfill.stops";
 
+    /// <summary>
+    /// An OAuth-gate refusal (gh#997). <c>refusal</c> values: <see cref="OAuthRefusalReason"/>.
+    /// </summary>
+    public const string OAuthRefusalsInstrument = "mcp.oauth.refusals";
+
+    /// <summary>
+    /// A request the OAuth gate admitted (gh#997). <c>auth.method</c> is <see cref="OAuthAuthMethod"/>.
+    /// A stretch of <see cref="OAuthAuthMethod.StaticToken"/> at zero is the signal to leave migration mode.
+    /// </summary>
+    public const string OAuthAdmitsInstrument = "mcp.oauth.admits";
+
     /// <summary>Which cache-aside series a read was of. Values: <see cref="CacheSeries"/>.</summary>
     public const string SeriesTag = "series";
 
@@ -207,6 +218,12 @@ public sealed class HostTelemetry : IDisposable
     /// <see cref="ExecutionWriteReplay"/>. A sum of new outcomes filters <see cref="ExecutionWriteReplay.False"/>.
     /// </summary>
     public const string ReplayTag = "replay";
+
+    /// <summary>
+    /// Which credential admitted the request. Values: <see cref="OAuthAuthMethod"/>. The key is
+    /// <c>auth.method</c>, the same name the gate puts on the log scope.
+    /// </summary>
+    public const string AuthMethodTag = "auth.method";
 
     /// <summary>Why a range was outstanding. Values: <see cref="GapReason"/>.</summary>
     public const string ReasonTag = "reason";
@@ -262,6 +279,8 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _barBackfillRateLimited;
     private readonly Counter<long> _barBackfillErrors;
     private readonly Counter<long> _barBackfillStops;
+    private readonly Counter<long> _oauthRefusals;
+    private readonly Counter<long> _oauthAdmits;
 
     /// <summary>Creates the meter and the activity source.</summary>
     /// <param name="logger">Optional. A bookkeeping failure logs one constant line through it.</param>
@@ -445,6 +464,16 @@ public sealed class HostTelemetry : IDisposable
             BarBackfillStopsInstrument,
             unit: "{stop}",
             description: "Bar-backfill passes, by stop reason.");
+
+        _oauthRefusals = _meter.CreateCounter<long>(
+            OAuthRefusalsInstrument,
+            unit: "{refusal}",
+            description: "OAuth-gate refusals, by operation and reason. Never a token or an account id.");
+
+        _oauthAdmits = _meter.CreateCounter<long>(
+            OAuthAdmitsInstrument,
+            unit: "{request}",
+            description: "Requests the OAuth gate admitted, by auth.method.");
     }
 
     /// <summary>
@@ -1114,6 +1143,51 @@ public sealed class HostTelemetry : IDisposable
                     "A series kind this meter has no dimension for. Decide its tags deliberately: a kind "
                     + "that fell through to another's tags would merge two series in every backend.");
         }
+    }
+
+    /// <summary>
+    /// Records one OAuth-gate refusal, as a counter and a span (gh#997).
+    /// </summary>
+    /// <param name="reason">Why it was refused, from <see cref="OAuthRefusalReason"/>.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    /// <remarks>
+    /// <b>Operation, reason, and replay only.</b> Replay is always <see cref="ExecutionWriteReplay.False"/>:
+    /// this gate does not replay a stored decision. The reason is a closed code, never the token, a
+    /// <c>sub</c> value, a client id, or an account id. A forwarded string would be a new series per token.
+    /// </remarks>
+    public Activity? OAuthRefusal(string reason)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+
+        Activity? span = Activities.StartActivity("oauth.refusal", ActivityKind.Internal);
+        span?.SetTag(OperationTag, OAuthGateOperation.Authenticate);
+        span?.SetTag(RefusalTag, reason);
+        span?.SetTag(ReplayTag, ExecutionWriteReplay.False);
+
+        _oauthRefusals.Add(
+            1,
+            new KeyValuePair<string, object?>(OperationTag, OAuthGateOperation.Authenticate),
+            new KeyValuePair<string, object?>(RefusalTag, reason),
+            new KeyValuePair<string, object?>(ReplayTag, ExecutionWriteReplay.False));
+        return span;
+    }
+
+    /// <summary>
+    /// Counts one request the OAuth gate admitted, tagged with which credential matched (gh#997).
+    /// </summary>
+    /// <param name="method">
+    /// <see cref="OAuthAuthMethod.StaticToken"/> or <see cref="OAuthAuthMethod.OAuth"/>.
+    /// </param>
+    /// <remarks>
+    /// <b>This is the off-signal for migration mode.</b> <see cref="OAuthAuthMethod.StaticToken"/> reaching
+    /// zero, while <see cref="OAuthAuthMethod.OAuth"/> continues, is what says the static token can go.
+    /// No account id and no token are tags.
+    /// </remarks>
+    public void OAuthAdmit(string method)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(method);
+
+        _oauthAdmits.Add(1, new KeyValuePair<string, object?>(AuthMethodTag, method));
     }
 
     /// <inheritdoc />
@@ -1966,4 +2040,88 @@ public static class TapeRetentionOutcome
 
     /// <summary>Span tag for the chunk boundary, a UTC timestamp.</summary>
     public const string DroppedUntil = "dropped_until";
+}
+
+/// <summary>
+/// The one operation the OAuth gate records. The <c>operation</c> tag on <c>mcp.oauth.refusals</c>.
+/// </summary>
+public static class OAuthGateOperation
+{
+    /// <summary>
+    /// A request the gate authenticated or refused. Not an HTTP method, and not a tool name.
+    /// </summary>
+    public const string Authenticate = "authenticate";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Authenticate];
+}
+
+/// <summary>
+/// Why the OAuth gate refused a request — the <c>refusal</c> tag on <c>mcp.oauth.refusals</c> (gh#997).
+/// </summary>
+/// <remarks>
+/// Closed on purpose. The handler's exception text and the token's claims are not values: either is a new
+/// series per distinct string, and a token has no business in a backend.
+/// </remarks>
+public static class OAuthRefusalReason
+{
+    /// <summary>No <c>Authorization</c> header the handler could read.</summary>
+    public const string NoToken = "no_token";
+
+    /// <summary><c>aud</c> did not carry the configured audience.</summary>
+    public const string Audience = "audience";
+
+    /// <summary><c>sub</c> was missing, duplicated, or not on the allowlist.</summary>
+    public const string Subject = "subject";
+
+    /// <summary><c>client_id</c> or <c>azp</c> was missing or not listed.</summary>
+    public const string Client = "client";
+
+    /// <summary><c>token_use</c> was present and was not <c>access</c>.</summary>
+    public const string TokenUse = "token_use";
+
+    /// <summary>The token was outside its lifetime, past the skew.</summary>
+    public const string TokenExpired = "token_expired";
+
+    /// <summary>The signature did not verify, including <c>alg: none</c>.</summary>
+    public const string BadSignature = "bad_signature";
+
+    /// <summary>The algorithm was not RS256, including HS256.</summary>
+    public const string BadAlgorithm = "bad_algorithm";
+
+    /// <summary><c>iss</c> was not the configured issuer.</summary>
+    public const string BadIssuer = "bad_issuer";
+
+    /// <summary>Refused for a reason this list does not name. Still not the handler's sentence.</summary>
+    public const string Rejected = "oauth_rejected";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } =
+    [
+        NoToken,
+        Audience,
+        Subject,
+        Client,
+        TokenUse,
+        TokenExpired,
+        BadSignature,
+        BadAlgorithm,
+        BadIssuer,
+        Rejected,
+    ];
+}
+
+/// <summary>
+/// Which credential admitted the request. The <c>auth.method</c> tag on <c>mcp.oauth.admits</c>.
+/// </summary>
+public static class OAuthAuthMethod
+{
+    /// <summary>The static bearer token matched, under <c>OAuthWithStaticToken</c>.</summary>
+    public const string StaticToken = "static_token";
+
+    /// <summary>An access token passed the OAuth checks.</summary>
+    public const string OAuth = "oauth";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [StaticToken, OAuth];
 }

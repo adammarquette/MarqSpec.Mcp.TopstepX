@@ -78,6 +78,7 @@ difference between the two entry points is a handful of lines.
 | [2026-10-17](#update-2026-10-17--stdio-binds-no-http-port) | stdio binds no HTTP port; the image-baked 8080 is not an opt-in (gh#696) |
 | [2026-10-23](#update-2026-10-23--the-refusal-line-cannot-be-forged) | The OAuth refusal line escapes controls, line separators, bidi marks and a literal backslash, and caps the escaped text (gh#747) |
 | [2026-10-30](#update-2026-10-30--a-required-store-exits-and-one-lock-covers-the-apply) | `Store__Required` exits instead of degrading, and one session advisory lock covers the whole migration apply (gh#843) |
+| [2026-11-03](#update-2026-11-03--the-oauth-mode-takes-any-audience-bound-issuer) | The OAuth mode accepts any issuer that puts an audience in its tokens (WorkOS AuthKit the target), and `OAuthWithStaticToken` is a third, named mode (gh#997) |
 
 ## Update (2026-08-22) — starting is not the same as being ready
 
@@ -1344,3 +1345,17 @@ A wait that reaches it is the store unavailable: with `Store__Required` false th
 and with it true the process logs an error and exits non-zero.
 
 `/health` is unchanged. It still answers without opening a database.
+
+## Update (2026-11-03) — the OAuth mode takes any audience-bound issuer
+
+`Mcp__Auth__Mode` has a third value, `OAuthWithStaticToken`: the OAuth gate, which also admits exactly the
+static token (fixed-time compare) before it reads a JWT, and refuses everything else with the OAuth challenge.
+With `Mcp__OAuth__Audience` set, the gate checks `aud` instead of the Cognito shape, `Mcp__OAuth__ClientIds`
+and `Mcp__OAuth__RequiredScope` become optional (the scope defaults to none, and the challenge and metadata
+document then name no scope), and `Mcp__OAuth__Subjects` can limit the endpoint to listed `sub` values. The
+Cognito shape described above is unchanged when no audience is set. The reasoning and the Railway follow-up
+are in [ADR-0021's update][oauth-migration-gh997]
+(gh#997). An audience with no subjects, no client ids and no required scope is refused at startup.
+
+[oauth-migration-gh997]:
+<0021-a-non-loopback-instance-is-supported.md#update-2026-11-05--staging-first-oauth-migration-gh997>

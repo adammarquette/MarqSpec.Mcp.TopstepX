@@ -13,6 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Audience-bound OAuth, and a static-token migration mode** (gh#997). With `Mcp__OAuth__Audience` set,
+  the HTTP gate accepts access tokens from any OAuth 2.1 / OIDC issuer that puts an audience in them
+  (WorkOS AuthKit, Keycloak, Auth0, Entra ID). `Mcp__Auth__Mode=OAuthWithStaticToken` also admits the
+  static token, for staging first. Production stays `StaticToken` until a separate ADR. An audience with
+  no subjects, no client ids and no required scope is refused at startup. Refusals and admits are on
+  `mcp.oauth.refusals` and `mcp.oauth.admits` (`auth.method` is the off-signal). A bad static token gets
+  the OAuth challenge, so Trader Jon's client is steered into discovery.
+
 ## [0.7.4] - 2026-11-05
 
 ### Changed

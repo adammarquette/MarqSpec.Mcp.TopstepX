@@ -175,7 +175,9 @@ public sealed class LatestQuoteSpanTests
         Func<bool> condition,
         [CallerArgumentExpression(nameof(condition))] string? conditionExpression = null)
     {
-        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5));
+        // Wall-clock bound on a flush the fake clock only schedules. Five seconds
+        // expired once under CI load while the rest of the suite passed (gh#869).
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
         try
         {
             while (!condition())

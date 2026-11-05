@@ -313,6 +313,7 @@ public sealed class TapeTools(
         TapeUnavailableReason.ClaimTakenOver => TapeWireReason.ClaimTakenOver,
         TapeUnavailableReason.ClaimLapsed => TapeWireReason.ClaimLapsed,
         TapeUnavailableReason.StoppedForSessionConflict => TapeWireReason.StoppedForSessionConflict,
+        TapeUnavailableReason.RecordedElsewhere => TapeWireReason.RecordedElsewhere,
         _ => throw new InvalidOperationException(
             "TapeUnavailableReason." + reason + " has no wire code."),
     };
@@ -470,4 +471,7 @@ internal static class TapeWireReason
     /// The recorder stopped because another TopstepX session took this login. The read is refused.
     /// </summary>
     internal const string StoppedForSessionConflict = "stopped_for_session_conflict";
+
+    /// <summary>This process is not the recorder. Another process holds a live lease.</summary>
+    internal const string RecordedElsewhere = "recorded_elsewhere";
 }

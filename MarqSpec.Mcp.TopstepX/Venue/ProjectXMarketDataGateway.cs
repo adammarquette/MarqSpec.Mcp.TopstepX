@@ -73,8 +73,15 @@ public sealed class ProjectXMarketDataGateway : IMarketDataGateway
         _stageResolver = stageResolver;
     }
 
+    /// <summary>
+    /// The venue id stored on every row this gateway writes. The recorder takes its
+    /// claim under <see cref="IMarketDataGateway.VenueId"/>, and recorder health reads
+    /// the same constant so the two cannot drift.
+    /// </summary>
+    public const string Venue = "projectx";
+
     /// <inheritdoc />
-    public string VenueId => "projectx";
+    public string VenueId => Venue;
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<VenueContract>> ResolveContractsAsync(

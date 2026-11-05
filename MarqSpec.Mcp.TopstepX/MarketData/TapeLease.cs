@@ -84,6 +84,9 @@ public sealed class TapeLease
     /// </remarks>
     public static readonly TimeSpan DefaultTimeToLive = TimeSpan.FromSeconds(90);
 
+    /// <summary>Stop reason written when the recorder exits on a fault rather than a clean stop.</summary>
+    public const string FaultStop = "fault";
+
     private readonly IServiceScopeFactory _scopes;
     private readonly TimeProvider _clock;
     private readonly TimeSpan _timeToLive;
@@ -223,6 +226,10 @@ public sealed class TapeLease
                     AcquiredAt = now,
                     HeartbeatAt = now,
                     ExpiresAt = expiry,
+                    HubConnected = false,
+                    Listening = false,
+                    StopReason = null,
+                    StoppedAt = null,
                 });
 
                 await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -237,11 +244,18 @@ public sealed class TapeLease
                 return TapeLeaseOutcome.HeldBy(row.OwnerId, row.ExpiresAt);
             }
 
+            // A killed holder leaves hub and listening true. A tombstone leaves a stop
+            // reason. Either one would be this process's answer until the next publish,
+            // so a takeover starts from a clear row (gh#869).
             row.OwnerId = OwnerId;
             row.Generation++;
             row.AcquiredAt = now;
             row.HeartbeatAt = now;
             row.ExpiresAt = expiry;
+            row.HubConnected = false;
+            row.Listening = false;
+            row.StopReason = null;
+            row.StoppedAt = null;
 
             await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             _held[(venue, instrument)] = expiry;
@@ -281,9 +295,24 @@ public sealed class TapeLease
     /// at the instant it found out. A store fault throws instead: an unwritable renewal is not
     /// proof of a loss.
     /// </returns>
+    public Task<TapeLeaseRenewal> TryRenewAsync(
+        string venue,
+        string instrument,
+        CancellationToken cancellationToken) =>
+        TryRenewAsync(venue, instrument, null, cancellationToken);
+
+    /// <summary>
+    /// Renews one claim and, when <paramref name="feed"/> is set, the hub state the holder last saw.
+    /// </summary>
+    /// <param name="venue">The venue.</param>
+    /// <param name="instrument">The normalised instrument symbol.</param>
+    /// <param name="feed">The hub state to store. Null leaves the stored flags alone.</param>
+    /// <param name="cancellationToken">The stopping token.</param>
+    /// <returns>Whether the claim was renewed.</returns>
     public async Task<TapeLeaseRenewal> TryRenewAsync(
         string venue,
         string instrument,
+        TapeFeed? feed,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(venue);
@@ -312,6 +341,13 @@ public sealed class TapeLease
 
             row.HeartbeatAt = now;
             row.ExpiresAt = expiry;
+            if (feed is { } noted)
+            {
+                row.HubConnected = noted.HubConnected;
+                row.Listening = noted.Listening;
+                row.StopReason = null;
+                row.StoppedAt = null;
+            }
 
             try
             {
@@ -334,19 +370,23 @@ public sealed class TapeLease
     }
 
     /// <summary>
-    /// Gives up one claim, so the next start does not have to wait out the time to live.
+    /// Gives up one claim and leaves the row as a tombstone. The expiry is the stop instant, so
+    /// the next start can take it at once, and health can tell a stop from a process that never claimed.
     /// </summary>
     /// <param name="venue">The venue.</param>
     /// <param name="instrument">The normalised instrument symbol.</param>
+    /// <param name="stopReason">Why this process is releasing. Stored on the row.</param>
     /// <param name="cancellationToken">The stopping token.</param>
-    /// <returns>A task that completes when the row is gone or was never this process's.</returns>
+    /// <returns>A task that completes when the tombstone is written, or the row is not ours.</returns>
     public async Task ReleaseAsync(
         string venue,
         string instrument,
+        string stopReason,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(venue);
         ArgumentException.ThrowIfNullOrWhiteSpace(instrument);
+        ArgumentException.ThrowIfNullOrWhiteSpace(stopReason);
 
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -359,14 +399,20 @@ public sealed class TapeLease
             TapeLeaseRecord? row = await FindAsync(database, venue, instrument, cancellationToken)
                 .ConfigureAwait(false);
 
-            // Only this process's own row. Deleting one a later start already took over would hand
-            // the tape to a third process while the second is still recording under it.
+            // Only this process's own row. Tombstoning one a later start already took over would
+            // mark a live recorder as stopped.
             if (row is null || !string.Equals(row.OwnerId, OwnerId, StringComparison.Ordinal))
             {
                 return;
             }
 
-            database.TapeLeases.Remove(row);
+            DateTimeOffset now = _clock.GetUtcNow();
+            row.ExpiresAt = now;
+            row.StoppedAt = now;
+            row.HeartbeatAt = now;
+            row.HubConnected = false;
+            row.Listening = false;
+            row.StopReason = stopReason;
             try
             {
                 await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -390,8 +436,8 @@ public sealed class TapeLease
     /// <remarks>
     /// For the one case where the store cannot be reached and the term has run out: this process
     /// can no longer show it is the holder, so it must stop behaving like one immediately —
-    /// <see cref="MayWrite"/> refuses from the next print. It deliberately does not delete the row
-    /// the way <see cref="ReleaseAsync"/> does, because the store is exactly what is not answering,
+    /// <see cref="MayWrite"/> refuses from the next print. It deliberately does not tombstone the
+    /// row the way a release does, because the store is exactly what is not answering,
     /// and because the row may already belong to a replacement.
     /// </remarks>
     public void Forfeit(string venue, string instrument)
@@ -401,14 +447,96 @@ public sealed class TapeLease
         _held.TryRemove((venue, instrument), out _);
     }
 
-    /// <summary>Gives up every claim this process holds.</summary>
+    /// <summary>Gives up every claim this process holds, leaving each row as a tombstone.</summary>
+    /// <param name="stopReason">Why this process is releasing.</param>
     /// <param name="cancellationToken">The stopping token.</param>
     /// <returns>A task that completes when each release has been attempted.</returns>
-    public async Task ReleaseAllAsync(CancellationToken cancellationToken)
+    public async Task ReleaseAllAsync(string stopReason, CancellationToken cancellationToken)
     {
         foreach ((string venue, string instrument) in Held)
         {
-            await ReleaseAsync(venue, instrument, cancellationToken).ConfigureAwait(false);
+            await ReleaseAsync(venue, instrument, stopReason, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Writes the holder's current hub state onto every claim it still owns, without extending the term.
+    /// </summary>
+    /// <param name="feedFor">The hub state for one instrument symbol.</param>
+    /// <param name="cancellationToken">The stopping token.</param>
+    /// <returns>
+    /// The claims this write lost. A concurrency conflict or a row that is no longer ours is a
+    /// takeover, the same fact a failed renewal reports, and the caller stands down. An empty
+    /// list is a write that kept every claim it still held.
+    /// </returns>
+    public async Task<IReadOnlyList<TapeFeedLoss>> WriteFeedAsync(
+        Func<string, TapeFeed> feedFor,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(feedFor);
+        List<TapeFeedLoss> lost = [];
+        foreach ((string venue, string instrument) in Held)
+        {
+            TapeFeedLoss? loss = await WriteOneFeedAsync(
+                    venue, instrument, feedFor(instrument), cancellationToken)
+                .ConfigureAwait(false);
+            if (loss is { } dropped)
+            {
+                lost.Add(dropped);
+            }
+        }
+
+        return lost;
+    }
+
+    private async Task<TapeFeedLoss?> WriteOneFeedAsync(
+        string venue,
+        string instrument,
+        TapeFeed feed,
+        CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!_held.TryGetValue((venue, instrument), out DateTimeOffset term))
+            {
+                return null;
+            }
+
+            using IServiceScope scope = _scopes.CreateScope();
+            TopstepXDbContext database = scope.ServiceProvider.GetRequiredService<TopstepXDbContext>();
+            TapeLeaseRecord? row = await FindAsync(database, venue, instrument, cancellationToken)
+                .ConfigureAwait(false);
+            if (row is null || !string.Equals(row.OwnerId, OwnerId, StringComparison.Ordinal))
+            {
+                // Taken over between the last renew and this write. Same loss as a renewal
+                // that reads someone else's row: drop the claim and tell the caller.
+                _held.TryRemove((venue, instrument), out _);
+                return new TapeFeedLoss(venue, instrument, term);
+            }
+
+            row.HubConnected = feed.HubConnected;
+            row.Listening = feed.Listening;
+            row.HeartbeatAt = _clock.GetUtcNow();
+            row.StopReason = null;
+            row.StoppedAt = null;
+            try
+            {
+                await database.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Generation moved under the write. The renewal path treats that race as a
+                // loss; leaving it only in _held would stop prints and never stand down.
+                _held.TryRemove((venue, instrument), out _);
+                return new TapeFeedLoss(venue, instrument, term);
+            }
+
+            return null;
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 
@@ -444,6 +572,17 @@ public sealed class TapeLease
             : TapeLeaseOutcome.HeldBy(row.OwnerId, row.ExpiresAt);
     }
 }
+
+/// <summary>The hub state a holder writes onto its claim (gh#869).</summary>
+/// <param name="HubConnected">Whether the market hub is connected.</param>
+/// <param name="Listening">Whether this instrument is subscribed.</param>
+public readonly record struct TapeFeed(bool HubConnected, bool Listening);
+
+/// <summary>A feed write that found the claim was no longer ours (gh#869).</summary>
+/// <param name="Venue">The venue.</param>
+/// <param name="Instrument">The normalised instrument symbol.</param>
+/// <param name="Term">The expiry this process last wrote, for the coverage close.</param>
+public readonly record struct TapeFeedLoss(string Venue, string Instrument, DateTimeOffset? Term);
 
 /// <summary>The result of renewing one claim (gh#404).</summary>
 /// <param name="Kept">Whether this process is still the holder.</param>

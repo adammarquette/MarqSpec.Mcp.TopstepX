@@ -333,9 +333,19 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
         CancellationToken cancellationToken = default) =>
         Task.CompletedTask;
 
+    public Exception? TradeSubscribeThrows { get; set; }
+
+    /// <summary>Thrown once by <see cref="UnsubscribeFromTradeUpdatesAsync"/>, then cleared.</summary>
+    public Exception? TradeUnsubscribeThrows { get; set; }
+
     public Task SubscribeToTradeUpdatesAsync(string contractId, CancellationToken cancellationToken = default)
     {
         SubscribeAttempts++;
+        if (TradeSubscribeThrows is { } tradeRefused)
+        {
+            TradeSubscribeThrows = null;
+            throw tradeRefused;
+        }
         if (SubscribeAttempts > 1 && SubscribeThrowsAfterFirst is not null)
         {
             throw SubscribeThrowsAfterFirst;
@@ -356,6 +366,12 @@ public sealed class FakeMarketHub : IProjectXWebSocketClient
         CancellationToken cancellationToken = default)
     {
         UnsubscribeAttempts++;
+        if (TradeUnsubscribeThrows is { } tradeUnsubscribe)
+        {
+            TradeUnsubscribeThrows = null;
+            throw tradeUnsubscribe;
+        }
+
         UnsubscribeStarted?.TrySetResult();
         if (UnsubscribeHold is { } hold)
         {

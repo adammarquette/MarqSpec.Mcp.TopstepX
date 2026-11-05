@@ -97,6 +97,37 @@ public sealed class EfRecorderHealthStore(TopstepXDbContext database) : IRecorde
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<RecorderLease>> LeasesAsync(
+        string venue,
+        IReadOnlyCollection<string> instruments,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(instruments);
+
+        if (instruments.Count == 0)
+        {
+            return [];
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(venue);
+        string[] symbols = [.. instruments];
+        return await _database.TapeLeases
+            .AsNoTracking()
+            .Where(row => row.Venue == venue && symbols.Contains(row.Instrument))
+            .Select(row => new RecorderLease(
+                row.Instrument,
+                row.HeartbeatAt,
+                row.ExpiresAt,
+                row.Venue,
+                row.HubConnected,
+                row.Listening,
+                row.StoppedAt,
+                row.StopReason))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
     public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
         _database.TapeExportReceipts.AsNoTracking()
             .CountAsync(

@@ -29,6 +29,9 @@ public sealed class RecorderHealthToolTests
     private static readonly DateTimeOffset _close = At(2026, 8, 18, 16, 0);
     private static readonly JsonSerializerOptions _wire = McpJsonUtilities.DefaultOptions;
 
+    private static RecorderLease Live(string symbol, DateTimeOffset heartbeat, DateTimeOffset expires) =>
+        new(symbol, heartbeat, expires, HubConnected: true, Listening: true);
+
     private static DateTimeOffset At(int year, int month, int day, int hour, int minute) =>
         MarketClock.FromMarket(new DateOnly(year, month, day), new TimeOnly(hour, minute)).ToUniversalTime();
 
@@ -78,6 +81,292 @@ public sealed class RecorderHealthToolTests
 
         report.FeedConnected.Should().BeFalse();
         report.Feed.Should().Be(TapeUnavailableReason.NeverStarted);
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenThisProcessIsNotTheRecorder_AndALeaseIsLive_ReportsConnected()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday.AddSeconds(-1)));
+        fixture.Store.Ticks.Add(new ContractLastTick("NQ", Nq, _tuesday.AddSeconds(-2)));
+        fixture.Store.Coverage.Add(Open(_open, "ES", Es));
+        fixture.Store.Coverage.Add(Open(_open, "NQ", Nq));
+        fixture.Store.Leases.Add(Live("ES", _tuesday.AddSeconds(-10), _tuesday.AddMinutes(1)));
+        fixture.Store.Leases.Add(Live("NQ", _tuesday.AddSeconds(-10), _tuesday.AddMinutes(1)));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeTrue();
+        report.Feed.Should().Be(TapeUnavailableReason.RecordedElsewhere);
+        report.Contracts.Should().OnlyContain(row =>
+            row.Listening && row.Tape == TapeUnavailableReason.RecordedElsewhere);
+        report.Contracts.Should().OnlyContain(row =>
+            row.LastTickAgeSeconds > 0 && row.LastTickAgeSeconds < 3);
+        report.Gaps.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenTheRecorderLeaseHasLapsed_ReportsTheRecorderDown()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday.AddMinutes(-30)));
+        fixture.Store.Leases.Add(new RecorderLease("ES", _tuesday.AddMinutes(-5), _tuesday.AddSeconds(-1)));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeFalse();
+        report.Feed.Should().Be(TapeUnavailableReason.Stopped);
+        report.Contracts.Should().Contain(row =>
+            row.Symbol == "ES" && !row.Listening && row.Tape == TapeUnavailableReason.Stopped);
+    }
+
+    [Fact]
+    public async Task GetRecorderHealth_WhenNoRecorderHasClaimedTheTape_StaysNeverStarted()
+    {
+        await using Fixture fixture = Fixture.Open();
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeFalse();
+        report.Feed.Should().Be(TapeUnavailableReason.NeverStarted);
+        report.Contracts.Should().OnlyContain(row =>
+            !row.Listening && row.Tape == TapeUnavailableReason.NeverStarted);
+    }
+
+    [Fact]
+    public async Task AHeartbeatSlightlyAheadOfTheServer_StaysConnected()
+    {
+        // The recorder clock runs ahead of this server. A timestamp inside the freshness
+        // window is still a live lease, not a reconnect (gh#869).
+        await using Fixture fixture = Fixture.Open();
+        DateTimeOffset ahead = _tuesday.AddSeconds(5);
+        fixture.Store.Leases.Add(Live("ES", ahead, _tuesday.AddMinutes(1)));
+        fixture.Store.Leases.Add(Live("NQ", ahead, _tuesday.AddMinutes(1)));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeTrue();
+        report.Feed.Should().Be(TapeUnavailableReason.RecordedElsewhere);
+        report.Contracts.Should().OnlyContain(row => row.Listening);
+    }
+
+    [Fact]
+    public void AHeartbeatOrTickOutsideTheSkewWindow_IsNotFresh_AndOneInsideItIs()
+    {
+        DateTimeOffset asOf = _tuesday;
+        TimeSpan window = RecorderHealthService.RemoteFeedFreshFor;
+        DateTimeOffset liveUntil = asOf.AddMinutes(3);
+        RecorderLease ahead = new(
+            "ES",
+            asOf.Add(window),
+            liveUntil,
+            HubConnected: true,
+            Listening: true);
+
+        RecorderHealthService.ClassifyLease(ahead, asOf, null, window).Connected.Should().BeTrue(
+            "the edge of the window is still inside it");
+
+        RecorderLease tooFar = ahead with { HeartbeatAt = asOf.Add(window).AddTicks(1) };
+        RecorderHealthService.RemoteFeed stale = RecorderHealthService.ClassifyLease(
+            tooFar, asOf, null, window);
+        stale.Connected.Should().BeFalse();
+        stale.Reason.Should().Be(TapeUnavailableReason.Reconnecting);
+
+        RecorderLease oldHeartbeat = new(
+            "ES",
+            asOf.AddHours(-2),
+            liveUntil,
+            HubConnected: true,
+            Listening: true);
+        RecorderHealthService.ClassifyLease(oldHeartbeat, asOf, asOf.AddSeconds(5), window)
+            .Connected.Should().BeTrue("a last tick inside the window ahead of the server is fresh");
+    }
+
+    [Fact]
+    public async Task ALiveLeaseWhileTheHubIsReconnecting_IsNotConnected()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Leases.Add(new RecorderLease(
+            "ES",
+            _tuesday.AddSeconds(-5),
+            _tuesday.AddMinutes(1),
+            HubConnected: false,
+            Listening: false));
+        fixture.Store.Leases.Add(new RecorderLease(
+            "NQ",
+            _tuesday.AddSeconds(-5),
+            _tuesday.AddMinutes(1),
+            HubConnected: false,
+            Listening: false));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeFalse();
+        report.Feed.Should().Be(TapeUnavailableReason.Reconnecting);
+        report.Contracts.Should().OnlyContain(row =>
+            !row.Listening && row.Tape == TapeUnavailableReason.Reconnecting);
+    }
+
+    [Fact]
+    public async Task AHubThatIsUpWithAFreshTick_IsConnected_EvenWhenTheHeartbeatIsOld()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday.AddSeconds(-20)));
+        fixture.Store.Ticks.Add(new ContractLastTick("NQ", Nq, _tuesday.AddSeconds(-20)));
+        RecorderLease staleHeartbeat = Live("ES", _tuesday.AddHours(-2), _tuesday.AddMinutes(1));
+        fixture.Store.Leases.Add(staleHeartbeat);
+        fixture.Store.Leases.Add(Live("NQ", _tuesday.AddHours(-2), _tuesday.AddMinutes(1)));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeTrue();
+        report.Feed.Should().Be(TapeUnavailableReason.RecordedElsewhere);
+    }
+
+    [Fact]
+    public async Task ACleanStop_IsStopped_NotNeverStarted()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Leases.Add(new RecorderLease(
+            "ES",
+            _tuesday,
+            _tuesday,
+            StoppedAt: _tuesday,
+            StopReason: nameof(TapeUnavailableReason.Stopped)));
+        fixture.Store.Leases.Add(new RecorderLease(
+            "NQ",
+            _tuesday,
+            _tuesday,
+            StoppedAt: _tuesday,
+            StopReason: nameof(TapeUnavailableReason.Stopped)));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeFalse();
+        report.Feed.Should().Be(TapeUnavailableReason.Stopped);
+    }
+
+    [Fact]
+    public async Task AFaultStop_IsStopped_NotNeverStarted()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Leases.Add(new RecorderLease(
+            "ES",
+            _tuesday,
+            _tuesday,
+            StoppedAt: _tuesday,
+            StopReason: TapeLease.FaultStop));
+        fixture.Store.Leases.Add(new RecorderLease(
+            "NQ",
+            _tuesday,
+            _tuesday,
+            StoppedAt: _tuesday,
+            StopReason: TapeLease.FaultStop));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.Feed.Should().Be(TapeUnavailableReason.Stopped);
+        report.FeedConnected.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task AnExpiredLease_IsTheRecorderDown_NotNeverStarted()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Leases.Add(new RecorderLease(
+            "ES",
+            _tuesday.AddMinutes(-5),
+            _tuesday,
+            HubConnected: true,
+            Listening: true));
+        fixture.Store.Leases.Add(new RecorderLease(
+            "NQ",
+            _tuesday.AddMinutes(-5),
+            _tuesday,
+            HubConnected: true,
+            Listening: true));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeFalse();
+        report.Feed.Should().Be(TapeUnavailableReason.Stopped);
+    }
+
+    [Fact]
+    public async Task AStoppedInstrument_MakesTheProcessFeedStopped_WhileTheOtherStaysListening()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Ticks.Add(new ContractLastTick("ES", Es, _tuesday.AddSeconds(-1)));
+        fixture.Store.Leases.Add(Live("ES", _tuesday.AddSeconds(-5), _tuesday.AddMinutes(1)));
+        fixture.Store.Leases.Add(new RecorderLease(
+            "NQ",
+            _tuesday.AddMinutes(-5),
+            _tuesday.AddSeconds(-1)));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeFalse();
+        report.Feed.Should().Be(TapeUnavailableReason.Stopped);
+        report.Contracts.Should().Contain(row =>
+            row.Symbol == "ES" && row.Listening && row.Tape == TapeUnavailableReason.RecordedElsewhere);
+        report.Contracts.Should().Contain(row =>
+            row.Symbol == "NQ" && !row.Listening && row.Tape == TapeUnavailableReason.Stopped);
+    }
+
+    [Fact]
+    public async Task ADatabaseThatIsDown_DoesNotTreatStoredLeasesAsConnected()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Connected = false;
+        fixture.Store.Leases.Add(Live("ES", _tuesday.AddSeconds(-5), _tuesday.AddMinutes(1)));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.Database.Should().Be(RecorderHealthReport.StoreConnectivity.Unavailable);
+        report.FeedConnected.Should().BeFalse();
+        report.Feed.Should().Be(TapeUnavailableReason.NeverStarted);
+    }
+
+    [Fact]
+    public async Task ThisProcessListening_WinsOverAnotherRecordersLease()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Tape.Set(TapeAvailability.Listening());
+        fixture.Store.Leases.Add(new RecorderLease(
+            "ES",
+            _tuesday.AddSeconds(-5),
+            _tuesday.AddMinutes(1),
+            HubConnected: false));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.FeedConnected.Should().BeTrue();
+        report.Feed.Should().Be(TapeUnavailableReason.None);
+    }
+
+    [Fact]
+    public async Task ALeaseForAnotherVenue_IsNotThisRecorder()
+    {
+        await using Fixture fixture = Fixture.Open();
+        fixture.Store.Leases.Add(new RecorderLease(
+            "ES",
+            _tuesday.AddSeconds(-5),
+            _tuesday.AddMinutes(1),
+            Venue: "other",
+            HubConnected: true,
+            Listening: true));
+        fixture.Store.Leases.Add(new RecorderLease(
+            "NQ",
+            _tuesday.AddSeconds(-5),
+            _tuesday.AddMinutes(1),
+            Venue: "other",
+            HubConnected: true,
+            Listening: true));
+
+        RecorderHealthReport.Report report = await fixture.Tools.GetRecorderHealth(CancellationToken.None);
+
+        report.Feed.Should().Be(TapeUnavailableReason.NeverStarted);
+        report.FeedConnected.Should().BeFalse();
     }
 
     [Fact]
@@ -773,6 +1062,8 @@ public sealed class RecorderHealthToolTests
 
         public List<CoverageSlice> Coverage { get; } = [];
 
+        public List<RecorderLease> Leases { get; } = [];
+
         public int TapeDaysKept { get; set; }
 
         public void ReleaseProbe() => _release.TrySetResult();
@@ -831,5 +1122,16 @@ public sealed class RecorderHealthToolTests
 
         public Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken) =>
             Task.FromResult(TapeDaysKept);
+
+        public Task<IReadOnlyList<RecorderLease>> LeasesAsync(
+            string venue,
+            IReadOnlyCollection<string> instruments,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<IReadOnlyList<RecorderLease>>(
+                Leases.Where(lease =>
+                    lease.Venue == venue && instruments.Contains(lease.Instrument)).ToList());
+        }
     }
 }

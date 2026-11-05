@@ -2082,7 +2082,7 @@ public sealed class TradeTapeRecorderTests
     public async Task ARefusedRecorder_TakesOverWhenTheHolderReleases_SoARollingRedeployKeepsRecording()
     {
         // The rolling redeploy, end to end and overlapping. The new container starts while the old
-        // one is still draining and is refused; the old one then exits and deletes its row. If the
+        // one is still draining and is refused; the old one then exits and tombstones its row. If the
         // refusal were final, *nothing* would be recording from that moment on — permanently, and
         // a tape gap has no backfill. That is a worse outcome than the double-recording this card
         // set out to prevent, so a refusal is re-attempted on the renewal cadence (gh#404).
@@ -2112,7 +2112,7 @@ public sealed class TradeTapeRecorderTests
 
                 // The old container finishes draining and exits, releasing its claim.
                 await draining.StopAsync(CancellationToken.None);
-                await WaitUntil(() => LeaseRows(database).Count == 0);
+                await WaitUntil(() => LeaseRows(database).Any(row => row.StopReason != null));
 
                 arrivingClock.Advance(TapeLease.DefaultTimeToLive / 3);
 
@@ -2361,6 +2361,53 @@ public sealed class TradeTapeRecorderTests
     }
 
     [Fact]
+    public async Task AFeedWriteThatLosesTheClaim_StandsDown_AndReattemptsIt()
+    {
+        // The same race a renewal treats as a loss. Dropping the claim from the local
+        // set and not standing down leaves the subscription up and the coverage range open.
+        FeedWriteTakeoverInterceptor race = new();
+        (
+            TradeTapeRecorder recorder,
+            FakeMarketHub hub,
+            TopstepXDbContext database,
+            ServiceProvider services,
+            FakeTimeProvider clock) =
+            Build(
+                McpTransport.Http,
+                recordTape: true,
+                extraInterceptor: race);
+
+        await using (services)
+        await using (database)
+        {
+            TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
+            await recorder.StartAsync(CancellationToken.None);
+
+            await WaitUntil(
+                () => tape.For("ES").Reason == TapeUnavailableReason.ClaimTakenOver
+                    && hub.TradeSubscriptions.Count == 0,
+                "a feed write that loses the generation stands down, the way a lost renewal does");
+
+            race.Races.Should().Be(1, "the takeover has to be the write's race, not some other stop");
+            recorder.HoldsRecorderLease.Should().BeFalse();
+            CoverageRows(database).Should().NotContain(
+                row => row.RangeEnd == TapeCoverageRecord.StillListeningEnd,
+                "standing down retires the open range the silent drop would leave listening");
+
+            // The refused save left the row ours. The renew tick re-attempts it, and the
+            // second feed write is not raced, so the subscription comes back.
+            clock.Advance(TapeLease.DefaultTimeToLive / 3);
+
+            await WaitUntil(
+                () => tape.For("ES").IsListening && hub.TradeSubscriptions.Count == 1,
+                "the lost claim is re-attempted on the renew tick rather than dropped");
+            race.Races.Should().BeGreaterThan(1);
+
+            await recorder.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task ASkewedTakeover_LeavesItsOverlapPrintsInsideACoveredRange_TheKnownResidual()
     {
         // The residual, pinned so nobody re-reads it as fixed. A replacement whose clock runs more
@@ -2557,7 +2604,7 @@ public sealed class TradeTapeRecorderTests
             await WaitUntil(() => stoppingHub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
 
             await stopping.StopAsync(CancellationToken.None);
-            await WaitUntil(() => LeaseRows(database).Count == 0);
+            await WaitUntil(() => LeaseRows(database).Any(row => row.StopReason != null));
         }
 
         (TradeTapeRecorder next, FakeMarketHub nextHub, TopstepXDbContext nextDatabase, ServiceProvider nextServices, _) =
@@ -4948,6 +4995,36 @@ public sealed class TradeTapeRecorderTests
             if (writingClosed)
             {
                 throw new InvalidOperationException("the store refused the coverage close");
+            }
+
+            return base.SavingChangesAsync(eventData, result, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// Makes the first feed write's concurrency token stale, the way a takeover that
+    /// committed a new generation does. The in-memory store then refuses the save.
+    /// </summary>
+    private sealed class FeedWriteTakeoverInterceptor : SaveChangesInterceptor
+    {
+        private int _races;
+
+        public int Races => Volatile.Read(ref _races);
+
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            Microsoft.EntityFrameworkCore.ChangeTracking.EntityEntry<TapeLeaseRecord>? entry =
+                eventData.Context?.ChangeTracker.Entries<TapeLeaseRecord>()
+                    .FirstOrDefault(candidate =>
+                        candidate.State == EntityState.Modified
+                        && (candidate.Property(row => row.HubConnected).IsModified
+                            || candidate.Property(row => row.Listening).IsModified));
+            if (entry is not null && Interlocked.Increment(ref _races) == 1)
+            {
+                entry.Property(row => row.Generation).OriginalValue = -1L;
             }
 
             return base.SavingChangesAsync(eventData, result, cancellationToken);

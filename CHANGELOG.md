@@ -13,6 +13,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-05
+
+### Changed
+
+- **EF Core no longer logs every successful command**. `Executed DbCommand` (event 20101) now
+  logs at Debug instead of Information, so the recorder's per-print `INSERT INTO "Trades"` and quote upserts
+  stay out of the console. On Railway they hit the log rate limit and dropped up to ~439 lines a second.
+  Failed commands still log at Error. `Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Debug`
+  brings the lines back.
+- **Unknown tool arguments are refused** (gh#984). MCP SDK 2.3.0 ignores a key the tool does not declare.
+  It throws only when a required argument is missing, and that exception reaches the caller as
+  "An error occurred invoking '<tool>'." This server now refuses the call before the tool runs. An unknown
+  key is a validation error naming that key. That is a deliberate break: a call that bound before, because
+  the extra key was ignored, now fails. A missing required argument is named in the same error. The allowed
+  list is always complete. A call that uses only the listed arguments still runs.
+
+### Fixed
+
+- **`get_quote` does not invent a last or a volume** (gh#983). A bid or ask of zero is that side
+  gone. A zero last or volume is omitted. A trade fills `last` and `lastAt`. Volume stays omitted
+  unless a quote carries it, which is the usual case. A carried last or volume stops at the CME
+  session boundary and after 30 minutes, so a fresh `ageSeconds` does not date them. An older last
+  from another session is not kept under the new trade date. `ageSeconds` dates the bid and ask.
+- **`get_recorder_health` reads the recorder's hub state** (gh#869). The server process
+  does not record, so its own holder is `NeverStarted`. `feedConnected` is true only when
+  the recorder has written that its hub is connected and its heartbeat or last tick is
+  within 90 seconds, including a timestamp that far ahead of the server. A takeover clears
+  the previous holder's hub flags, and listening is published only after the subscription
+  is confirmed. A lease held while the hub is reconnecting is `Reconnecting`. A released
+  claim stays as a tombstone and is `Stopped`. An expired lease with no stop is `Stopped`.
+  No row stays `NeverStarted`. A feed write that loses the claim stands the recorder down.
+  The process `feed` is the worst instrument.
+
 ## [0.7.3] - 2026-11-01
 
 ### Fixed
@@ -1454,7 +1487,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.0...v0.7.1

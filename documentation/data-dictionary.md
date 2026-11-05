@@ -558,7 +558,10 @@ the newest contiguous run of one contract, and the reported window is that run, 
 | `Venue` `Instrument` | | PK |
 | `OwnerId` | `varchar(64)` | the holding process, new on every start |
 | `Generation` | `bigint` | concurrency token; bumped on acquire and takeover |
-| `AcquiredAt` `HeartbeatAt` `ExpiresAt` | `timestamptz` | |
+| `AcquiredAt` `HeartbeatAt` `ExpiresAt` | `timestamptz` | A stop sets `ExpiresAt` to that instant |
+| `HubConnected` `Listening` | `boolean` nullable | The holder's last hub report. Null on older rows |
+| `StoppedAt` | `timestamptz` nullable | Set when the holder releases the claim |
+| `StopReason` | `varchar(64)` nullable | A tape reason name, or `fault`. Null on a kill |
 
 Not market data — the one table here that records something about *this system* rather than about
 the market. It exists because ADR-0016's rule that two subscribers on one tape double every volume
@@ -571,11 +574,15 @@ and does not fault its host (gh#404).
 whole-store claim would outlaw it. Only the overlap that doubles volume is refused.
 
 **A row is held until its `ExpiresAt` has passed**, whatever its holder is doing — a quiet holder
-is a holder, and an unreadable store refuses rather than granting. The absence of a row is the only
-free state: a clean stop deletes its own, so a redeploy does not wait out the expiry. The holder
+is a holder, and an unreadable store refuses rather than granting. A clean stop does not delete
+the row. It sets `ExpiresAt` and `StoppedAt` to the stop and writes `StopReason`, so the next
+start can take the claim at once and health can tell that stop from a recorder that never
+claimed. A kill leaves the row to expire with no `StopReason`. The holder
 renews at a third of the time to live, so two lost renewals are survivable. `Generation` makes the
 takeover of a lapsed row one conditional update, so two starts reclaiming it leave one holder and
-not two; the loser re-reads and is refused.
+not two; the loser re-reads and is refused. A takeover sets `HubConnected` and `Listening`
+false and clears `StopReason` and `StoppedAt`, so the new holder does not inherit the previous
+one's feed or a reason a later kill would replay.
 
 **A refusal is re-attempted, not final.** A start that is refused stays up and asks again on the
 renew cadence. Without that, a rolling redeploy ends with the arriving container quitting and the
@@ -835,10 +842,13 @@ Index: `(Day, UploadState)` — the read that decision would make.
 | `Instrument` | `varchar(32)` | Normalised symbol. Not part of the key |
 | `Bid` | `numeric(18,8)` | Best bid |
 | `Ask` | `numeric(18,8)` | Best ask |
-| `Last` | `numeric(18,8)` | Last trade |
-| `Volume` | `bigint` | Session volume, in contracts. Zero is what the venue sent |
+| `Last` | `numeric(18,8)` | Last trade. Zero means unknown |
+| `LastAt` | `timestamptz` | Nullable. When `Last` was seen. Null when last is unknown |
+| `Volume` | `bigint` | Session volume from a quote. Zero means the quote did not carry it |
+| `VolumeAt` | `timestamptz` | Nullable. When `Volume` was seen |
+| `TradeDate` | `date` | Nullable. CME trade date of the event. Null when the market was shut |
 | `QuoteTimeUtc` | `timestamptz` | Nullable. The venue stamp, when the payload had one |
-| `ReceivedAt` | `timestamptz` | Database `clock_timestamp()` at upsert |
+| `ReceivedAt` | `timestamptz` | Database `clock_timestamp()` at upsert. Ages the bid and ask |
 
 The recorder upserts this row from the market hub it already holds, at most once per
 `MarketData__LatestQuoteFlush`, and only when that process is also recording tape.
@@ -847,8 +857,10 @@ server sets it false and sets `MarketData__GetQuoteEnabled` on, so the server li
 `get_quote` and does not open a hub to fill the table. A server that is not the recorder
 does not open a hub to fill the table. `ReceivedAt` is `clock_timestamp()`. A flush delay
 makes the stamp up to one flush gap later than the hub event. `get_quote` reads the newest
-row for the instrument, the contract the recorder subscribed, and reports that age. It does
-not search the venue. Until the new front ticks, that row is the old contract: the answer
+row for the instrument, the contract the recorder subscribed, and reports that age on the
+bid and ask. `LastAt` dates `last`. A carried last or volume is kept only for the same
+`TradeDate` and for 30 minutes. The read does not search the venue. Until the new front
+ticks, that row is the old contract: the answer
 names it and goes stale (gh#922, ADR-0016). A row older than
 `MarketData__LatestQuoteStaleAfter` is marked stale and still returned. The tool is
 registered only when `MarketData__GetQuoteEnabled` is on. The code default is off.

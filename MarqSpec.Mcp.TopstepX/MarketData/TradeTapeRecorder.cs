@@ -142,6 +142,14 @@ public sealed class TradeTapeRecorder : BackgroundService
     /// subscribing to one tape, which doubles every volume (ADR-0016, gh#404).
     /// </summary>
     private readonly TapeLease _lease;
+    private bool _faultStop;
+
+    /// <summary>
+    /// The hub flags last written for an instrument. A backoff tick that still matches skips
+    /// the store (gh#869).
+    /// </summary>
+    private readonly ConcurrentDictionary<string, TapeFeed> _publishedFeed =
+        new(StringComparer.Ordinal);
 
     /// <summary>True when this process holds at least one recorder claim.</summary>
     public bool HoldsRecorderLease => _lease.Held.Count > 0;
@@ -478,6 +486,7 @@ public sealed class TradeTapeRecorder : BackgroundService
                         "The trade-tape recorder could not connect the market hub. It stays up and "
                         + "will try the handshake again, and it will not call loginKey.");
                     _tape.Set(TapeAvailability.Reconnecting());
+                    await PublishFeedAsync(stoppingToken).ConfigureAwait(false);
                     _tape.NoteHubConnectionLost();
                     if (_market.StopOnSessionConflict && _probe is not null)
                     {
@@ -548,6 +557,7 @@ public sealed class TradeTapeRecorder : BackgroundService
         }
         catch (Exception exception)
         {
+            _faultStop = true;
             _tape.Set(TapeAvailability.Stopped());
             _logger.LogError(
                 exception,
@@ -564,11 +574,15 @@ public sealed class TradeTapeRecorder : BackgroundService
                 _loginGate.RestorePriorAutoReconnect(_socketOptions);
             }
 
-            // Every exit, not just the clean one: a claim this process is no longer recording
-            // under would otherwise make the next start wait out the whole expiry for nothing.
+            // Every exit, not just the clean one. The row stays, expired at this instant, with
+            // the stop reason, so health can tell a stop from a recorder that never started.
+            // The next start can take the claim at once because the expiry has passed.
             try
             {
-                await _lease.ReleaseAllAsync(CancellationToken.None).ConfigureAwait(false);
+                string stopReason = _faultStop
+                    ? TapeLease.FaultStop
+                    : _tape.Value.Reason.ToString();
+                await _lease.ReleaseAllAsync(stopReason, CancellationToken.None).ConfigureAwait(false);
             }
             catch (Exception exception)
             {
@@ -701,7 +715,8 @@ public sealed class TradeTapeRecorder : BackgroundService
             TapeLeaseRenewal renewal;
             try
             {
-                renewal = await _lease.TryRenewAsync(venue, instrument, stoppingToken)
+                renewal = await _lease.TryRenewAsync(
+                        venue, instrument, FeedFor(instrument), stoppingToken)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
@@ -903,9 +918,8 @@ public sealed class TradeTapeRecorder : BackgroundService
         TapeAvailability outcome,
         CancellationToken cancellationToken)
     {
-        // The one place a HELD claim stops being held -- taken over, or lapsed under a store outage. Counted
-        // here rather than at each of the two call sites so the two cannot drift apart, and so a third one
-        // added later is counted by construction.
+        // The one place a held claim stops being held: taken over on renew, lapsed under a
+        // store outage, or lost on a feed write. Counted here so those sites cannot drift.
         _telemetry.TapeLeaseChanged(instrument, TapeLeaseChange.Lost);
 
         _logger.LogError(
@@ -996,6 +1010,9 @@ public sealed class TradeTapeRecorder : BackgroundService
         {
             ArmSessionConflict();
             _tape.Set(TapeAvailability.StoppedForSessionConflict());
+            // The release tombstone lands when the service exits. Until then the row would
+            // still say the hub is up. PublishFeed is what writes the flags in between.
+            Enqueue(LifecycleWork.PublishFeed);
             Enqueue(LifecycleWork.StopForHubConflict);
             return;
         }
@@ -1042,9 +1059,8 @@ public sealed class TradeTapeRecorder : BackgroundService
             _telemetry.TapeReconnect(TapeTransition.Disconnected);
             _tape.NoteHubConnectionLost();
             _ledger.CloseOpenRangesAt(_clock.GetUtcNow());
-            Enqueue(LifecycleWork.PersistCloses);
-
             _tape.Set(TapeAvailability.Reconnecting());
+            Enqueue(LifecycleWork.PersistCloses);
 
             if (_market.StopOnSessionConflict && _probe is not null)
             {
@@ -1097,8 +1113,12 @@ public sealed class TradeTapeRecorder : BackgroundService
                     case LifecycleWork.RestoreSubscriptions:
                         await RestoreSubscriptionsAsync(stoppingToken).ConfigureAwait(false);
                         break;
+                    case LifecycleWork.PublishFeed:
+                        await PublishFeedAsync(stoppingToken).ConfigureAwait(false);
+                        break;
                     case LifecycleWork.PersistCloses:
                         await _ledger.PersistPendingClosesAsync(stoppingToken).ConfigureAwait(false);
+                        await PublishFeedAsync(stoppingToken).ConfigureAwait(false);
                         break;
                     case LifecycleWork.ProbeSession:
                         await ProbeSessionAsync(stoppingToken).ConfigureAwait(false);
@@ -1160,6 +1180,70 @@ public sealed class TradeTapeRecorder : BackgroundService
                 "Restored trade subscriptions for {Count} contract(s). Connected is not listening.",
                 restored);
         }
+
+        await PublishFeedAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private TapeFeed FeedFor(string instrument)
+    {
+        TapeAvailability tape = _tape.For(instrument);
+        return new TapeFeed(
+            tape.Reason is TapeUnavailableReason.None
+                or TapeUnavailableReason.ConnectedButNotSubscribed,
+            tape.IsListening);
+    }
+
+    /// <summary>
+    /// True when a held instrument's flags differ from the last feed write, or have never
+    /// been written. An empty hold has nothing to write.
+    /// </summary>
+    private bool PublishedFeedIsStale()
+    {
+        foreach ((string _, string instrument) in _lease.Held)
+        {
+            if (!_publishedFeed.TryGetValue(instrument, out TapeFeed prior)
+                || prior != FeedFor(instrument))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private async Task PublishFeedAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<TapeFeedLoss> lost = await _lease.WriteFeedAsync(FeedFor, cancellationToken)
+                .ConfigureAwait(false);
+            foreach ((string _, string instrument) in _lease.Held)
+            {
+                _publishedFeed[instrument] = FeedFor(instrument);
+            }
+
+            foreach (TapeFeedLoss claim in lost)
+            {
+                _publishedFeed.TryRemove(claim.Instrument, out _);
+                await StandDownAsync(
+                        claim.Venue,
+                        claim.Instrument,
+                        ClaimEnd(claim.Term),
+                        TapeAvailability.ClaimTakenOver(),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                "The trade-tape recorder could not write its hub state onto the tape claim.");
+        }
     }
 
     /// <summary>
@@ -1207,6 +1291,9 @@ public sealed class TradeTapeRecorder : BackgroundService
 
                 _fenceWarned.TryRemove(contractId, out _);
                 _tape.Set(attribution.Instrument, TapeAvailability.Listening());
+                // Listening is visible on the claim at the confirm, not at the next renew.
+                // A takeover left both flags false until this write (gh#869).
+                await PublishFeedAsync(cancellationToken).ConfigureAwait(false);
                 return true;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1719,6 +1806,12 @@ public sealed class TradeTapeRecorder : BackgroundService
 
     private async Task ReprobeAfterBackoffAsync(CancellationToken cancellationToken)
     {
+        // A tick that has not changed the flags does not need a row write. Renew still
+        // refreshes the heartbeat on its own interval.
+        if (PublishedFeedIsStale())
+        {
+            await PublishFeedAsync(cancellationToken).ConfigureAwait(false);
+        }
         if (ConflictArmed || _loginGate.StopLatched)
         {
             return;
@@ -1909,6 +2002,7 @@ public sealed class TradeTapeRecorder : BackgroundService
     private enum LifecycleWork
     {
         RestoreSubscriptions,
+        PublishFeed,
         PersistCloses,
         ProbeSession,
         ReprobeAfterBackoff,

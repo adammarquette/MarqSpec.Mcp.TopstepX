@@ -17,6 +17,25 @@ public sealed record CoverageSlice(
     DateTimeOffset RangeStart,
     DateTimeOffset RangeEnd);
 
+/// <summary>One persisted tape claim. A claim is live while <see cref="ExpiresAt"/> is after now.</summary>
+/// <param name="Instrument">The normalised symbol.</param>
+/// <param name="HeartbeatAt">When the holder last wrote the row, UTC.</param>
+/// <param name="ExpiresAt">When the claim lapses unless renewed, UTC. Equal to now is already lapsed.</param>
+/// <param name="Venue">The venue. A row for another venue is not this server's recorder.</param>
+/// <param name="HubConnected">The holder's last hub-connected flag. Null if never written.</param>
+/// <param name="Listening">The holder's last subscribed flag.</param>
+/// <param name="StoppedAt">When the holder released the claim. Null while it is held.</param>
+/// <param name="StopReason">Why it released, or null when a kill left the row to expire.</param>
+public sealed record RecorderLease(
+    string Instrument,
+    DateTimeOffset HeartbeatAt,
+    DateTimeOffset ExpiresAt,
+    string Venue = global::MarqSpec.Mcp.TopstepX.Venue.ProjectXMarketDataGateway.Venue,
+    bool? HubConnected = null,
+    bool? Listening = null,
+    DateTimeOffset? StoppedAt = null,
+    string? StopReason = null);
+
 /// <summary>
 /// The store reads a recorder-health report needs. One implementation talks to the database;
 /// tests supply the other.
@@ -74,4 +93,18 @@ public interface IRecorderHealthStore
     /// <param name="cancellationToken">The caller's cancellation token.</param>
     /// <returns>How many such receipts are still waiting for a new export.</returns>
     Task<int> TapeDaysKeptAsync(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Tape claims for the named instruments, live or lapsed. Empty when this store has none.
+    /// The default is empty, so a double that only scripts ticks still compiles.
+    /// </summary>
+    /// <param name="venue">The venue this server records. Another venue's row is not returned.</param>
+    /// <param name="instruments">The configured symbols.</param>
+    /// <param name="cancellationToken">The caller's cancellation token.</param>
+    /// <returns>One row per claim for that venue. The caller decides which expiry is live.</returns>
+    Task<IReadOnlyList<RecorderLease>> LeasesAsync(
+        string venue,
+        IReadOnlyCollection<string> instruments,
+        CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<RecorderLease>>([]);
 }

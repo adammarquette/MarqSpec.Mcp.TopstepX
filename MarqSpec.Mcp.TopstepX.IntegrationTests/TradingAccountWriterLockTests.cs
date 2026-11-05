@@ -35,6 +35,33 @@ public sealed class TradingAccountWriterLockTests(SchemaFixture fixture)
     }
 
     [Fact]
+    public async Task ADisposedLock_HasReleasedOnTheServerWhenDisposeReturns()
+    {
+        // gh#995: closing the session returned before the backend exited, and the backend frees the lock
+        // only on exit. One round rarely loses that race, so the test repeats it. Both dispose paths run.
+        for (int round = 0; round < 40; round++)
+        {
+            TradingAccountWriterLock holder = Lock();
+            (await holder.TryHoldAsync(Account, CancellationToken.None)).Should().Be(
+                TradingWriterLockTake.Held,
+                $"round {round}: the previous round's locks were disposed");
+
+            if (round % 2 == 0)
+            {
+                await holder.DisposeAsync();
+            }
+            else
+            {
+                holder.Dispose();
+            }
+
+            (await GrantedHoldersAsync()).Should().Be(
+                0,
+                $"round {round}: a disposed lock has released on the server, not only closed its socket");
+        }
+    }
+
+    [Fact]
     public async Task ADroppedSession_IsTakenBackWhenNobodyElseHoldsIt()
     {
         await using TradingAccountWriterLock holder = Lock();
@@ -81,9 +108,30 @@ public sealed class TradingAccountWriterLockTests(SchemaFixture fixture)
     {
         await using NpgsqlConnection killer = new(_fixture.ConnectionString);
         await killer.OpenAsync();
-        await using NpgsqlCommand terminate = new("SELECT pg_terminate_backend(@pid)", killer);
+        // With a timeout, pg_terminate_backend waits for the backend to exit, and its locks with it
+        // (gh#995). Without one it returns once the signal is sent.
+        await using NpgsqlCommand terminate = new("SELECT pg_terminate_backend(@pid, 5000)", killer);
         terminate.Parameters.AddWithValue("pid", await BackendPidAsync());
         (await terminate.ExecuteScalarAsync()).Should().Be(true);
+    }
+
+    private async Task<long> GrantedHoldersAsync()
+    {
+        await using NpgsqlConnection observer = new(_fixture.ConnectionString);
+        await observer.OpenAsync();
+        await using NpgsqlCommand command = new(
+            """
+            SELECT count(*)
+            FROM pg_locks
+            WHERE locktype = 'advisory'
+              AND classid = @classId
+              AND objid = @objectId
+              AND granted
+            """,
+            observer);
+        command.Parameters.AddWithValue("classId", TradingAccountWriterLock.AdvisoryLockClassId);
+        command.Parameters.AddWithValue("objectId", Account);
+        return (long)(await command.ExecuteScalarAsync())!;
     }
 
     private async Task<int> BackendPidAsync()

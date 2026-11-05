@@ -99,11 +99,15 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>A renewal or login that was refused (gh#757).</summary>
     public const string SessionRenewalRefusalsInstrument = "mcp.session.renewal_refusals";
 
+    /// <summary>A tool call refused for its arguments (gh#984).</summary>
+    public const string ToolArgumentRefusalsInstrument = "mcp.tool.argument_refusals";
+
     /// <summary>A held session that was opened for a recovery login (gh#757).</summary>
     public const string SessionRenewalReopensInstrument = "mcp.session.renewal_reopens";
 
     /// <summary>One budgeted recovery login (gh#757).</summary>
     public const string SessionRecoveryLoginsInstrument = "mcp.session.recovery_logins";
+
     /// <summary>
     /// A footprint or volume-profile read served with <c>live</c> false (gh#728).
     /// </summary>
@@ -211,6 +215,12 @@ public sealed class HostTelemetry : IDisposable
     /// <summary>Why a range was outstanding. Values: <see cref="GapReason"/>.</summary>
     public const string ReasonTag = "reason";
 
+    /// <summary>
+    /// The other argument-refusal reason on the same call. Values:
+    /// <see cref="ToolArgumentRefusal"/>. Absent when the call has one reason.
+    /// </summary>
+    public const string AlsoTag = "also";
+
     /// <summary>The CLR type name on a latest-quote failure. OTel <c>exception.type</c>.</summary>
     public const string ExceptionTag = "exception.type";
 
@@ -240,6 +250,7 @@ public sealed class HostTelemetry : IDisposable
     private readonly Counter<long> _recorderHealthReads;
     private readonly Counter<long> _tapeSessionConflicts;
     private readonly Counter<long> _sessionRenewalRefusals;
+    private readonly Counter<long> _toolArgumentRefusals;
     private readonly Counter<long> _sessionRenewalReopens;
     private readonly Counter<long> _sessionRecoveryLogins;
     private readonly Counter<long> _tapeClosedReads;
@@ -341,6 +352,11 @@ public sealed class HostTelemetry : IDisposable
             SessionRenewalRefusalsInstrument,
             unit: "{refusal}",
             description: "Held-session renewals and logins that were refused, by why.");
+
+        _toolArgumentRefusals = _meter.CreateCounter<long>(
+            ToolArgumentRefusalsInstrument,
+            unit: "{refusal}",
+            description: "Tool calls refused for their arguments, by tool and by why.");
 
         _sessionRenewalReopens = _meter.CreateCounter<long>(
             SessionRenewalReopensInstrument,
@@ -753,6 +769,41 @@ public sealed class HostTelemetry : IDisposable
         span?.SetTag(ReasonTag, reason);
 
         _sessionRenewalRefusals.Add(1, new KeyValuePair<string, object?>(ReasonTag, reason));
+        return span;
+    }
+
+    /// <summary>
+    /// Records one tool-argument refusal. The tool name is the operation. Argument values are not tags.
+    /// </summary>
+    /// <param name="operation">The tool name.</param>
+    /// <param name="reason">
+    /// <see cref="ToolArgumentRefusal.Unexpected"/> or <see cref="ToolArgumentRefusal.Missing"/>.
+    /// </param>
+    /// <param name="also">The other reason, when the same call is both. Null records one reason.</param>
+    /// <returns>The span. The caller disposes it. Null when nothing is listening.</returns>
+    public Activity? ToolArgumentRefusal(string operation, string reason, string? also = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+
+        Activity? span = Activities.StartActivity("tool.argument_refusal", ActivityKind.Internal);
+        span?.SetTag(OperationTag, operation);
+        span?.SetTag(ReplayTag, ExecutionWriteReplay.False);
+        span?.AddTag(ReasonTag, reason);
+
+        TagList tags = new()
+        {
+            { OperationTag, operation },
+            { ReasonTag, reason },
+            { ReplayTag, ExecutionWriteReplay.False },
+        };
+        if (!string.IsNullOrWhiteSpace(also))
+        {
+            span?.AddTag(ReasonTag, also);
+            tags.Add(AlsoTag, also);
+        }
+
+        _toolArgumentRefusals.Add(1, tags);
         return span;
     }
 
@@ -1478,6 +1529,19 @@ public static class ExecutionWriteReplay
     public static IReadOnlyList<string> All { get; } = [True, False];
 }
 
+/// <summary>Why a tool call was refused for its arguments (gh#984).</summary>
+public static class ToolArgumentRefusal
+{
+    /// <summary>A key the published schema does not list.</summary>
+    public const string Unexpected = "unexpected_argument";
+
+    /// <summary>A required key the call did not send.</summary>
+    public const string Missing = "missing_argument";
+
+    /// <summary>Every value.</summary>
+    public static IReadOnlyList<string> All { get; } = [Unexpected, Missing];
+}
+
 /// <summary>Why a bar range was outstanding — the <c>reason</c> tag's closed vocabulary.</summary>
 public static class GapReason
 {
@@ -1615,6 +1679,14 @@ public static class QuoteWriteOutcome
     /// <summary>A price unsubscribe did not finish. Not a store failure.</summary>
     public const string UnsubscribeFailed = "quote_unsubscribe_failed";
 
+    /// <summary>
+    /// The trade subscription for a quote did not finish. The price subscription still stands.
+    /// </summary>
+    public const string TradeSubscribeFailed = "quote_trade_subscribe_failed";
+
+    /// <summary>A trade unsubscribe for a quote did not finish.</summary>
+    public const string TradeUnsubscribeFailed = "quote_trade_unsubscribe_failed";
+
     /// <summary>The shutdown flush did not finish. Not a store failure during the loop.</summary>
     public const string ShutdownFailed = "quote_shutdown_failed";
 
@@ -1628,6 +1700,8 @@ public static class QuoteWriteOutcome
         Subscribed,
         VolumeRejected,
         UnsubscribeFailed,
+        TradeSubscribeFailed,
+        TradeUnsubscribeFailed,
         ShutdownFailed,
     ];
 }

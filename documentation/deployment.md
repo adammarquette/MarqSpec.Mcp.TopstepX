@@ -103,7 +103,9 @@ nowhere today. Postgres write load is that one batch a second. `LatestQuotes` is
 a tape and it is not pruned.
 
 **Migration.** The Postgres service config does not change. The `LatestQuotes` table
-comes from migration `20261101034408_AddLatestQuotes`, which landed with gh#911. Both
+comes from migration `20261101034408_AddLatestQuotes`, which landed with gh#911.
+`LastAt`, `VolumeAt` and `TradeDate` are added by `20261102060628_AddLatestQuoteFieldTimes`
+(gh#983). Both
 processes apply migrations at startup (`MigrateAsync`, called from `Program` before the
 host listens). The promoted image must contain that migration and the reader. An older
 image ignores the new switches and does not create the table.
@@ -274,6 +276,8 @@ before any production deploy. Production deploys stay manual and need Adam's app
   ([docs](https://docs.railway.com/guides/logs#structured-logs)), and .NET's `json` formatter writes
   `Message`, so every entry showed blank. A plain line becomes the whole message. Every line is level
   `info` in Railway; filter by text such as `fail:` or `warn:`. The AWS path keeps `json` (ADR-0023).
+  EF Core's successful-command line (`Executed DbCommand`, event 20101) logs at Debug, so the recorder's
+  per-print inserts do not reach the console or the rate limit; failed commands still log `fail:`.
 - **Absent:** compose's `MarketData__*`, `Indicators__*`, `KeyLevels__*`, `Trading__Max*`,
   `Trading__DeniedSymbols`, `Trading__KillSwitchFile` and `Embeddings__*`, so code defaults apply.
 

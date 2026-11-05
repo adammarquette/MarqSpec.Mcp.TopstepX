@@ -236,14 +236,23 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<decimal>("Last")
                         .HasColumnType("numeric(18,8)");
 
+                    b.Property<DateTimeOffset?>("LastAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTimeOffset?>("QuoteTimeUtc")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTimeOffset>("ReceivedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateOnly?>("TradeDate")
+                        .HasColumnType("date");
+
                     b.Property<long>("Volume")
                         .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("VolumeAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Venue", "ContractId");
 
@@ -507,10 +516,23 @@ namespace MarqSpec.Mcp.TopstepX.Data.Migrations
                     b.Property<DateTimeOffset>("HeartbeatAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<bool?>("HubConnected")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool?>("Listening")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("OwnerId")
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<string>("StopReason")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset?>("StoppedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Venue", "Instrument");
 

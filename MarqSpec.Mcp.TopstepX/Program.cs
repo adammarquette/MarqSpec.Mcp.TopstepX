@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
@@ -346,6 +347,30 @@ public static class Program
                 + "/health and serverInfo report the process.",
             stamped,
             release);
+    }
+
+    /// <summary>
+    /// Points the context at the store and sets how loud EF Core is about it.
+    /// </summary>
+    /// <param name="options">The context options being built.</param>
+    /// <param name="connection">The resolved store connection string.</param>
+    /// <remarks>
+    /// <b>A successful command logs at Debug, not EF's default Information.</b> The recorder writes one
+    /// <c>INSERT INTO "Trades"</c> per print and an upsert per quote batch, and EF logs each one as
+    /// <c>Executed DbCommand</c> (event 20101) under <c>Microsoft.EntityFrameworkCore.Database.Command</c>.
+    /// On Railway that hit the log rate limit and dropped up to ~439 lines a second, burying the app's own
+    /// lines in the same stream. Moving the event to Debug, rather than filtering the category, keeps
+    /// EF's failed-command <c>Error</c> and every other EF warning where they were, and leaves it to
+    /// configuration: <c>Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command=Debug</c> brings
+    /// the lines back when someone needs per-insert latency again (ADR-0023 measured it that way).
+    /// </remarks>
+    internal static void ConfigureStore(DbContextOptionsBuilder options, string connection)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        options
+            .UseNpgsql(connection, npgsql => npgsql.UseVector())
+            .ConfigureWarnings(warnings => warnings.Log((RelationalEventId.CommandExecuted, LogLevel.Debug)));
     }
 
     /// <summary>
@@ -943,8 +968,7 @@ public static class Program
 
         string connection = StoreConnection.Resolve(builder.Configuration);
 
-        services.AddDbContext<TopstepXDbContext>(options =>
-            options.UseNpgsql(connection, npgsql => npgsql.UseVector()));
+        services.AddDbContext<TopstepXDbContext>(options => ConfigureStore(options, connection));
 
         services.AddScoped<IndicatorProjector>();
         services.AddScoped<IndicatorRebuilder>();
@@ -1127,7 +1151,16 @@ public static class Program
         // author remembering a try/catch. A guard written into a tool covers that tool, which is how a
         // 23505 from two overlapping fills reached a caller of get_bars as a raw DbUpdateException while
         // the one method that translated anything sat two tools away.
-        server = server.WithRequestFilters(filters => filters.AddCallToolFilter(StoreFaultGuard.Filter));
+        // Two filters. StoreFaultGuard is added first, so it is the outermost: the SDK wraps from the
+        // end of the list, and the last filter added is the innermost. UnknownToolArgumentGuard therefore
+        // runs inside the store guard, before the tool. A trading call with an extra key is refused here
+        // as an unexpected argument, before RefuseIfDisabledOrHalted inside the order tool. A call whose
+        // names are valid still reaches that gate.
+        server = server.WithRequestFilters(filters =>
+        {
+            filters.AddCallToolFilter(StoreFaultGuard.Filter);
+            filters.AddCallToolFilter(UnknownToolArgumentGuard.Filter);
+        });
 
         if (mcp.Transport == McpTransport.Http)
         {

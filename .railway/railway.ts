@@ -189,16 +189,38 @@ export default defineRailway((ctx) => {
   // container mid-migration. 3990 >= store wait (90) + migration (3600) + 300 s warm-up, which the check requires.
   const HEALTHCHECK_TIMEOUT = 3990;
 
-  // ADR-0021 EXCEPTION (2026-10-28, widened to production 2026-10-29 on gh#851/gh#855), TEMPORARY: no
-  // OAuth provider is chosen yet, so EVERY environment's server runs the static gate on its own
-  // environment's shared MCP_HTTP_BEARER_TOKEN, with NO Mcp__OAuth__* key beside it (McpOptions refuses
-  // that). The app's OAuth path is unchanged; when a provider exists (ApiaryKeeper's Keycloak is a
-  // candidate), this block goes back to OAuth.
-  // KEEP IN SYNC: evaluate-template.mjs [static-token-required] requires exactly this shape.
-  const serverAuth = {
-    Mcp__Auth__Mode: "StaticToken",
-    Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
-  } as const;
+  // ADR-0021 (2026-11-05, gh#997): staging runs the migration mode. Production, and every other
+  // environment, stays StaticToken until a separate ADR. Each key is written out: a shared reference
+  // or a literal, never a cast over the whole object. The static token stays required.
+  // KEEP IN SYNC: evaluate-template.mjs [staging-migration] and [oauth-pair].
+  // The tail after auth. Repeated in both branches so each object is checked on its own keys.
+  const serverTail = {
+    // Railway's edge is the only path to this service and overwrites X-Forwarded-For.
+    ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true",
+    MarketData__RecordTape: "false",
+    // Reads the recorder's row. Writing stays off: this process must not open a hub (ADR-0016).
+    MarketData__RecordLatestQuotes: "false",
+    MarketData__GetQuoteEnabled: "true",
+    Otel__ServiceName: "marqspec-mcp-topstepx-server",
+  };
+  const serverEnv =
+    ctx.environment === "staging"
+      ? {
+          ...common,
+          Mcp__Auth__Mode: "OAuthWithStaticToken",
+          Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
+          Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,
+          Mcp__OAuth__Audience: ctx.shared.MCP_OAUTH_AUDIENCE,
+          Mcp__OAuth__ResourceUrl: ctx.shared.MCP_OAUTH_RESOURCE_URL,
+          Mcp__OAuth__Subjects: ctx.shared.MCP_OAUTH_SUBJECTS,
+          ...serverTail,
+        }
+      : {
+          ...common,
+          Mcp__Auth__Mode: "StaticToken",
+          Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
+          ...serverTail,
+        };
 
   const server = service("server", {
     source: server_image(),
@@ -207,17 +229,7 @@ export default defineRailway((ctx) => {
     healthcheckTimeout: HEALTHCHECK_TIMEOUT,
     replicas: 1,
     deploy: { ...RESTART, restartPolicyMaxRetries: APP_RESTART_RETRIES, preDeployTimeoutSeconds: PG_WAIT_TIMEOUT },
-    env: {
-      ...common,
-      ...serverAuth,
-      // Railway's edge is the only path to this service and overwrites X-Forwarded-For.
-      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true",
-      MarketData__RecordTape: "false",
-      // Reads the recorder's row. Writing stays off: this process must not open a hub (ADR-0016).
-      MarketData__RecordLatestQuotes: "false",
-      MarketData__GetQuoteEnabled: "true",
-      Otel__ServiceName: "marqspec-mcp-topstepx-server",
-    },
+    env: serverEnv,
   });
 
   // Same image, HTTP transport (stdio never records), NO public domain, exactly one replica.

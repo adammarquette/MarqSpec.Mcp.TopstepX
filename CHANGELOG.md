@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`get_recorder_health` reads the recorder's hub state** (gh#869). The server process
+  does not record, so its own holder is `NeverStarted`. `feedConnected` is true only when
+  the recorder has written that its hub is connected and its heartbeat or last tick is
+  within 90 seconds, including a timestamp that far ahead of the server. A takeover clears
+  the previous holder's hub flags, and listening is published only after the subscription
+  is confirmed. A lease held while the hub is reconnecting is `Reconnecting`. A released
+  claim stays as a tombstone and is `Stopped`. An expired lease with no stop is `Stopped`.
+  No row stays `NeverStarted`. A feed write that loses the claim stands the recorder down.
+  The process `feed` is the worst instrument.
+
 ### Changed
 
 - **EF Core no longer logs every successful command**. `Executed DbCommand` (event 20101) now

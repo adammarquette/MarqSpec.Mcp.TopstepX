@@ -637,6 +637,9 @@ public sealed class FootprintAndVolumeProfileToolTests : IDisposable
         TapeTools.WireReason(TapeUnavailableReason.StoppedForSessionConflict)
             .Should().Be(TapeWireReason.StoppedForSessionConflict);
         TapeWireReason.StoppedForSessionConflict.Should().Be("stopped_for_session_conflict");
+        TapeTools.WireReason(TapeUnavailableReason.RecordedElsewhere)
+            .Should().Be(TapeWireReason.RecordedElsewhere);
+        TapeWireReason.RecordedElsewhere.Should().Be("recorded_elsewhere");
     }
 
     [Fact]

@@ -303,6 +303,7 @@ public sealed class TopstepXDbContext(DbContextOptions<TopstepXDbContext> option
             entity.Property(l => l.Venue).HasMaxLength(64);
             entity.Property(l => l.Instrument).HasMaxLength(32);
             entity.Property(l => l.OwnerId).HasMaxLength(64);
+            entity.Property(l => l.StopReason).HasMaxLength(64);
 
             // The takeover of an expired claim is one conditional update, not a read and a hopeful
             // write: two starts racing the same expired row match the same generation, and exactly

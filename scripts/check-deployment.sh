@@ -7,13 +7,17 @@
 #   MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging|production  MCP_CHECK_BEARER_TOKEN=…  \
 #     scripts/check-deployment.sh <base-url> <expected-version>
 #
-#   The second form is ADR-0021's static-token exception and nothing else: staging (2026-10-28) and production
-#   (2026-10-29, gh#855), TEMPORARY until an OAuth provider is chosen. Assertion 2 then requires a bare
-#   `Bearer` challenge (and FAILS on an RFC 9728 one, which would mean the instance is not in the mode the
-#   caller claims), and assertion 3 presents the static token instead of minting one. It refuses to run unless
-#   MCP_CHECK_ENVIRONMENT is staging or production, and refuses any OAuth client variable beside it -- exactly
-#   one mode, as McpOptions requires of the server. evaluate-template.mjs requires StaticToken on every
-#   Railway server until OAuth returns.
+#   MCP_CHECK_AUTH_MODE=OAuthWithStaticToken  MCP_CHECK_ENVIRONMENT=staging  MCP_CHECK_BEARER_TOKEN=…  \
+#   MCP_CHECK_OAUTH_ISSUER=…  MCP_CHECK_OAUTH_AUDIENCE=…  \
+#     scripts/check-deployment.sh <base-url> <expected-version>
+#
+#   StaticToken is ADR-0021's exception: staging (2026-10-28) and production (2026-10-29, gh#855).
+#   Assertion 2 then requires a bare `Bearer` challenge, and assertion 3 presents the static token.
+#   It refuses to run unless MCP_CHECK_ENVIRONMENT is staging or production, and refuses any OAuth
+#   client variable beside it. OAuthWithStaticToken is the staging migration mode (gh#997) only.
+#   Production stays StaticToken. The issuer and the audience are required together. Assertion 2
+#   expects the OAuth challenge (a bad static token is steered into discovery). Assertion 3 still
+#   presents the static token; AuthKit machine tokens are not what this check exchanges.
 #
 #   e.g.  scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
 #
@@ -134,6 +138,11 @@ usage: MCP_CHECK_CLIENT_ID=… MCP_CHECK_CLIENT_SECRET=… MCP_CHECK_TOKEN_URL=�
   Staging or production, ADR-0021 exception (2026-10-28, widened 2026-10-29), instead of the three above:
   MCP_CHECK_AUTH_MODE=StaticToken  MCP_CHECK_ENVIRONMENT=staging|production
   MCP_CHECK_BEARER_TOKEN=<Mcp__HttpBearerToken>
+
+  Staging migration mode (gh#997). Production is refused. Issuer and audience are a pair:
+  MCP_CHECK_AUTH_MODE=OAuthWithStaticToken  MCP_CHECK_ENVIRONMENT=staging
+  MCP_CHECK_BEARER_TOKEN=<Mcp__HttpBearerToken>
+  MCP_CHECK_OAUTH_ISSUER=<Mcp__OAuth__Issuer>  MCP_CHECK_OAUTH_AUDIENCE=<Mcp__OAuth__Audience>
 
 Credentials are read from the environment and never from arguments: an argument is visible in `ps`.
 USAGE
@@ -315,14 +324,47 @@ case "$AUTH_MODE" in
       exit 1
     fi
     ;;
+  OAuthWithStaticToken)
+    if [ "${MCP_CHECK_ENVIRONMENT:-}" != "staging" ]; then
+      die "  MIGRATION MODE IS STAGING ONLY  MCP_CHECK_AUTH_MODE=OAuthWithStaticToken needs"
+      die "MCP_CHECK_ENVIRONMENT=staging. Production stays StaticToken until a separate ADR (gh#997)."
+      die "NOTHING HAS BEEN SENT."
+      exit 1
+    fi
+    issuer_set=0
+    audience_set=0
+    if [ -n "${MCP_CHECK_OAUTH_ISSUER+x}" ] && [ "${#MCP_CHECK_OAUTH_ISSUER}" -gt 0 ]; then
+      issuer_set=1
+    fi
+    if [ -n "${MCP_CHECK_OAUTH_AUDIENCE+x}" ] && [ "${#MCP_CHECK_OAUTH_AUDIENCE}" -gt 0 ]; then
+      audience_set=1
+    fi
+    if [ "$issuer_set" = 0 ] || [ "$audience_set" = 0 ]; then
+      die "  OAUTH PAIR  staging OAuthWithStaticToken requires MCP_CHECK_OAUTH_ISSUER and"
+      die "MCP_CHECK_OAUTH_AUDIENCE together. Issuer set: $issuer_set. Audience set: $audience_set."
+      die "An audience without an issuer (or the reverse) is not a migration. NOTHING HAS BEEN SENT."
+      exit 1
+    fi
+    if [ -z "${MCP_CHECK_BEARER_TOKEN+x}" ] || [ "${#MCP_CHECK_BEARER_TOKEN}" -eq 0 ]; then
+      die "  UNSET  MCP_CHECK_BEARER_TOKEN is empty or unset"
+      die "Migration mode still presents the static token. NOTHING HAS BEEN CHECKED."
+      exit 1
+    fi
+    if printenv MCP_CHECK_BEARER_TOKEN | grep -q '["\\]' \
+      || [ "$(printenv MCP_CHECK_BEARER_TOKEN | wc -l)" -gt 1 ]; then
+      die "  UNUSABLE TOKEN  MCP_CHECK_BEARER_TOKEN contains a quote, a backslash or a line break"
+      die "It cannot be written into a curl config line safely. The value is not printed. NOTHING HAS BEEN SENT."
+      exit 1
+    fi
+    ;;
   *)
-    die "  USAGE  MCP_CHECK_AUTH_MODE must be OAuth or StaticToken, got '$AUTH_MODE'"
+    die "  USAGE  MCP_CHECK_AUTH_MODE must be OAuth, StaticToken or OAuthWithStaticToken, got '$AUTH_MODE'"
     exit 1
     ;;
 esac
 
 MISSING=""
-if [ "$AUTH_MODE" = "StaticToken" ]; then
+if [ "$AUTH_MODE" = "StaticToken" ] || [ "$AUTH_MODE" = "OAuthWithStaticToken" ]; then
   :
 elif [ -z "${MCP_CHECK_CLIENT_ID+x}" ] || [ "${#MCP_CHECK_CLIENT_ID}" -eq 0 ]; then
   MISSING="MCP_CHECK_CLIENT_ID"
@@ -728,6 +770,32 @@ if ! body_matches '"authorization_servers"[[:space:]]*:[[:space:]]*\['; then
   exit 1
 fi
 
+if [ "$AUTH_MODE" = "OAuthWithStaticToken" ]; then
+  # The issuer and the audience are what staging was asked to serve, not just what was set in the
+  # environment. authorization_servers must carry the issuer. resource is the audience or the
+  # resource URL (they are the same string when RFC 8707 is followed).
+  servers="$(sed -n 's/.*"authorization_servers"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' "$BODY" | head -n 1)"
+  if ! printf '%s' "$servers" | grep -F -q "\"$MCP_CHECK_OAUTH_ISSUER\""; then
+    die "  WRONG ISSUER  authorization_servers does not list MCP_CHECK_OAUTH_ISSUER"
+    die "The protected-resource document is what a connector trusts. A wrong issuer here means"
+    die "staging is not the issuer this check was given. NOTHING FURTHER IS CHECKED."
+    exit 1
+  fi
+  resource_ok=0
+  if [ "$FOUND_RESOURCE" = "$MCP_CHECK_OAUTH_AUDIENCE" ]; then
+    resource_ok=1
+  fi
+  if [ -n "${MCP_CHECK_OAUTH_RESOURCE_URL+x}" ] && [ "${#MCP_CHECK_OAUTH_RESOURCE_URL}" -gt 0 ] \
+    && [ "$FOUND_RESOURCE" = "$MCP_CHECK_OAUTH_RESOURCE_URL" ]; then
+    resource_ok=1
+  fi
+  if [ "$resource_ok" -eq 0 ]; then
+    die "  WRONG AUDIENCE  metadata resource is not MCP_CHECK_OAUTH_AUDIENCE"
+    die "or MCP_CHECK_OAUTH_RESOURCE_URL. The document said resource=\"${FOUND_RESOURCE:-<absent>}\"."
+    exit 1
+  fi
+fi
+
 ok "  OK  /mcp refuses an anonymous call with 401, and the document it names claims $FOUND_RESOURCE"
 fi
 
@@ -738,7 +806,7 @@ fi
 # traces and a heredoc's body is not traced — measured, and it is only ONE of the three things that make
 # that true of the whole script; the other two are the length check above and the token file below. Mode 600
 # by the umask; removed by the trap.
-if [ "$AUTH_MODE" = "StaticToken" ]; then
+if [ "$AUTH_MODE" = "StaticToken" ] || [ "$AUTH_MODE" = "OAuthWithStaticToken" ]; then
   # The same shape as the minted token below: the value goes from the environment into the mode-600 config
   # through printenv, and never onto a traced line.
   {
@@ -818,7 +886,8 @@ fi
 
 if [ "$HTTP_STATUS" != "200" ]; then
   die "  INITIALIZE REFUSED  POST $MCP_URL with a token answered $HTTP_STATUS, expected 200"
-  if [ "$HTTP_STATUS" = "401" ] && [ "$AUTH_MODE" = "StaticToken" ]; then
+  if [ "$HTTP_STATUS" = "401" ] \
+    && { [ "$AUTH_MODE" = "StaticToken" ] || [ "$AUTH_MODE" = "OAuthWithStaticToken" ]; }; then
     die "401 with the static token means MCP_CHECK_BEARER_TOKEN is not the server's Mcp__HttpBearerToken"
     die "($MCP_CHECK_ENVIRONMENT's shared MCP_HTTP_BEARER_TOKEN). The value is not printed."
   elif [ "$HTTP_STATUS" = "401" ]; then
@@ -961,6 +1030,9 @@ fi
 
 if [ "$AUTH_MODE" = "StaticToken" ]; then
   ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, a static-token refusal, the static token accepted, and $TOOL_COUNT tools (StaticToken, $MCP_CHECK_ENVIRONMENT)."
+elif [ "$AUTH_MODE" = "OAuthWithStaticToken" ]; then
+  ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, an OAuth challenge, "
+  ok "the static token accepted, and $TOOL_COUNT tools (OAuthWithStaticToken, staging)."
 else
   ok "$BASE_URL is serving release $EXPECTED_VERSION: liveness, a refusal a connector can act on, a token, and $TOOL_COUNT tools."
 fi

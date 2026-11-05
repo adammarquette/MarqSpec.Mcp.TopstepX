@@ -551,6 +551,29 @@ run_gate_static() {
   done
 }
 
+# Migration mode: OAuth challenge, then the static token. Issuer and audience must match the document.
+run_gate_migration() {
+  local base="$1"; shift
+  GATE_STATUS=0
+  : >"$OUT"
+  : >"$ERR"
+  env CURL_HOME="" MCP_CHECK_AUTH_MODE=OAuthWithStaticToken MCP_CHECK_ENVIRONMENT=staging \
+    MCP_CHECK_BEARER_TOKEN="$FIXTURE_ACCESS_TOKEN" \
+    MCP_CHECK_OAUTH_ISSUER="https://cognito-idp.us-east-1.amazonaws.com/us-east-1_fixture" \
+    MCP_CHECK_OAUTH_AUDIENCE="${base}/mcp" \
+    "$@" \
+    bash "$GATE" "$base" "$FIXTURE_VERSION" >"$OUT" 2>"$ERR" || GATE_STATUS=$?
+  local stream needle found
+  for stream in "$OUT" "$ERR"; do
+    for needle in "$FIXTURE_CLIENT_SECRET" "$FIXTURE_ACCESS_TOKEN"; do
+      found=0
+      grep -qF "$needle" "$stream" || found=$?
+      if [ "$found" -eq 0 ]; then die "  LEAK  the gate printed a credential it handled, to $(basename "$stream")"; exit 1; fi
+      if [ "$found" -gt 1 ]; then die "  CANNOT READ  grep exited $found searching $(basename "$stream")"; exit 1; fi
+    done
+  done
+}
+
 # ---------------------------------------------------------------------------
 # 1. The sound fixture. FIRST, because every rejection below is worthless without it.
 # ---------------------------------------------------------------------------
@@ -759,4 +782,31 @@ stop_fixture
 expect_rejected "StaticToken with no token" \
   "UNSET  MCP_CHECK_BEARER_TOKEN"
 
-ok "check-deployment.sh accepts a sound deployment in each mode and rejects fourteen known faults by name."
+# Staging migration mode: audience without issuer fails before any request. No fixture — nothing is sent.
+GATE_STATUS=0
+: >"$OUT"
+: >"$ERR"
+env CURL_HOME="" MCP_CHECK_AUTH_MODE=OAuthWithStaticToken MCP_CHECK_ENVIRONMENT=staging \
+  MCP_CHECK_BEARER_TOKEN="$FIXTURE_ACCESS_TOKEN" \
+  MCP_CHECK_OAUTH_AUDIENCE="https://topstepx-mcp.example.test/mcp" \
+  bash "$GATE" "http://127.0.0.1:9" "$FIXTURE_VERSION" >"$OUT" 2>"$ERR" || GATE_STATUS=$?
+expect_rejected "audience without issuer in migration mode" \
+  "OAUTH PAIR" \
+  "Issuer set: 0" \
+  "NOTHING HAS BEEN SENT"
+
+start_fixture none
+run_gate_migration "$FIXTURE_ORIGIN"
+stop_fixture
+expect_accepted "staging migration mode" \
+  "an OAuth challenge" \
+  "tools/list returned $SOUND_TOOLS tools"
+
+start_fixture none
+run_gate_migration "$FIXTURE_ORIGIN" \
+  MCP_CHECK_OAUTH_ISSUER="https://wrong.example"
+stop_fixture
+expect_rejected "migration mode against a different issuer" \
+  "WRONG ISSUER"
+
+ok "check-deployment.sh accepts a sound deployment in each mode and rejects sixteen known faults by name."

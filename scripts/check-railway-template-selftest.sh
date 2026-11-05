@@ -216,25 +216,20 @@ expect reject template trading-enabled-only-in-dev 'Trading__Enabled: "false"' '
 expect reject template trading-enabled-in-unnamed-env 'Trading__Enabled: "false"' 'Trading__Enabled: ["staging", "production"].includes(ctx.environment) ? "false" : "true"'
 expect reject template trading-enabled-recorder-override 'MarketData__RecordTape: "true",' 'MarketData__RecordTape: "true", Trading__Enabled: "False",'
 expect reject template allowed-accounts-filled 'Trading__AllowedAccountIds: ""' 'Trading__AllowedAccountIds: "12345"'
-# ADR-0021 exception (2026-10-28; production too since 2026-10-29, gh#851/gh#855): every environment's
-# server runs StaticToken on its own MCP_HTTP_BEARER_TOKEN, until an OAuth provider is chosen. No OAuth path
-# in the template.
-SA='const serverAuth = {
-    Mcp__Auth__Mode: "StaticToken",'
+# ADR-0021 (2026-11-05, gh#997): staging may run OAuthWithStaticToken with shared OAuth references
+# and the static token. Production stays StaticToken and still rejects every OAuth key.
+PROD_MODE='          Mcp__Auth__Mode: "StaticToken",'
 ST='Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,'
-SAT='const serverAuth = {
-    Mcp__Auth__Mode: "StaticToken",
-    Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
-  } as const;'
 RA='Mcp__Auth__Mode: "StaticToken",
       Mcp__HttpBearerToken: ctx.shared.MCP_RECORDER_BEARER_TOKEN'
-NAMED='[static-token-required]' expect reject template server-auth-none "$SA" 'const serverAuth = {
-    Mcp__Auth__Mode: "None",'
-NAMED='[static-token-required]' expect reject template server-auth-mode-dropped "$SA" 'const serverAuth = {'
-NAMED='[static-token-required]' expect reject template server-back-on-oauth-in-production "$SAT" "$SAT"'
-  const prodAuth = production ? { Mcp__Auth__Mode: "OAuth" } : {};' 'serverAuth,' 'serverAuth, ...prodAuth,'
-NAMED='[static-token-required]' expect reject template server-static-token-staging-only "$SAT" "$SAT"'
-  const notStaging = ctx.environment === "staging" ? {} : { Mcp__Auth__Mode: "OAuth" };' 'serverAuth,' 'serverAuth, ...notStaging,'
+NAMED='[static-token-required]' expect reject template server-auth-none "$PROD_MODE" '          Mcp__Auth__Mode: "None",'
+NAMED='[static-token-required]' expect reject template server-auth-mode-dropped \
+  '          Mcp__Auth__Mode: "StaticToken",
+' ''
+NAMED='[static-token-required]' expect reject template server-back-on-oauth-in-production \
+  "$PROD_MODE" '          Mcp__Auth__Mode: "OAuth",'
+NAMED='[static-token-required]' expect reject template production-migration-mode \
+  "$PROD_MODE" '          Mcp__Auth__Mode: "OAuthWithStaticToken",'
 expect reject template recorder-auth-none "$RA" 'Mcp__Auth__Mode: "None",
       Mcp__HttpBearerToken: ctx.shared.MCP_RECORDER_BEARER_TOKEN'
 expect reject template recorder-oauth-key "$RA" 'Mcp__Auth__Mode: "StaticToken", Mcp__OAuth__Issuer: "https://issuer.example",
@@ -246,12 +241,43 @@ NAMED='[static-token-secret]' expect reject template static-token-missing-in-sta
 NAMED='[static-token-secret]' expect reject template static-token-recorder-secret "$ST" 'Mcp__HttpBearerToken: ctx.shared.MCP_RECORDER_BEARER_TOKEN,'
 NAMED='[static-token-secret]' expect reject template static-token-literal "$ST" 'Mcp__HttpBearerToken: "changeme-local",'
 NAMED='[static-token-secret]' expect reject template static-token-literal-in-production "$ST" 'Mcp__HttpBearerToken: production ? "changeme-local" : ctx.shared.MCP_HTTP_BEARER_TOKEN,'
-# The OAuth shared variables are gone from the allowlist: referencing one is an unknown shared reference.
-expect reject template oauth-issuer-shared-ref-unknown "$ST" "$ST"' Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,'
-NAMED='[static-token-no-oauth]' expect reject template static-token-with-resource-url "$ST" "$ST"' Mcp__OAuth__ResourceUrl: "https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp",'
+# Production's StaticToken branch still rejects an OAuth key. Staging already references MCP_OAUTH_ISSUER,
+# so adding it beside every bearer line also puts it on production.
+NAMED='[static-token-no-oauth]' expect reject template production-still-rejects-oauth-issuer \
+  '          Mcp__Auth__Mode: "StaticToken",
+          Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,' \
+  '          Mcp__Auth__Mode: "StaticToken",
+          Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
+          Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,'
+NAMED='[static-token-no-oauth]' expect reject template static-token-with-resource-url \
+  '          Mcp__Auth__Mode: "StaticToken",
+          Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,' \
+  '          Mcp__Auth__Mode: "StaticToken",
+          Mcp__HttpBearerToken: ctx.shared.MCP_HTTP_BEARER_TOKEN,
+          Mcp__OAuth__ResourceUrl: "https://${{RAILWAY_PUBLIC_DOMAIN}}/mcp",'
 NAMED='[static-token-no-oauth]' expect reject template static-token-with-issuer-in-production "$ST" "$ST"' ...(production ? { Mcp__OAuth__Issuer: "https://issuer.example" } : {}),'
 NAMED='[static-token-no-oauth]' expect reject template static-token-with-scope "$ST" "$ST"' Mcp__OAuth__RequiredScope: "topstepx-mcp/read",'
 NAMED='[static-token-no-oauth]' expect reject template static-token-with-colon-oauth-key "$ST" "$ST"' "Mcp:OAuth:ClientIds": "a",'
+# Staging migration mode: issuer and audience are a pair. Dropping the issuer fails by name.
+NAMED='[oauth-pair]' expect reject template staging-audience-without-issuer \
+  '          Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,
+' ''
+NAMED='[oauth-pair]' expect reject template staging-literal-issuer \
+  '          Mcp__OAuth__Issuer: ctx.shared.MCP_OAUTH_ISSUER,' \
+  '          Mcp__OAuth__Issuer: "https://issuer.example",'
+NAMED='[oauth-restriction]' expect reject template staging-audience-without-subjects \
+  '          Mcp__OAuth__Subjects: ctx.shared.MCP_OAUTH_SUBJECTS,
+' ''
+# The committed template is the positive case: staging is OAuthWithStaticToken. Reverting the mode fails.
+NAMED='[staging-migration]' expect reject template staging-left-on-static-token \
+  '          Mcp__Auth__Mode: "OAuthWithStaticToken",' \
+  '          Mcp__Auth__Mode: "StaticToken",'
+NAMED='[oauth-resource]' expect reject template staging-resource-url-missing \
+  '          Mcp__OAuth__ResourceUrl: ctx.shared.MCP_OAUTH_RESOURCE_URL,
+' ''
+NAMED='[oauth-resource]' expect reject template staging-resource-url-literal \
+  '          Mcp__OAuth__ResourceUrl: ctx.shared.MCP_OAUTH_RESOURCE_URL,' \
+  '          Mcp__OAuth__ResourceUrl: "https://topstepx-mcp.example.test/mcp",'
 expect reject template base-url-arbitrary 'ProjectX__BaseUrl: "https://api.topstepx.com"' 'ProjectX__BaseUrl: "http://evil.example"'
 
 # --- roles ---

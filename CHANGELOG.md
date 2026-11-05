@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-05
+
 ### Changed
 
 - **EF Core no longer logs every successful command**. `Executed DbCommand` (event 20101) now
@@ -1485,7 +1487,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.0...v0.7.1

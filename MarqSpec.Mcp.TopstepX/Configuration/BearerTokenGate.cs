@@ -19,7 +19,8 @@ namespace MarqSpec.Mcp.TopstepX.Configuration;
 /// still serves balances, open positions and trade history. Read-only is not the same as harmless.
 /// </para>
 /// <para>
-/// The comparison is <b>fixed-time</b>. A token check that returns early on the first differing byte leaks its
+/// The comparison is <b>fixed-time</b>. A token check that returns early on the first differing byte leaks
+/// its
 /// length and content to anything that can measure a few thousand requests, and this endpoint is reachable
 /// over the network by definition — that is the only reason it needs a token at all.
 /// </para>
@@ -33,7 +34,8 @@ public static class BearerTokenGate
     /// </summary>
     /// <param name="app">The application.</param>
     /// <param name="expectedToken">The configured token.</param>
-    /// <exception cref="ArgumentException">The token is blank — startup should already have refused.</exception>
+    /// <exception cref="ArgumentException">The token is blank — startup should already have
+    /// refused.</exception>
     public static void UseBearerTokenGate(this WebApplication app, string expectedToken)
     {
         ArgumentNullException.ThrowIfNull(app);
@@ -52,7 +54,7 @@ public static class BearerTokenGate
 
         app.Use(async (context, next) =>
         {
-            if (!IsAuthorised(context.Request.Headers.Authorization, expected))
+            if (!Matches(context.Request.Headers.Authorization, expected))
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 context.Response.Headers.WWWAuthenticate = "Bearer";
@@ -64,7 +66,16 @@ public static class BearerTokenGate
         });
     }
 
-    private static bool IsAuthorised(StringValues header, byte[] expected)
+    /// <summary>
+    /// Whether the <c>Authorization</c> header is exactly one <c>Bearer</c> value equal to
+    /// <paramref name="expected"/>, compared in fixed time. Shared with the OAuth gate's static-token
+    /// fallback,
+    /// so there is one comparison to get right.
+    /// </summary>
+    /// <param name="header">The request's <c>Authorization</c> values.</param>
+    /// <param name="expected">The configured token's UTF-8 bytes.</param>
+    /// <returns><c>true</c> when the header carries the token.</returns>
+    internal static bool Matches(StringValues header, byte[] expected)
     {
         string? value = header.Count == 1 ? header[0] : null;
 

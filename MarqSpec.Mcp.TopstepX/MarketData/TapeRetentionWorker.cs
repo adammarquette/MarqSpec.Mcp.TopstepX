@@ -66,7 +66,10 @@ public sealed class TapeRetentionWorker(
 
     private int _delaysArmed;
 
-    /// <summary>How many delays this process has armed. Tests wait on this.</summary>
+    /// <summary>
+    /// How many delays this process has armed. A delay counts once its timer exists, so a test
+    /// that sees the count may advance the clock past it.
+    /// </summary>
     internal int DelaysArmed => Volatile.Read(ref _delaysArmed);
 
     /// <inheritdoc />
@@ -136,10 +139,14 @@ public sealed class TapeRetentionWorker(
 
     private async Task<bool> DelayAsync(TimeSpan delay, CancellationToken stoppingToken)
     {
-        Interlocked.Increment(ref _delaysArmed);
         try
         {
-            await Task.Delay(delay, _clock, stoppingToken).ConfigureAwait(false);
+            // Count the delay only once its timer exists. Counting first let a test see the delay
+            // as armed, advance the clock, and only then have the timer created at the new time,
+            // so it never fired (gh#982).
+            Task wait = Task.Delay(delay, _clock, stoppingToken);
+            Interlocked.Increment(ref _delaysArmed);
+            await wait.ConfigureAwait(false);
             return true;
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

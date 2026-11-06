@@ -2553,7 +2553,12 @@ public sealed class TradeTapeRecorderTests
         {
             TapeAvailabilityHolder tape = services.GetRequiredService<TapeAvailabilityHolder>();
             await recorder.StartAsync(CancellationToken.None);
-            await WaitUntil(() => hub.TradeSubscriptions.Count > 0 && tape.For("ES").IsListening);
+            // The renewal loop starts after listening does. Advancing before its timer exists
+            // creates that timer at the new time, so the renewal never runs and the holder never
+            // notices the lapse.
+            await WaitUntil(() => hub.TradeSubscriptions.Count > 0
+                && tape.For("ES").IsListening
+                && clock.ArmedDelays(timeToLive / 3) > 0);
 
             DateTimeOffset listenStart = clock.GetUtcNow();
             DateTimeOffset term = listenStart + timeToLive;

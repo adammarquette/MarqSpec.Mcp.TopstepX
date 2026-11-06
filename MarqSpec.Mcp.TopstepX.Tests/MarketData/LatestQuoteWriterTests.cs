@@ -71,12 +71,16 @@ public sealed class LatestQuoteWriterTests
         using HostTelemetry telemetry = new();
         using MetricCollector<long> writes = new(
             telemetry, HostTelemetry.Name, HostTelemetry.QuoteWritesInstrument);
-        (LatestQuoteWriter writer, FakeMarketHub hub, FakeTimeProvider clock) = BuildClock(
+        (LatestQuoteWriter writer, FakeMarketHub hub, ArmingClock clock) = BuildClock(
             McpTransport.Http, recordTape: true, recordQuotes: true, store, telemetry);
         hub.SimulateMarketReconnect();
 
         await writer.StartAsync(CancellationToken.None);
-        await WaitUntil(() => hub.PriceSubscriptionIds.Contains(EsContract));
+        // The subscription shows before the first pass ends, and that pass flushes whatever is
+        // pending with no gap. Raising quotes before it parks on its flush timer can flush the
+        // first quote alone (gh#1023).
+        await WaitUntil(() => hub.PriceSubscriptionIds.Contains(EsContract)
+            && clock.ArmedDelays(TimeSpan.FromSeconds(1)) >= 1);
 
         hub.RaiseQuote(Quote(EsContract, bid: 10m, volume: 4.9m));
         hub.RaiseQuote(Quote(EsContract, bid: 11m, volume: 4.9m));
@@ -456,7 +460,7 @@ public sealed class LatestQuoteWriterTests
     public async Task ASubscribePassThatThrows_IsRetriedWithoutWaitingForTheFrontRefresh()
     {
         RecordingStore store = new();
-        (LatestQuoteWriter writer, FakeMarketHub hub, FakeTimeProvider clock) = BuildClock(
+        (LatestQuoteWriter writer, FakeMarketHub hub, ArmingClock clock) = BuildClock(
             McpTransport.Http,
             recordTape: true,
             recordQuotes: true,
@@ -466,7 +470,9 @@ public sealed class LatestQuoteWriterTests
         hub.ThrowOnMarketHubStateRead = 2;
 
         await writer.StartAsync(CancellationToken.None);
-        await Task.Delay(30);
+        // The failed pass waits one flush gap before it retries. Advancing before that timer
+        // exists creates it at the new time, so the retry never runs (gh#1023).
+        await WaitUntil(() => clock.ArmedDelays(TimeSpan.FromSeconds(1)) >= 1);
         clock.Advance(TimeSpan.FromSeconds(1));
         await WaitUntil(() => hub.PriceSubscriptionIds.Contains(EsContract));
 
@@ -608,7 +614,7 @@ public sealed class LatestQuoteWriterTests
         return (writer, hub);
     }
 
-    private static (LatestQuoteWriter Writer, FakeMarketHub Hub, FakeTimeProvider Clock) BuildClock(
+    private static (LatestQuoteWriter Writer, FakeMarketHub Hub, ArmingClock Clock) BuildClock(
         McpTransport transport,
         bool recordTape,
         bool recordQuotes,
@@ -620,7 +626,7 @@ public sealed class LatestQuoteWriterTests
         string instruments = "ES",
         ILogger<LatestQuoteWriter>? logger = null)
     {
-        FakeTimeProvider clock = new(new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero));
+        ArmingClock clock = new(new DateTimeOffset(2026, 11, 1, 15, 0, 0, TimeSpan.Zero));
         FakeMarketHub hub = new();
         MarketDataOptions options = new()
         {
@@ -681,6 +687,43 @@ public sealed class LatestQuoteWriterTests
         catch (OperationCanceledException exception) when (exception.CancellationToken == timeout.Token)
         {
             throw new InvalidOperationException("Timed out waiting for: " + conditionExpression);
+        }
+    }
+
+    /// <summary>
+    /// Counts timers by due time, so a test can wait for the writer to park on a delay before it
+    /// advances the clock. A timer created after the advance is created at the new time and does
+    /// not fire for another full delay.
+    /// </summary>
+    private sealed class ArmingClock(DateTimeOffset start) : FakeTimeProvider(start)
+    {
+        private readonly Dictionary<long, int> _armedByDue = [];
+
+        /// <summary>How many timers have been created with this due time.</summary>
+        /// <param name="dueTime">The delay passed to <see cref="TimeProvider.CreateTimer"/>.</param>
+        /// <returns>The number created so far.</returns>
+        public int ArmedDelays(TimeSpan dueTime)
+        {
+            lock (_armedByDue)
+            {
+                return _armedByDue.TryGetValue(dueTime.Ticks, out int count) ? count : 0;
+            }
+        }
+
+        public override ITimer CreateTimer(
+            TimerCallback callback,
+            object? state,
+            TimeSpan dueTime,
+            TimeSpan period)
+        {
+            ITimer timer = base.CreateTimer(callback, state, dueTime, period);
+            lock (_armedByDue)
+            {
+                _armedByDue.TryGetValue(dueTime.Ticks, out int count);
+                _armedByDue[dueTime.Ticks] = count + 1;
+            }
+
+            return timer;
         }
     }
 

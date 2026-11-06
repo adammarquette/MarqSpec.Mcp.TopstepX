@@ -2540,7 +2540,7 @@ public sealed class TradeTapeRecorderTests
         // rather than as an absence: the confusion gh#365 and gh#376 exist to prevent.
         TimeSpan timeToLive = TapeLease.DefaultTimeToLive;
         CollectingLogger logger = new();
-        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, FakeTimeProvider clock) =
+        (TradeTapeRecorder recorder, FakeMarketHub hub, TopstepXDbContext database, ServiceProvider services, RecordingClock clock) =
             Build(
                 McpTransport.Http,
                 recordTape: true,

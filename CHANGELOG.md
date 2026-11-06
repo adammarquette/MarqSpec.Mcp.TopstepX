@@ -13,6 +13,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-11-06
+
+### Added
+
+- **Staging Railway template carries the OAuth migration references** (gh#997). Staging's server
+  is `OAuthWithStaticToken` with shared `MCP_OAUTH_ISSUER`, `MCP_OAUTH_AUDIENCE`,
+  `MCP_OAUTH_RESOURCE_URL` and `MCP_OAUTH_SUBJECTS`, and the static token stays required.
+  Production's evaluated template is unchanged. The deploy check compares the issuer and the
+  audience with the protected-resource document. Create the shared variables and the GitHub
+  staging vars before the first deploy.
+- **Audience-bound OAuth, and a static-token migration mode** (gh#997). With `Mcp__OAuth__Audience` set,
+  the HTTP gate accepts access tokens from any OAuth 2.1 / OIDC issuer that puts an audience in them
+  (WorkOS AuthKit, Keycloak, Auth0, Entra ID). `Mcp__Auth__Mode=OAuthWithStaticToken` also admits the
+  static token, for staging first. Production stays `StaticToken` until a separate ADR. An audience with
+  no subjects, no client ids and no required scope is refused at startup. Refusals and admits are on
+  `mcp.oauth.refusals` and `mcp.oauth.admits` (`auth.method` is the off-signal). A bad static token gets
+  the OAuth challenge, so Trader Jon's client is steered into discovery.
+
 ## [0.7.4] - 2026-11-05
 
 ### Changed
@@ -1487,7 +1505,8 @@ First tagged release. Read-only MCP server over the ProjectX/TopstepX gateway: c
 projections, contract-aware series, observations with semantic search, fifteen tools on stdio and streamable
 HTTP. The tag was re-cut after the first publish failed on an uppercase image reference (gh#115).
 
-[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/compare/v0.7.1...v0.7.2

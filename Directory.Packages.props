@@ -117,7 +117,7 @@
       Google Drive cold storage. The client is constructed only when TapeExport__Drive__FolderId and a
       service-account value are both set; tests use a fake and never this package's network. Host only.
     -->
-    <PackageVersion Include="Google.Apis.Drive.v3" Version="1.77.0.4301" />
+    <PackageVersion Include="Google.Apis.Drive.v3" Version="1.78.0.4313" />
   </ItemGroup>
 
   <ItemGroup Label="Test stack">

@@ -80,7 +80,7 @@ page against either**, so check it against the code, never against another docum
 - **An unexpected argument is a validation error, and it names the argument.** A call that sends a name the
   tool's schema does not list — `unit` on `get_latest_bars`, for example — comes back naming each unexpected
   argument and the arguments that tool accepts (`symbol`, `resolutionMinutes`, `count` for that one). A
-  missing required argument is named the same way. SDK 2.3.0 ignores an extra key and reports a missing
+  missing required argument is named the same way. SDK 2.4.0 ignores an extra key and reports a missing
   required argument only as "An error occurred invoking '<tool>'." This server refuses both before the tool
   runs. Refusing an unknown key is a deliberate break: a call that bound before, because the extra key was
   ignored, now fails (gh#984). The same filter covers every tool. It runs inside the store-fault guard and

@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **MCP SDK 2.4.0** (from 2.3.0). The SDK still ignores a key a tool does not declare and still reports a
+  missing required argument only as "An error occurred invoking '<tool>'.", so the gh#984 filter stays. The
+  test that pins that behaviour now pins 2.4.
+
 ## [0.7.5] - 2026-11-06
 
 ### Added

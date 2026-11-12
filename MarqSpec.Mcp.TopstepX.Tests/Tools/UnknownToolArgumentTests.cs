@@ -24,7 +24,7 @@ using ModelContextProtocol.Server;
 namespace MarqSpec.Mcp.TopstepX.Tests.Tools;
 
 /// <summary>
-/// What SDK 2.3.0 does with a bad argument, and the validation error this server answers with (gh#984).
+/// What SDK 2.4.0 does with a bad argument, and the validation error this server answers with (gh#984).
 /// </summary>
 /// <remarks>
 /// The SDK looks each parameter up by name and ignores an extra key. It throws when a required parameter
@@ -49,7 +49,7 @@ public sealed class UnknownToolArgumentTests
         Version? version = typeof(McpServer).Assembly.GetName().Version;
         version.Should().NotBeNull();
         version!.Major.Should().Be(2);
-        version.Minor.Should().Be(3);
+        version.Minor.Should().Be(4);
 
         using ServiceProvider provider = Build();
         McpServerTool bars = provider.GetRequiredService<IOptions<McpServerOptions>>().Value.ToolCollection!

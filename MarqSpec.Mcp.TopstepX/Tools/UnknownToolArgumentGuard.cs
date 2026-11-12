@@ -15,7 +15,7 @@ namespace MarqSpec.Mcp.TopstepX.Tools;
 /// </summary>
 /// <remarks>
 /// <para>
-/// MCP SDK 2.3.0 does not reject an extra key. It looks each parameter up by name and ignores the
+/// MCP SDK 2.4.0 does not reject an extra key. It looks each parameter up by name and ignores the
 /// rest. It throws when a required parameter has no value, and that
 /// <see cref="ArgumentException"/> is reported to the client as only
 /// <i>"An error occurred invoking '&lt;tool&gt;'"</i>. The production call sent <c>unit</c>,

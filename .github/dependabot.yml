@@ -32,6 +32,10 @@ updates:
       # LICENSE CAP: FluentAssertions v8+ is commercially licensed. Do not let a bot walk into that.
       - dependency-name: "FluentAssertions"
         versions: [">=8.0.0"]
+      # .NET 11 LINE: the app targets net10.0, and 11.0.0 packages fail restore with NU1109 against the
+      # 10.0.x pins (gh#1043, gh#1034). Remove this when the app moves to net11.0 on purpose.
+      - dependency-name: "Microsoft.Extensions.*"
+        versions: [">=11.0.0"]
 
   # The pinned Railway SDK + TypeScript the railway-template CI job compiles .railway/railway.ts against
   # (gh#758), and the root package.json that `railway config plan` loads the same SDK from. CI/deploy only;

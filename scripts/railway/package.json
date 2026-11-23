@@ -4,7 +4,7 @@
   "type": "module",
   "description": "CI-only: typechecks and evaluates .railway/railway.ts against a pinned Railway SDK (gh#758).",
   "devDependencies": {
-    "railway": "3.16.0",
+    "railway": "3.17.0",
     "typescript": "7.0.2"
   }
 }

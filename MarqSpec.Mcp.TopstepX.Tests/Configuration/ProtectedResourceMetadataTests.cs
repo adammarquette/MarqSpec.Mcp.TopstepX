@@ -114,7 +114,7 @@ public sealed class ProtectedResourceMetadataTests
     public async Task TheResource_IsTheConfiguredStringByteForByte()
     {
         // A port that Uri would keep and a host casing it would not. What was typed is what goes out.
-        const string entered = "https://TopstepX-MCP.Staging.marqspec.com:8443/mcp";
+        const string entered = "https://Mcp.Staging.example.com:8443/mcp";
         await using Host host = await StartOAuthAsync(entered);
 
         JsonElement body = await ReadJsonAsync(await host.Client.GetAsync("/.well-known/oauth-protected-resource/mcp"));
@@ -125,14 +125,14 @@ public sealed class ProtectedResourceMetadataTests
     [Fact]
     public async Task TheChallenge_NamesTheMetadataDocumentUnderTheSameOrigin_AsEntered()
     {
-        const string entered = "https://TopstepX-MCP.Staging.marqspec.com:8443/mcp";
+        const string entered = "https://Mcp.Staging.example.com:8443/mcp";
         await using Host host = await StartOAuthAsync(entered);
 
         using HttpResponseMessage response = await host.Client.GetAsync("/mcp");
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
         response.Headers.GetValues("WWW-Authenticate").Should().ContainSingle().Which.Should().Be(
-            "Bearer resource_metadata=\"https://TopstepX-MCP.Staging.marqspec.com:8443/.well-known/oauth-protected-resource/mcp\", "
+            "Bearer resource_metadata=\"https://Mcp.Staging.example.com:8443/.well-known/oauth-protected-resource/mcp\", "
             + "scope=\"topstepx-mcp/read\"");
     }
 

@@ -67,8 +67,8 @@ decisions, each standing on its own.
 ### 1. One stack, two environments, two root domains
 
 `EnvironmentStack(EnvName, RootDomain, ZoneMode)` under `infra/`, instantiated for **production** on
-`marqspec.com` (hosted zone looked up — the zone already exists and holds the apex) and for **staging** on
-`staging.marqspec.com` (hosted zone **looked up** — public zone `Z00545362JA49XMTT3U7Q`, created by hand
+`example.com` (hosted zone looked up — the zone already exists and holds the apex) and for **staging** on
+`staging.example.com` (hosted zone **looked up** — public zone `<zone-id>`, created by hand
 so Cloudflare could be pointed at a stable NS set; see the 2026-09-09 staging-lookup entry). The
 two environments are therefore **the same template with a different root**, and gh#516's template tests
 assert that the two synthesised stacks differ only where `RootDomain`, `EnvName` and the two
@@ -84,11 +84,11 @@ gh#516 says public subnets with no NAT, and the two are only both true with some
 have the maintainer's word on; the fork is written out verbatim in the decision log below, and gh#516
 decides it with the maintainer and writes the answer back there.
 
-Hostnames: **`topstepx-mcp.marqspec.com`** and **`topstepx-mcp.staging.marqspec.com`**, one hostname per
+Hostnames: **`mcp.example.com`** and **`mcp.staging.example.com`**, one hostname per
 environment. The `staging.` spelling is **confirmed** (gh#519, 2026-09-09 entry): epic #509's decided
 target, this app's `RootDomain`, and no `stage.` record in Route 53 or public DNS. `stage.` was a
-one-time epic typo. **Public NS for `marqspec.com` is Cloudflare, not the Route 53 zone.** Staging's
-own public zone `Z00545362JA49XMTT3U7Q` is what staging looks up; Cloudflare's `staging` NS set
+one-time epic typo. **Public NS for `example.com` is Cloudflare, not the Route 53 zone.** Staging's
+own public zone `<zone-id>` is what staging looks up; Cloudflare's `staging` NS set
 matches that zone (2026-09-09 staging-lookup entry). A document quoting a hostname cites this paragraph.
 
 ### 2. One Application Load Balancer per environment is the reverse proxy — there is no sidecar
@@ -222,7 +222,7 @@ replacement actually reads.
 `MarqSpec.Mcp.TopstepX.slnx`, so `dotnet build`, `dotnet format --verify-no-changes`, `NuGetAudit` and CodeQL
 cover them exactly as they cover the product; `Amazon.CDK.Lib` and `Constructs` are pinned in
 `Directory.Packages.props` like every other package. A committed `infra/cdk.context.json` holds the
-`marqspec.com` hosted-zone lookup, so `cdk synth` in `build & unit tests` **makes no AWS call and needs no
+`example.com` hosted-zone lookup, so `cdk synth` in `build & unit tests` **makes no AWS call and needs no
 credential** — a pull request proves the template it proposes. **Nothing under `infra/` enters the image:**
 the `Dockerfile` restores only the host project, and gh#516 checks the published `/app` for an `Infra`
 assembly and quotes the absence.
@@ -701,8 +701,8 @@ created without one (the next entry). **A populated `ThumbprintList` in that ans
 retrieves the issuer's top intermediate CA thumbprint itself when the property is omitted, so the read-back
 differing from the template on exactly that field is decision 2 working, and a `cdk diff` or a reviewer
 reading it as a resource someone edited by hand would be wrong. **Status: deployed 2026-09-09** (gh#519).
-Account `045296582762`. Read-back quoted on #519 and in the 2026-09-09 entry: staging trust matches
-the two subjects above; `ThumbprintList` is `ab9d0263244dd0326eb67015705a667e79cfe998`.
+Account `<account-id>`. Read-back quoted on #519 and in the 2026-09-09 entry: staging trust matches
+the two subjects above; `ThumbprintList` is `<oidc-thumbprint>`.
 
 ## Update (2026-09-07) — `GitHubDeploy-production` trust: the `environment:aws-production` claim, read back with `aws iam get-role`
 
@@ -1018,30 +1018,29 @@ gh#519. Decisions above are unchanged except where this entry names them.
 named this region. It is now a choice, not a basis. Custom domain was **not** taken: no EnvironmentStack,
 so no pool.
 
-**Hostname spelling: `staging.marqspec.com`**, hostname `topstepx-mcp.staging.marqspec.com`. Confirmed
+**Hostname spelling: `staging.example.com`**, hostname `mcp.staging.example.com`. Confirmed
 from epic #509's decided target, `Program.cs` `RootDomain`, and the absence of any `stage.` or `staging.`
-record in Route 53 zone `Z063685735CT6R1B1I8YZ` or in public DNS. `stage.` was a one-time epic typo.
+record in Route 53 zone `<apex-zone-id>` or in public DNS. `stage.` was a one-time epic typo.
 
 **DNS fail-closed — EnvironmentStack not deployed.** Issue step 3: public NS must match the Route 53
-zone or ACM validation stalls. Route 53 NS (2026-09-09): `ns-1890.awsdns-44.co.uk`,
-`ns-638.awsdns-15.net`, `ns-1360.awsdns-42.org`, `ns-445.awsdns-55.com`. Public NS:
-`peyton.ns.cloudflare.com`, `meadow.ns.cloudflare.com`. The stack would write the `staging.` delegation
+zone or ACM validation stalls. Route 53 NS (2026-09-09): four Route 53 nameservers for the apex zone.
+Public NS: the apex's existing public nameservers, which were not those four. The stack would write the `staging.` delegation
 into an apex nobody queries. Quoted on #519. The maintainer cuts DNS over; this card does not guess
 which of Cloudflare or Route 53 should win.
 
-**What did deploy.** `cdk bootstrap aws://045296582762/us-east-1`. `cdk deploy topstepx-mcp-github-oidc`
+**What did deploy.** `cdk bootstrap aws://<account-id>/us-east-1`. `cdk deploy topstepx-mcp-github-oidc`
 (AlertsEmail as a parameter, not a tracked literal). Stack
-`arn:aws:cloudformation:us-east-1:045296582762:stack/topstepx-mcp-github-oidc/739726b0-abfc-11f1-a318-0affef61a14f`.
+`arn:aws:cloudformation:us-east-1:<account-id>:stack/topstepx-mcp-github-oidc/<stack-id>`.
 `aws-production` GitHub environment created create-only; read-back `["User:adammarquette"]`.
 
 **OIDC thumbprint is IAM fill-in, not drift.** `GetOpenIDConnectProvider` answered
-`ClientIDList: ["sts.amazonaws.com"]` and `ThumbprintList: ["ab9d0263244dd0326eb67015705a667e79cfe998"]`.
+`ClientIDList: ["sts.amazonaws.com"]` and `ThumbprintList: ["<oidc-thumbprint>"]`.
 The template still carries no 40-hex run. Do not write the thumbprint back. Both deploy-role trust
 documents match the 2026-09-07 entries.
 
 **EnvironmentStack account/region literals: leave them.** A credentialed synth of staging (not deployed)
 puts the real account id in CDK grant-helper output — EFS and log-group ARNs, ALB access-log prefix
-`/alb/AWSLogs/045296582762/*` — and nowhere in a tracked file (`cdk.out/` is gitignored). The OIDC
+`/alb/AWSLogs/<account-id>/*` — and nowhere in a tracked file (`cdk.out/` is gitignored). The OIDC
 template still has zero twelve-digit runs. Moving the EnvironmentStack literals means overriding grant
 helpers. Not worth it for this account.
 
@@ -1065,24 +1064,24 @@ do not mint them out of band.
 
 gh#519. Decisions above are unchanged.
 
-**Public hosted zone `Z00545362JA49XMTT3U7Q`** for `staging.marqspec.com.` in account `045296582762`
-(us-east-1). Not private. Four NS: `ns-833.awsdns-40.net`, `ns-1770.awsdns-29.co.uk`,
-`ns-193.awsdns-24.com`, `ns-1299.awsdns-34.org`. Quoted on #519 for the Cloudflare paste (Type NS,
-Name `staging`). Replace the current four (apex NS on `Z063685735CT6R1B1I8YZ`) with these.
+**Public hosted zone `<zone-id>`** for `staging.example.com.` in account `<account-id>`
+(us-east-1). Not private. Four NS: `<ns-1>`, `<ns-2>`,
+`<ns-3>`, `<ns-4>`. Quoted on #519 for the Cloudflare paste (Type NS,
+Name `staging`). Replace the current four (apex NS on `<apex-zone-id>`) with these.
 
 **EnvironmentStack still not deployed.** ACM would hang until Cloudflare answers those four for
-`staging.marqspec.com`. Do not `cdk deploy` `topstepx-mcp-staging`. Production stays undeployed.
+`staging.example.com`. Do not `cdk deploy` `topstepx-mcp-staging`. Production stays undeployed.
 
 ## Update (2026-09-09) — staging looks up the existing zone; do not create a second one
 
 gh#519. Decision 1's zone *mode* for staging changes here; the hostname spelling and the zone id do not.
 
-Public NS for `staging.marqspec.com` now matches zone `Z00545362JA49XMTT3U7Q` (`ns-193`, `ns-833`,
-`ns-1299`, `ns-1770` — Cloudflare and 8.8.8.8, 2026-09-09). `ZoneMode.CreateAndDelegate` would
+Public NS for `staging.example.com` now matches zone `<zone-id>` (the zone's four
+nameservers — confirmed from public DNS on 2026-09-09). `ZoneMode.CreateAndDelegate` would
 mint a **new** four names and undo that swap. Staging therefore uses `ZoneMode.Lookup` of
-`staging.marqspec.com`, the same path production uses for the apex. The zone id is committed in
+`staging.example.com`, the same path production uses for the apex. The zone id is committed in
 `infra/cdk.context.json` under both the placeholder account (CI `--no-lookups`) and
-`045296582762`. `CreateAndDelegate` stays a named mode and stays template-tested (gh#588) so the
+`<account-id>`. `CreateAndDelegate` stays a named mode and stays template-tested (gh#588) so the
 certificate-behind-delegation edge cannot rot; the app's staging stack must not take it.
 
 **Outbound path** is still the 2026-09-06 fork. This deploy passes `-c outbound=PublicIpPerTask` as
@@ -1095,7 +1094,7 @@ a permitted ExplicitAuthFlow when refresh token rotation is enabled."* AWS docum
 list so Cognito does not apply its default (SRP + custom + refresh). `deploy-check` has no rotation
 and still carries refresh-only. Measured; not a guess.
 
-**Fargate On-Demand vCPU quota is 0.** After the Cognito fix, ACM issued `*.staging.marqspec.com`
+**Fargate On-Demand vCPU quota is 0.** After the Cognito fix, ACM issued `*.staging.example.com`
 (DNS validation against the looked-up zone; public CNAME visible at 8.8.8.8). The ALB answers
 HTTPS. Both ECS services stay at running 0: *unable to place a task because your account is
 currently blocked.* Service Quotas `L-3032A538` (*Fargate On-Demand vCPU resource count*) is
@@ -1111,11 +1110,11 @@ gh#519 deleted `topstepx-mcp-staging` (`CREATE_FAILED` from the v0.3.x image mis
 **RETAIN** orphans (six secret shells, server/postgres log groups, EFS + access point, ALB access-log
 bucket, backup vault, Cognito pool `us-east-1_PCefbBDnZ`, and the WAF log group
 `aws-waf-logs-topstepx-mcp-staging`), and redeployed with `ZoneMode.Lookup` of
-`Z00545362JA49XMTT3U7Q` unchanged.
+`<zone-id>` unchanged.
 
 Postgres shell filled during `CREATE_IN_PROGRESS`. Stack **`CREATE_COMPLETE`**; postgres **1/1**,
 server **1/1** on `0.4.0`. **`GET /health` → 200** (`{"status":"ok","store":"available",…}`); a
-`HEAD` probe still hits the OAuth gate (**401** — ALB uses `GET`). ACM `*.staging.marqspec.com`
+`HEAD` probe still hits the OAuth gate (**401** — ALB uses `GET`). ACM `*.staging.example.com`
 **ISSUED**; Route 53 alias **A → ALB**. Cognito pool **`us-east-1_lVKjeSrgi`**. IdP discovery:
 `token_endpoint_auth_methods_supported` = `client_secret_basic, client_secret_post`;
 **`code_challenge_methods_supported` still absent** (S256 not advertised); no RFC 8707 `resource`
@@ -1150,9 +1149,9 @@ Fargate On-Demand vCPU quota `L-3032A538` is **64** (was **0** on the first depl
 `topstepx-mcp-staging` stack then rolled to **`ROLLBACK_COMPLETE`** — not updatable. gh#519 deleted
 it, removed **RETAIN** orphans (six secret shells, three log groups, EFS + access point, ALB
 access-log bucket, backup vault, Cognito pool), and redeployed with `ZoneMode.Lookup` of
-`Z00545362JA49XMTT3U7Q` unchanged.
+`<zone-id>` unchanged.
 
-The redeploy issued `*.staging.marqspec.com`, stood up the ALB and Route 53 alias, and placed the
+The redeploy issued `*.staging.example.com`, stood up the ALB and Route 53 alias, and placed the
 postgres task (**1/1**) after filling the postgres shell during `CREATE_IN_PROGRESS`. The server
 task failed the ECS circuit breaker: release images **`v0.3.0` / `v0.3.1` still implement
 `UseBearerTokenGate` only**, while `EnvironmentStack` sets `Mcp__Auth__Mode=OAuth` (gh#512 is on
@@ -1201,7 +1200,7 @@ EFS stays. Production is not approved by this entry.
 
 **Measurement (after the threshold), staging `0.4.0`, 2026-09-10, quoted on #525.** EFS
 `fs-0ed26bca5aabea73e`. Postgres 17.10. Cluster `topstepx-mcp-staging`. Zone
-`Z00545362JA49XMTT3U7Q` unchanged. `MarketData__RecordTape` stayed `false` (`describe-task-definition`
+`<zone-id>` unchanged. `MarketData__RecordTape` stayed `false` (`describe-task-definition`
 `topstepx-mcp-staging-server:6`). No `aws-production` approval. No EC2 + EBS card — the tape
 triggers have no session numbers yet, and nothing measured today crossed PercentIOLimit.
 
@@ -1271,7 +1270,7 @@ ECS refused the first staging deploy of decision 10: *A dependency container wit
 COMPLETE condition cannot be an essential container.* The dump container exits 0 after writing
 `/dump/topstepx_mcp.dump`; upload `dependsOn` that SUCCESS and is the essential container. Dump
 is therefore `Essential=false`. Measured 2026-09-10 against `topstepx-mcp-staging` (stack returned
-`UPDATE_ROLLBACK_COMPLETE`). Zone `Z00545362JA49XMTT3U7Q` unchanged. `RecordTape` and the server
+`UPDATE_ROLLBACK_COMPLETE`). Zone `<zone-id>` unchanged. `RecordTape` and the server
 image were not touched.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
@@ -1300,7 +1299,7 @@ Measured on throwaway `v0.5.0-rc.1` run 34534162932: `deploy-staging` failed
 `PUT use_immutable_subject=false` was accepted and did not stick — a post-cutoff
 repository cannot opt out. The live roles and `GitHubOidcStack` now trust that prefix
 on the same two staging patterns and the same production environment claim. Zone
-`Z00545362JA49XMTT3U7Q` unchanged. `RecordTape` was not touched.
+`<zone-id>` unchanged. `RecordTape` was not touched.
 
 ```console
 $ gh api repos/adammarquette/MarqSpec.Mcp.TopstepX/actions/oidc/customization/sub
@@ -1348,7 +1347,7 @@ This entry is the measurement of the window that actually ran. It does not inven
 Postgres task `8bf520ccd7414b67ac1db65171c55ecb` (family `:6`). Server task
 `73200669fea841feabf2d2a3507acda3` on `topstepx-mcp-staging-server:11` with
 `MarketData__RecordTape=true` from **2026-09-11 16:38:14.648333Z / 11:38:14 CT**. Planned
-end was cash close **15:00 CT / 20:00Z**. Zone `Z00545362JA49XMTT3U7Q` unchanged. No
+end was cash close **15:00 CT / 20:00Z**. Zone `<zone-id>` unchanged. No
 `aws-production` approval.
 
 **Trades.** `min(RecordedAt)` equals that start — nothing earlier. **321 023** rows with
@@ -1460,7 +1459,7 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
   still owns the outbound-path fork with the maintainer.
 - gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, created public zone
-  `Z00545362JA49XMTT3U7Q`, swapped Cloudflare NS onto it, and changed staging to `ZoneMode.Lookup`
+  `<zone-id>`, swapped Cloudflare NS onto it, and changed staging to `ZoneMode.Lookup`
   of that zone. Staging runs **`v0.4.0`** (2026-09-10 entries). Shells filled (18:51 UTC key-presence
   quote), one `CONFIRMED` Cognito user (same quote), step 6, SNS confirm (18:51 UTC), and the
   #526–#528 quotes that could be taken are on the issue. Remaining: Cost Explorer `Environment=staging`

@@ -819,8 +819,8 @@ own.
   record only; **no code, no workflow, no AWS resource changes with it**. It carries the shape
   [ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) decided and records the
   maintainer's 2026-09-06 choices on the AWS epic: one CDK stack in C# under `infra/`, in the solution and
-  synthesised in CI with no credentials, instantiated for production (`marqspec.com`) and staging
-  (`staging.marqspec.com`, a delegated zone — the spelling stays a caveat until gh#519 confirms it); one
+  synthesised in CI with no credentials, instantiated once for a production zone and once for a
+  delegated staging zone (the staging-label spelling stays a caveat until gh#519 confirms it); one
   Application Load Balancer per environment as the whole edge, no sidecar; **ECS Fargate with two services**
   — the released GHCR image **by digest, never `:latest`**, and `timescale/timescaledb-ha:pg17` by digest on
   an EFS access point, **not RDS**, which has no TimescaleDB and would make `SchemaTests` describe a database
@@ -1025,10 +1025,10 @@ own.
 ### Changed
 
 - **The AWS account was bootstrapped and the GitHub OIDC stack deployed; staging was not** (gh#519).
-  Region is `us-east-1`. Hostname spelling is confirmed `staging.marqspec.com`. Public NS for
-  `marqspec.com` is Cloudflare, not the Route 53 zone, so `topstepx-mcp-staging` was not deployed —
-  ACM would stall. `topstepx-mcp-github-oidc` is up; `aws-production` exists with reviewer
-  `adammarquette`; OIDC thumbprint is IAM fill-in, not drift. [`documentation/deployment.md`](documentation/deployment.md)
+  Region is `us-east-1`. The staging hostname's label was confirmed. The apex's public nameservers
+  were not the Route 53 zone's, so the staging stack was not deployed — ACM would stall. The OIDC
+  stack is up; the production GitHub environment exists with the maintainer as reviewer; the OIDC
+  thumbprint is IAM fill-in, not drift. [`documentation/deployment.md`](documentation/deployment.md)
   records the runbook (ARNs and client-id slots, no values). [ADR-0023](documentation/adr/0023-aws-deployment-topology.md)
   and [ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md) gain dated entries.
   Practice ProjectX / Cohere / Grafana values and the Cognito user stay the maintainer's.

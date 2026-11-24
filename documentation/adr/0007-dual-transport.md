@@ -192,7 +192,7 @@ So [`scripts/check-image-entrypoint.sh`](../../scripts/check-image-entrypoint.sh
 asserts it **second**. A container that did not answer `tools/list` is failed on the missing reply and never
 on how it ended, because an exit code says the process ended, not that the server served. That ordering is the
 decision; the numbers, the runner image, the engine version and the run URL are recorded in that script's
-header and in [`agents/platform.md`](../agents/platform.md), not here.
+header, not here.
 
 **Nothing else on this page is revisited.** `Program.RunHostAsync`'s handling of a shutdown requested
 mid-startup is untouched. The gate holds stdin open, which is the shape that read **0** on both sides of

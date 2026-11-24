@@ -293,8 +293,6 @@ OAuth requirement everywhere else. `scripts/check-deployment.sh` runs its static
 point the staging branch in `railway.ts` is deleted, `MCP_HTTP_BEARER_TOKEN` is removed from staging, and
 staging returns to the coupling above. Nothing else in this record changes.
 
-Assisted-by: grok-bot:sgt-squash
-
 ## Update (2026-10-29) — the static-token exception covers production too, TEMPORARILY
 
 **Decided by Adam (operator), 2026-10-29, on gh#851:** *"Let's just use a static key for now."* This widens
@@ -323,8 +321,6 @@ token is its own value, set and rotated by Adam, never by an agent.
 is a candidate to evaluate then; Cognito is no longer assumed, since Railway has no AWS stack to carry it. At
 that point `serverAuth` goes back to OAuth, `[static-token-required]` goes back to requiring OAuth, and
 `MCP_HTTP_BEARER_TOKEN` is removed from each environment as it moves.
-
-Assisted-by: grok-bot:sgt-squash
 
 ## Update (2026-11-05) — staging-first OAuth migration (gh#997)
 

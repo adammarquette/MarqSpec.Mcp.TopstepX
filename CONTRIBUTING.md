@@ -231,23 +231,18 @@ tracker and drifts from it.
   architecture doc, the ADRs, and the [tool catalogue](documentation/mcp-tool-catalog.md). A PR that drifts is
   **not done**.
 
-### AI-assisted commits
+### AI assistance
 
-If an AI tool helped write a commit, end the message with a trailer in the form `<model>:<version>`:
+<a id="ai-assisted-commits"></a>
 
-```
-Assisted-by: grok-bot:<agent-name>
-```
+Parts of this project are developed with AI coding assistants under human review. A commit does not have to
+carry an `Assisted-by:` trailer, and a pull-request section does not have to either. This repository does
+not ask contributors to sign with an agent name.
 
-- The value is `<model>:<version>`, with no spaces. Grok Bot agents sign `grok-bot:<agent-name>` in lowercase
-  kebab-case, e.g. `grok-bot:sgt-squash`.
-- `Co-Authored-By` is optional and not checked.
-- Put trailers in the last paragraph of the message, with no blank lines between them and nothing after them.
-  If another paragraph follows, git doesn't read them as trailers and the check skips them without warning.
-
-**Enforcement.** The commit-hygiene job runs `scripts/check-commit-trailers.sh` on every pull request and
-merge-queue (`merge_group`) run. It only checks
-commits that carry an `Assisted-by:` trailer, and it picks the rule by author date:
+`scripts/check-commit-trailers.sh` still checks a trailer **when one is present**. Put trailers in the last
+paragraph of the message, with no blank lines between them and nothing after them. If another paragraph
+follows, git does not read them as trailers and the check skips them without warning. The script picks the
+rule by author date:
 
 | Author date | Rule |
 | --- | --- |
@@ -274,10 +269,9 @@ every workflow and action change in full.
   A citation inside code binds nothing and `issue-link` refuses it — backticks, a fenced block, or an HTML
   comment alike; see the bullets under *Issue-first* above for what the check reads and what it still misses.
 - **Populate every field — maximal metadata.** Assignee, milestone, `work:*` + `Work Estimate` labels.
-- **Attribution is per section, not per PR.** AI-authored body sections, comments and reviews each carry
-  `Assisted-by: <model>:<version>` in the same form as the commit trailer. More than one tool can write
-  the same PR, so a single footer attributes the wrong agent. Replace the template placeholder on a section
-  you wrote; a later edit replaces the line. Human-only text omits it. **Dependabot is exempt.**
+- **Attribution is optional.** A body section, comment or review may carry `Assisted-by: <model>:<version>`.
+  Human-written text omits it. The commit-hygiene check does not read the pull-request body. **Dependabot
+  is exempt** from the commit-trailer check, as it is from issue-first.
 - **Reviews submit a verdict.** A reviewer leaves findings as comments and **Approves** or **Requests changes** —
   never a bare comment that leaves the state ambiguous. **Merging stays the maintainer's.**
 - **Clean history — rebase-merge with curated commits.** A branch may carry several commits while in progress;

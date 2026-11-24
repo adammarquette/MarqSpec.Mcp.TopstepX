@@ -49,11 +49,6 @@
     <File Path="documentation/adr/0015-levels-merge-across-support-and-resistance.md" />
     <File Path="documentation/adr/0016-subscribe-to-the-market-hub.md" />
   </Folder>
-  <Folder Name="/Solution Items/documentation/agents/">
-    <File Path="documentation/agents/README.md" />
-    <File Path="documentation/agents/code-reviewer.md" />
-    <File Path="documentation/agents/platform.md" />
-  </Folder>
   <Folder Name="/Solution Items/documentation/wiki/">
     <File Path="documentation/wiki/index.md" />
     <File Path="documentation/wiki/SCHEMA.md" />

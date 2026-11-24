@@ -32,7 +32,7 @@
 #   https://github.com/adammarquette/MarqSpec.Mcp.TopstepX/actions/runs/32698052717
 #
 # The scaffolding that produced it was added and removed inside gh#108's own PR, so that run is the only trail
-# back. documentation/agents/platform.md carries the same reference; keep the two together.
+# back. Keep this comment and check-image-entrypoint.sh's provenance note together.
 
 set -euo pipefail
 

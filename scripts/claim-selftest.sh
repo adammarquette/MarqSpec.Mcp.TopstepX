@@ -68,7 +68,7 @@
 #
 # DECISION LEDGER — every decision claim.sh's liveness read makes, beside the case that kills it. Adding a
 # decision without adding a row is then the same visible omission the ledger exists to catch
-# (documentation/agents/platform.md; the fourth gate here to need one).
+# (the fourth gate here to need one).
 #
 #   claim SHA == base SHA  -> empty claim                        case 1, case 2  (mutate: always false ->
 #                                                                 case 1 reads develop's date and goes green
@@ -720,7 +720,7 @@ fi
 # 21. NESTED SPANS ARE REFUSED -- which the matcher ASSERTS in a comment and, until this case, nothing tested.
 #     The `!outer` guard is the whole of that assertion, and whole-block mutation found it pinned by nothing:
 #     unconditionally allowing an inner tick inside an outer one flips this input and no other. Prose is not
-#     a fixture (platform.md), and this is the third rule in this matcher whose only evidence was its own
+#     a fixture, and this is the third rule in this matcher whose only evidence was its own
 #     comment. Measured: `flips-on: no-nest`.
 # ---------------------------------------------------------------------------
 start_case

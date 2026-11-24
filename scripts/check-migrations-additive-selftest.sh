@@ -1584,7 +1584,7 @@ ok "ok  $cases self-test cases — check-migrations-additive.sh rejects each des
 #
 # **The B4 row reverts TWO changes together and is labelled a conjunction deliberately.** Either one alone
 # catches that shape — the region now closes on a lone `;`, *and* the operation needles run inside a region
-# — so neither half is pinned by that case on its own. That is platform.md's "refused by the conjunction,
+# — so neither half is pinned by that case on its own. That is "refused by the conjunction,
 # pinned by neither", named here rather than left for the next reader to discover. The last two rows are the
 # opposite and are worth the contrast: B1's refusal and B1's counting are separable, and the two cases
 # separate them — delete the refusal and both one-line cases go red, make the match boolean again and only

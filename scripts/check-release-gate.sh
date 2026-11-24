@@ -255,8 +255,8 @@ is not the shape this script expects, so it has no idea whether that gate holds.
   # PRINTED, deliberately NOT asserted (gh#108). `prevent_self_review: false` is the only workable setting
   # while one person is the whole review pool -- true means nobody can ever approve a release -- and
   # `can_admins_bypass` is moot when the admin and the reviewer are the same account. They are shown so the
-  # decision stays visible rather than decaying into a default nobody re-reads. Reasoning, and what would
-  # change them: documentation/agents/platform.md.
+  # decision stays visible rather than decaying into a default nobody re-reads. What would change them
+  # is a review of the ruleset, not a second document.
   info "  prevent_self_review: $self_review    can_admins_bypass: $admins_bypass   (recorded, not asserted)"
 done <<NAMES
 $names

@@ -8,7 +8,7 @@ and named this record as the one that carries it · rests on
 [ADR-0016](0016-subscribe-to-the-market-hub.md) (one recorder per instrument) · the digest it deploys is
 looked up by [ADR-0001](0001-tag-driven-versioning.md)'s tag · telemetry on AWS is
 [ADR-0019](0019-otlp-as-the-telemetry-boundary.md)'s decision, cross-referenced here and not reopened ·
-does not reopen [ADR-0002](0002-read-only-venue-boundary.md) · [platform contract](../agents/platform.md) ·
+does not reopen [ADR-0002](0002-read-only-venue-boundary.md) ·
 gh#509, gh#511, gh#445
 
 ## Context

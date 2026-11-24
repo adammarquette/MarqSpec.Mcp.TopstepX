@@ -41,7 +41,7 @@ described #4. Reopening is not an eighth: it undoes the last, and the board now 
 are somebody's deliberate act, and two of those five are not the author's.
 
 **One principle sets every actor below: whoever performs the action moves the card** — except the reviewer,
-who is barred from card writes, so the [coordinator](agents/coordinator.md) covers the two transitions a
+who is barred from card writes, so whoever is dispatching covers the two transitions a
 reviewer's verdict triggers.
 The column is therefore **not symmetrical, and should not be made to look it**: you move it when you act, the
 coordinator moves it when a reviewer acts, and the board moves it when nobody does.
@@ -129,16 +129,16 @@ closed four days earlier, while every one of the three was still correctly `Bloc
 nothing had recorded. A coordinator read all three stated reasons, found every named blocker closed, and
 dispatched three implementers before discovering that each card's scope had already shipped.
 
-- **Who owes the re-statement.** The [coordinator](agents/coordinator.md) does — **not** because its Pick
+- **Who owes the re-statement.** Whoever is dispatching does — **not** because a pick
   order reaches `Blocked` cards (it does not: `Blocked` is none of that order's four priorities, so nothing
-  there would ever have opened one), but because this obligation has its own trigger, stated in
-  `coordinator.md` rather than merely asserted here: a sweep of every `Blocked` card **before each pass**
+  there would ever have opened one), but because this obligation has its own trigger: a sweep of every
+  `Blocked` card **before each pass**
   through Pick order, on the actor that is already there for every other column rather than on whichever
   agent happens to notice something resolve first. The sweep checks what the reason actually names, not
   whether it names an issue — a human action or a measurement has no `gh#N` to poll, and is the population
   most likely to go stale silently under a narrower check. All-resolved is not the same question as
-  all-clear: before trusting it, confirm nothing shipped the card's scope already
-  ([coordinator.md](agents/coordinator.md) states the check and the sweep that triggers it). Say what the
+  all-clear: before trusting it, confirm nothing shipped the card's scope already.
+  Say what the
   card is waiting on **now**, or move it out of `Blocked` if truly nothing remains.
 - **Where a reader looks.** Post the re-statement as a **new comment**, not a body edit — this corpus already
   keeps state in dated entries rather than in place (ADR-0023's `## Update` sections). Name it in the first

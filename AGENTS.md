@@ -1,6 +1,6 @@
 # AGENTS.md — MarqSpec.Mcp.TopstepX (root)
 
-Rules for **every** agent in this repository — a **read-only** MCP server over the ProjectX/TopstepX gateway.
+Rules for **every** agent in this repository — an MCP server over the ProjectX/TopstepX gateway.
 Role- and subtree-specific rules live in their own contracts, so they cost context only when they apply.
 
 ## Take your role's contract first

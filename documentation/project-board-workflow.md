@@ -375,7 +375,7 @@ Repo labels, not board-only fields, so an agent reading the raw issue through `g
 | `work:qa` | Integration tests, written independently of the implementation |
 | `work:platform` | CI/CD, container, compose, deploy |
 | `work:docs` | Documentation-only |
-| `safety-critical` | Touches the read-only boundary or its enforcement. Floors the estimate at 4 |
+| `safety-critical` | Touches the order gate or its enforcement. Floors the estimate at 4 |
 | `backlog` | Deferred — valid direction, not scheduled; revisit when its trigger fires |
 | `shipped-awaiting-human` | The other `Blocked` population — implementation merged; blocked only on a human action, a live measurement, or a date nothing agent-side can move. Companion to `backlog`, not a replacement ([case 3](#3-blocked-needs-a-reason-and-no-column-can-hold-it)) |
 | `ladder-exception` | A justified deviation from the `develop → staging` rule, reason stated in the PR |

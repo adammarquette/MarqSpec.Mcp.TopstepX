@@ -52,7 +52,7 @@ rather than reword it.
 | [`deployment.md`](deployment.md#railway-gh758) | 14.9K | Release is GHCR publish only (`release.yml`); running an instance — Docker pull/compose, **Railway** (`.railway/railway.ts`: services, shared variables, the headless staging seed service, volume permissions, two-recorder window, dashboard-only steps, tape retention after export; gh#758, gh#763, ADR-0025 draft), env vars, `check-deployment.sh`, operator rollback, the migration command timeout against a healthcheck that cannot see a process that is not listening yet (gh#756), vendor DNS on a custom compose network (gh#697), bar backfill off by default (gh#899), moving the server to OAuth with WorkOS AuthKit (gh#997). |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
 | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 6.0K | Branching, claiming, commits, PRs, and the Definition of Done. |
-| [`../AGENTS.md`](../AGENTS.md) | 3.0K | Loads automatically. The non-negotiables and the role routing table. |
+| [`../AGENTS.md`](../AGENTS.md) | 3.0K | Loads automatically. The non-negotiables and the routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)
 
@@ -62,7 +62,7 @@ dated `## Update` sections rather than rewritten. So an ADR is a trail: read its
 matches your increment.
 
 The two that most often turn out to be the answer to "why is it like this":
-[ADR-0002](adr/0002-read-only-venue-boundary.md) (no order path) and
+[ADR-0002](adr/0002-read-only-venue-boundary.md) (superseded by [ADR-0024](adr/0024-gated-trading-actions-practice-v1.md)) and
 [ADR-0005](adr/0005-session-aware-gap-detection.md) (why the cache terminates).
 The market-hub subscription — and the standing choice it reversed — is
 [ADR-0016](adr/0016-subscribe-to-the-market-hub.md), not [ADR-0007](adr/0007-dual-transport.md).

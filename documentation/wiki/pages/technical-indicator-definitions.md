@@ -305,7 +305,7 @@ Cheap, and each is the input some indicator above is defined over. Heikin Ashi i
 indicator, and would need its own storage shape.
 
 **Drawn, not computed** — trendlines and Fibonacci retracements need an anchor a human chose. They have no
-`IIndicator` shape, and nothing in a read-only cache server can supply the anchor.
+`IIndicator` shape, and nothing here supplies that human-chosen anchor.
 
 ## Named, not defined
 

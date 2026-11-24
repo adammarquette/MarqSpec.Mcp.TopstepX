@@ -25,7 +25,7 @@ retrospective justification is a press release. The useful ones name the option 
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-tag-driven-versioning.md) | The git tag is the version | Accepted |
-| [0002](0002-read-only-venue-boundary.md) | **No order path exists in this repository** | Superseded by [0024](0024-gated-trading-actions-practice-v1.md) · CI still enforces absolute ban until gh#718 |
+| [0002](0002-read-only-venue-boundary.md) | **No order path exists in this repository** | Superseded by [0024](0024-gated-trading-actions-practice-v1.md). The tripwire checks that orders stay behind the gate; it is not an absolute ban |
 | [0003](0003-client-as-package.md) | Consume `MarqSpec.Client.ProjectX` as a NuGet package, not a submodule | Accepted |
 | [0004](0004-one-postgres-timescale-pgvector.md) | One Postgres, two extensions | Accepted |
 | [0005](0005-session-aware-gap-detection.md) | Cache-aside is decided against the session calendar | Accepted · the reason the cache terminates · extended by [0022](0022-session-bars-derived-complete-or-absent.md), which reads session windows off the same calendar (gh#498) |

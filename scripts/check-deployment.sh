@@ -19,7 +19,7 @@
 #   expects the OAuth challenge (a bad static token is steered into discovery). Assertion 3 still
 #   presents the static token; AuthKit machine tokens are not what this check exchanges.
 #
-#   e.g.  scripts/check-deployment.sh https://topstepx-mcp.staging.marqspec.com 0.4.0
+#   e.g.  scripts/check-deployment.sh https://mcp.staging.example.com 0.4.0
 #
 # WHY THIS EXISTS (gh#521, gh#509)
 #

@@ -297,14 +297,15 @@ loopback HTTP — without standing up the composed stack to do it.
 
 ### Use it remotely
 
-Two hostnames, same tool surface. **For now both use a static bearer token**, each environment with its
+Two hostnames, same tool surface. The hosts in the table are **placeholders** (`example.com`), not a
+deployment this repository publishes. **For now both use a static bearer token**, each environment with its
 own value, until an OAuth provider is chosen
 ([ADR-0021](documentation/adr/0021-a-non-loopback-instance-is-supported.md)'s 2026-10-29 update, #855):
 
 | Environment | Origin | MCP resource |
 |---|---|---|
-| Staging | `https://topstepx-mcp.staging.marqspec.com` | `https://topstepx-mcp.staging.marqspec.com/mcp` |
-| Production | `https://topstepx-mcp.marqspec.com` | `https://topstepx-mcp.marqspec.com/mcp` |
+| Staging | `https://mcp.staging.example.com` | `https://mcp.staging.example.com/mcp` |
+| Production | `https://mcp.example.com` | `https://mcp.example.com/mcp` |
 
 Point the client at the MCP resource and send `Authorization: Bearer <your token>` on every request. The
 operator hands out each environment's token; it is never written in this repository. A call without it
@@ -327,7 +328,7 @@ issued (gh#512, gh#517). The mode is selected by environment and the tool surfac
 Mcp__Transport=Http Mcp__Auth__Mode=OAuth \
   Mcp__OAuth__Issuer=https://cognito-idp.<region>.amazonaws.com/<poolId> \
   Mcp__OAuth__ClientIds=<connector-client-id>,<deploy-check-client-id> \
-  Mcp__OAuth__ResourceUrl=https://topstepx-mcp.staging.marqspec.com/mcp \
+  Mcp__OAuth__ResourceUrl=https://mcp.staging.example.com/mcp \
   dotnet run --project MarqSpec.Mcp.TopstepX
 ```
 
@@ -385,8 +386,8 @@ listed `sub` values; set it whenever the issuer's sign-up is open. WorkOS AuthKi
 ```bash
 Mcp__Transport=Http Mcp__Auth__Mode=OAuth \
   Mcp__OAuth__Issuer=https://<project>.authkit.app \
-  Mcp__OAuth__Audience=https://topstepx-mcp.marqspec.com/mcp \
-  Mcp__OAuth__ResourceUrl=https://topstepx-mcp.marqspec.com/mcp \
+  Mcp__OAuth__Audience=https://mcp.example.com/mcp \
+  Mcp__OAuth__ResourceUrl=https://mcp.example.com/mcp \
   Mcp__OAuth__Subjects=<your WorkOS user id, user_…> \
   dotnet run --project MarqSpec.Mcp.TopstepX
 ```

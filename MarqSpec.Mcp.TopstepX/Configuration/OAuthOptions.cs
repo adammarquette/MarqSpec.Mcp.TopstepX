@@ -128,7 +128,7 @@ public sealed class OAuthOptions
 
     /// <summary>
     /// The public URL of the MCP endpoint, exactly as a user enters it into a connector —
-    /// <c>https://topstepx-mcp.staging.marqspec.com/mcp</c>. Must end in <c>/mcp</c>, because that is where
+    /// <c>https://mcp.staging.example.com/mcp</c>. Must end in <c>/mcp</c>, because that is where
     /// the endpoint is served and nowhere else.
     /// </summary>
     public string ResourceUrl { get; init; } = string.Empty;
@@ -363,7 +363,7 @@ public sealed class OAuthOptions
         if (string.IsNullOrWhiteSpace(ResourceUrl))
         {
             yield return $"{key} is required when Mcp__Auth__Mode=OAuth: the public URL of the MCP endpoint exactly as "
-                + "a user enters it, e.g. https://topstepx-mcp.staging.marqspec.com/mcp.";
+                + "a user enters it, e.g. https://mcp.staging.example.com/mcp.";
             yield break;
         }
 

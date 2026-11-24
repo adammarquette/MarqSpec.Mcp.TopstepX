@@ -448,7 +448,7 @@ Production's template does not. Names only here, never values. Do not set them o
 
 **In the WorkOS dashboard (operator, once per environment):**
 - Connect → Configuration: add the MCP endpoint exactly as users type it,
-  `https://topstepx-mcp.marqspec.com/mcp` (staging: its own host), as a **Resource Indicator**, and make it
+  `https://mcp.example.com/mcp` (staging: its own host), as a **Resource Indicator**, and make it
   the default for clients that omit `resource`.
 - Enable **Client ID Metadata Documents** (CIMD). Enable **Dynamic Client Registration** too if a client
   you use has no CIMD support yet.
@@ -506,7 +506,7 @@ For production, pass production's own token (no workflow runs it yet):
 ```bash
 MCP_CHECK_AUTH_MODE=OAuthWithStaticToken MCP_CHECK_ENVIRONMENT=staging \
   MCP_CHECK_BEARER_TOKEN=… MCP_CHECK_OAUTH_ISSUER=… MCP_CHECK_OAUTH_AUDIENCE=… \
-  scripts/check-deployment.sh https://staging-topstepx-mcp.marqspec.com 0.4.0
+  scripts/check-deployment.sh https://mcp.staging.example.com 0.4.0
 MCP_CHECK_AUTH_MODE=StaticToken MCP_CHECK_ENVIRONMENT=production MCP_CHECK_BEARER_TOKEN=… \
   scripts/check-deployment.sh https://your-production-host.example 0.4.0
 ```

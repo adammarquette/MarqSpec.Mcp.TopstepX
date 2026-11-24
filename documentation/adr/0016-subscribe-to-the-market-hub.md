@@ -209,7 +209,7 @@ not create.
 - `IMarketDataGateway` stays request/response. Cache-aside tests keep their meter. A push fake is a
   different test double.
 - ADR-0002 and `check-no-order-path.sh` are unchanged. A later change that needs an order method still
-  belongs in `trading-copilot`, or it is the wrong change.
+  belongs outside this repository, or it is the wrong change.
 - ADR-0007 is unchanged. It never spoke for this hub; the wiki citation that said it did is corrected in
   the same pull request as this file (gh#214).
 - There is still no `get_quote` in this phase. The reason is no longer "we do not subscribe"; it is that

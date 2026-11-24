@@ -6,7 +6,7 @@ possible, and why it is fenced off) · [ADR-0001](0001-tag-driven-versioning.md)
 
 ## Context
 
-`trading-copilot` vendors its venue clients as **git submodules** under `external/` and builds against the
+A sibling repository vendors its venue clients as **git submodules** under `external/` and builds against the
 source. That made sense there: it was co-developing the client and the consumer, finding gateway bugs in one
 and fixing them in the other, often the same afternoon.
 
@@ -25,7 +25,7 @@ No `external/`, no `.gitmodules`, no recursive clone.
 
 ## Alternatives considered
 
-**Submodule, as `trading-copilot` does.** Rejected. Its benefit is a fast edit loop across two repos, and this
+**Submodule, as that sibling does.** Rejected. Its benefit is a fast edit loop across two repos, and this
 repo will not need one — the read surface it uses is stable. A gateway fix is needed in the client for every
 consumer, not locally here.
 

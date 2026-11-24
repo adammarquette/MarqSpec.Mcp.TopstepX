@@ -7,9 +7,6 @@
 # The pushed branch is the claim (CONTRIBUTING.md). A local worktree is invisible to a parallel session on
 # another machine, so the branch has to exist on the remote *before* the work starts, not after it.
 #
-# This repo is one half of a two-repo card: work here is often driven by an issue in trading-copilot, and the
-# claim can live in either repository. The check below looks at both.
-#
 # EXIT STATUS. `--check` answers *may I take this?* and the claiming path answers *did I claim it?*, so in
 # both spellings 0 means "proceed with what this invocation was for" (gh#438 — it used to exit 0 whatever it
 # decided, which left every refusal as advisory text an agent could skim past):
@@ -71,12 +68,6 @@
 
 set -euo pipefail
 
-UPSTREAM_REPO="adammarquette/trading-copilot"
-# The one test seam in this file. `claim-selftest.sh` points it at a disposable bare repo so the suite makes
-# no network call; every other read is already redirectable by pointing PATH at a fake `gh` and running
-# inside a fixture checkout. Left as an override rather than an argument so no caller can pass it by
-# accident, and defaulted here so an unset environment behaves exactly as before.
-UPSTREAM_REMOTE="${CLAIM_SH_UPSTREAM_REMOTE:-https://github.com/${UPSTREAM_REPO}}"
 BASE_BRANCH="develop"
 STALE_AFTER_HOURS=4
 # NOT a second stall threshold (project-board-workflow.md forbids one, and rightly). There is still exactly
@@ -412,29 +403,6 @@ if [ -n "$CLAIMED" ]; then
       fi
     fi
   fi
-fi
-
-# The two-repo trap: a clean main here is NOT "nobody started" — in-review work lives on a branch, so a clean
-# main reads as free precisely when someone has finished.
-#
-# TOLERATED, BUT SAID OUT LOUD (gh#126). Unlike `origin` above, this repository may legitimately be
-# unreachable — offline, or private from this machine — so an unreadable upstream is not fatal. What it is not
-# allowed to be is INVISIBLE: swallowed, it produced the same silence as a genuinely unclaimed upstream, and
-# the operator could not tell "nobody has claimed it there" from "I never looked".
-UPSTREAM_CLAIM=""
-UPSTREAM_HEADS=""
-UPSTREAM_STATUS=0
-UPSTREAM_HEADS="$(git ls-remote --heads "$UPSTREAM_REMOTE" 2>/dev/null)" || UPSTREAM_STATUS=$?
-if [ "$UPSTREAM_STATUS" -ne 0 ]; then
-  warn "could not read ${UPSTREAM_REPO} (git ls-remote exited $UPSTREAM_STATUS) — the cross-repo claim check"
-  warn "did NOT run. Not fatal, but #$ID may be claimed there and this cannot tell you."
-else
-  UPSTREAM_CLAIM="$(printf '%s\n' "$UPSTREAM_HEADS" | grep -E "refs/heads/[a-z]+/${ID}_" || true)"
-fi
-if [ -n "$UPSTREAM_CLAIM" ]; then
-  warn "a branch for #$ID also exists in ${UPSTREAM_REPO} — this may be the same card, claimed there:"
-  printf '%s\n' "$UPSTREAM_CLAIM" >&2
-  warn "coordinate on the issue before proceeding."
 fi
 
 OPEN_PRS="$(gh pr list --repo "$REPO_SLUG" --state open --json number,headRefName,title --jq \

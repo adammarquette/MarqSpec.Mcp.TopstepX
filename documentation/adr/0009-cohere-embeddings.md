@@ -29,7 +29,7 @@ Verified against Cohere's documentation rather than assumed:
 
 ## Why v4 over `embed-english-v3.0`
 
-v3.0 at 1024 was the obvious choice — it is what `trading-copilot` uses, and it would have made the two
+v3.0 at 1024 was the obvious choice — it is what an earlier system uses, and it would have made the two
 systems' vectors directly comparable. **That symmetry was given up on purpose**, for one reason:
 
 **v3.0 accepts 512 tokens per text.** Roughly 2,000 characters. That is a real ceiling on how long an
@@ -38,7 +38,7 @@ the tail), refuse (honest, and irritating), or chunk (correct, and more machiner
 128k context removes the question entirely**, and an observation is exactly the kind of text that has no
 natural length limit.
 
-The cost of that choice, stated plainly: **vectors here are no longer comparable with `trading-copilot`'s.**
+The cost of that choice, stated plainly: **vectors here are no longer comparable with that earlier system's.**
 Different models embed into different spaces, so a similarity score cannot be carried between the two systems,
 and retrieval behaviour learned in one does not transfer. The schema still matches, so the *shape* is portable
 even though the *contents* are not.
@@ -63,7 +63,7 @@ plausible answer, not an error.
 
 ## Alternatives considered
 
-**`embed-english-v3.0` at 1024** — the `trading-copilot` match. Rejected for the 512-token ceiling, above.
+**`embed-english-v3.0` at 1024** — the earlier system's match. Rejected for the 512-token ceiling, above.
 
 **`embed-v4.0` at 1536**, its default. Rejected: it is a migration and a full re-embed for retrieval quality
 that is not the binding constraint at observation volumes. If it ever is, the path is open and the cost is

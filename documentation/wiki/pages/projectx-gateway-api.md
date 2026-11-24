@@ -2,7 +2,7 @@
 
 > **Trust tier:** authoritative
 > **Verified:** against vendor documentation and first-party observation via an operator login, carried forward
-> from the `trading-copilot` wiki page of 2026-07-18 with its later corrections · **Sources:**
+> from an earlier wiki page of 2026-07-18 with its later corrections · **Sources:**
 > https://gateway.docs.projectx.com/docs/intro
 > **Access:** vendor docs are public, no auth wall; behavioural claims below were observed against a live
 > practice login. Nothing is reproduced verbatim.

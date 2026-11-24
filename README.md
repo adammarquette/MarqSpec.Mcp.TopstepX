@@ -726,8 +726,6 @@ same observation, and the cache asks the vendor for the weekend forever.
 
 - [`MarqSpec.Client.ProjectX`](https://github.com/adammarquette/MarqSpec.Client.ProjectX) — the gateway client
   this consumes as a NuGet package ([ADR-0003](documentation/adr/0003-client-as-package.md)).
-- [`trading-copilot`](https://github.com/adammarquette/trading-copilot) — the full human-in-the-loop trading
-  system. Much of this server's domain layer is distilled from it; that repo is where execution lives.
 - [`MarqSpec.Repo.Template`](https://github.com/adammarquette/MarqSpec.Repo.Template) — the scaffolding
   conventions this repo follows.
 

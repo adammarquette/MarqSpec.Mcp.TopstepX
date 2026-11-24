@@ -15,7 +15,7 @@ This MCP server is driven by a language model (Trader Jon) over MCP. Today it is
 `PlaceOrderAsync` and its siblings are never called, and CI enforces that absence.
 
 The operator now wants to **explore optional write tools** — place, modify, cancel, brackets, close and partial
-close — without repeating the full safety stack of the sibling `trading-copilot` system. That exploration must
+close — without repeating the full safety stack of a sibling execution system. That exploration must
 assume the caller is not trustworthy: a flag defaults, a guard has a bug, and a confirmation string is text a
 model can produce.
 
@@ -37,7 +37,7 @@ lands, no product code may transmit orders even though the architectural decisio
 
 Owner decisions recorded 2026-10-18 (PR #723):
 
-1. **Supersede ADR-0002** — gated venue writes in this repository, not only in `trading-copilot`.
+1. **Supersede ADR-0002** — gated venue writes in this repository, not only in a sibling system.
 2. **Broker acknowledgment** — an order is **not** treated as live until the broker ack arrives (see §5).
 3. **`Unknown` stage** — refuse the write **and** raise an alert plus emit a metric via OpenTelemetry
    ([ADR-0019](0019-otlp-as-the-telemetry-boundary.md)); implementation in gh#733.
@@ -382,7 +382,7 @@ An order is **not treated as live** until the **broker acknowledgment** arrives.
 Out-of-band operator ack (second channel, signed CLI) is optional in v1 but compatible with the ack rule above.
 Trader Jon is never the sole approval for live capital at risk.
 
-**Relation to `trading-copilot`:** v1 does not port watchdog, auto-flatten, or session model. Practice-only v1
+**Relation to the sibling execution system:** v1 does not port watchdog, auto-flatten, or session model. Practice-only v1
 reduces blast radius but does not replace disciplined operator process.
 
 #### Model-driven writes (threat model)

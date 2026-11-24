@@ -66,7 +66,7 @@ anything sizing a stop against a zone edge.
 - **`get_key_levels`.** The only tool that returns `KeyLevelZone` directly. Affected as tabled above.
 - **`get_market_snapshot`.** Reaches the same detection through `KeyLevelTools.GetKeyLevels` with a fixed
   window and no detection arguments of its own, so it inherits the change whole and has no way to opt out.
-- **`trading-copilot`.** The one consumer outside this repository. It reads levels; it does not persist them.
+- **An outside reader.** It reads levels; it does not persist them.
 - **Nothing stored.** There is no level table to migrate and no cached answer to invalidate — levels are
   computed on read (ADR-0013) and gh#276 dropped the empty table. **That is what makes this break cheap**: the
   whole cost is the next call, not a backfill.

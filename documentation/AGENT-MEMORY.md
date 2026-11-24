@@ -399,7 +399,7 @@ at one this rule's own pull request retires.
   - **Correcting the instance does not close it.** gh#187 fixed that `CONTRIBUTING.md` row only because it
     happened to be editing that table already; otherwise it would simply have stayed wrong. gh#196 carries
     the structural half.
-  - **A brand-new row can be stale on the day it lands.** PR #193 prices `agents/code-reviewer.md` from
+  - **A brand-new row can be stale on the day it lands.** PR #193 priced a contract from
     `develop` while gh#187 grows that same file on a parallel branch — about 10% out the moment both land,
     inside the band, green.
 
@@ -448,7 +448,7 @@ at one this rule's own pull request retires.
   directory-only pattern needs a directory to match, so on a fresh clone the check fails against a repo that
   ignores it perfectly well. **Query it with the trailing slash instead — `git check-ignore -v .worktrees/`
   — which matches with nothing on disk**, so no `mkdir` and no mutation to answer a read-only question.
-  Verified both ways: ignored on `trading-copilot`, not-ignored on an unfixed `develop`. Without it, three of
+  Verified both ways: ignored on a sibling checkout, not-ignored on an unfixed `develop`. Without it, three of
   the four siblings read as broken during the gh#40 sweep.
 - **[2026-08-23] Four gates landed in one session and all four were defective before review — the evidence
   behind the two-runs rule** in the [Coding contract](../MarqSpec.Mcp.TopstepX/AGENTS.md) (Tests). Every one
@@ -629,14 +629,14 @@ at one this rule's own pull request retires.
   Projecting first produced zero indicator values, silently, with no error anywhere — caught only because a
   test asserted the indicators existed. Both saves sit inside one transaction where the provider has them.
 - **[2026-08-23] The `.worktrees/` sweep is swept, not landed — verify before you trust it (gh#40).** All
-  four siblings were checked; `trading-copilot` already had the entry, and the other three each got a PR
+  four siblings were checked; one already had the entry, and the other three each got a PR
   whose state is the sibling repository's to report and not this file's. **The template's is blocked by its
   own gh#12**: `{{REPO_NAME}}` is not a valid C# identifier, so its build and CodeQL can never pass. That is
   the repo gh#40 called the real fix, since every repo generated from it inherits whatever it ignores — so
   **before generating one, run
   `git check-ignore -v .worktrees/` against the template's `develop` yourself; do not assume the PR merged.**
   Durable regardless: no repo in the family has ever tracked a path under `.worktrees/`, and the only
-  gitlinks anywhere are `trading-copilot`'s four declared submodules under `external/`.
+  gitlinks anywhere are that sibling's four declared submodules under `external/`.
 - **[2026-08-23] Don't clone a sibling repo into the agent scratchpad on Windows — use `C:\tmp`.** The
   scratchpad root is ~120 characters before the repo name, and cloning `MarqSpec.Client.ProjectX` or
   `MarqSpec.Client.Tradovate` there dies part-way with `error: cannot stat '<path>': Filename too long`. It

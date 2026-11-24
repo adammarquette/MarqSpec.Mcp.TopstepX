@@ -59,7 +59,7 @@ badly — it is recursive, not windowed. Worth revisiting for VWAP and SMA speci
 
 **A third-party indicator library.** Rejected. `Skender.Stock.Indicators` is good, but these calculations are
 short, and hand-written ones can be `decimal` end to end, can carry their rationale in XML docs beside the code,
-and can be pinned by fixture tests shared with `trading-copilot` — which is what proves the two systems agree.
+and can be pinned by fixture tests shared with that earlier codebase — which is what proves the two systems agree.
 
 ## Consequences
 

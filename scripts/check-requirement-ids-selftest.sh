@@ -507,7 +507,7 @@ make_fixture() {
       # A NON-MARKDOWN file carrying a citation, the shape .github/ISSUE_TEMPLATE/task.yml really has, and a
       # BINARY file the gate must step over without erroring rather than without noticing.
       mkdir -p "$dir/.github/ISSUE_TEMPLATE"
-      printf '      placeholder: "R-2, ADR-0002, adammarquette/trading-copilot#589"\n' \
+      printf '      placeholder: "R-2, ADR-0002"\n' \
         > "$dir/.github/ISSUE_TEMPLATE/task.yml"
       mkdir -p "$dir/assets"
       # THE BINARY CARRIES A DANGLING ID ON PURPOSE. With `grep -I` it is skipped and the count is

@@ -296,7 +296,7 @@ into a terminating one. Detail: [ADR-0005](adr/0005-session-aware-gap-detection.
 
 ### Why step 4 exists, and where it has no prior art
 
-`trading-copilot` polls a fixed watchlist on a timer, so it never faces "an agent asked for an arbitrary cold
+An earlier system polls a fixed watchlist on a timer, so it never faces "an agent asked for an arbitrary cold
 range twice in a row". This server does, on every call. A range the venue genuinely has no data for — before
 the contract listed, a session the exchange cancelled — is expected by the calendar and absent from the store,
 which is indistinguishable from a fetch that has not happened yet. The `BarCoverage` ledger is the third state.

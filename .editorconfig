@@ -1,6 +1,6 @@
 # EditorConfig — MarqSpec.Mcp.TopstepX
 # Baseline: Microsoft's C# conventions (adopted from dotnet/runtime + Roslyn), kept
-# aligned with trading-copilot so a contributor moving between the two repos does
+# aligned with a sibling repository so a contributor moving between the two repos does
 # not meet two different styles.
 # One project deviation — queries use fluent / method syntax, never LINQ
 # query-comprehension. See the note at the bottom of the [*.cs] section.
@@ -113,7 +113,7 @@ dotnet_naming_style.camel_style.capitalization = camel_case
 # Do write fluent / method chains:         orders.Where(o => o.IsOpen).Select(o => o.Id)
 #
 # There is NO first-party Roslyn analyzer that bans query-comprehension syntax, so this
-# rule is enforced by CODE REVIEW. Same rule as trading-copilot's engineering §4.
+# rule is enforced by CODE REVIEW.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EF Core migrations are GENERATED. `dotnet ef migrations add` emits block-scoped namespaces and its own

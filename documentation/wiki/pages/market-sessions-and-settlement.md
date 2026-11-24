@@ -1,7 +1,7 @@
 # Market sessions & settlement
 
 > **Trust tier:** authoritative
-> **Verified:** against CME product specifications, carried forward from the `trading-copilot` wiki ·
+> **Verified:** against CME product specifications, carried forward from an earlier wiki ·
 > **Sources:** https://www.cmegroup.com/markets/equities/sp/e-mini-sandp500.contractSpecs.html
 > **Access:** public product specifications. Session times summarised, not reproduced.
 > **Informs:** `R-1.2`, `R-3`, and [ADR-0005](../../adr/0005-session-aware-gap-detection.md)

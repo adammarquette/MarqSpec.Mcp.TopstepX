@@ -24,7 +24,7 @@ number every time. Hence a tight absolute scale anchored to worked examples.
 
 1. Rate the task against the factors below.
 2. **Take the highest factor that materially applies.** A task is as demanding as its hardest aspect — one that
-   is trivial everywhere except that it touches the read-only boundary is not a trivial task.
+   is trivial everywhere except that it touches the order gate is not a trivial task.
 3. **Apply the safety floor.** Anything carrying `safety-critical` — the venue boundary or its CI gate — is
    **≥ 4**, whatever the factors say.
 4. **When torn between two levels, round up.** Genuine uncertainty about the task *is itself* a signal that the

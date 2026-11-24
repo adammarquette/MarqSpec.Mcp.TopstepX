@@ -21,9 +21,10 @@ Domain   ──referenced by──▶  Data  ──referenced by──▶  Host
 
 ## Rules that repeat as review findings
 
-- **No order call.** `PlaceOrderAsync`, `ModifyOrderAsync`, `CancelOrderAsync`, `ClosePositionAsync`,
-  `PartialClosePositionAsync` — none, anywhere in these three projects. CI enforces it; do not be the change
-  that discovers the gate works.
+- **Orders only through `TradingRiskGate`.** `PlaceOrder`, `ModifyOrder`, `CancelOrder`, `ClosePosition`
+  and `PartialClosePosition` (with or without `Async`) stay inside that seam, practice accounts only, and
+  `Trading__Enabled` defaults to false. Do not add a path around the gate. The CI tripwire is not a licence
+  to widen its allowlist.
 - **`decimal` for anything that is a price.** Never `double`, not even briefly for one square root. A tick
   size of 0.25 has no exact binary representation and an indicator accumulating over thousands of bars drifts.
   `DecimalMath` exists for the arithmetic `decimal` lacks.

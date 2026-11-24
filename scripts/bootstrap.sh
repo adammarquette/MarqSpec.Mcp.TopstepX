@@ -21,7 +21,7 @@
 # REPLACES the whole object, so the payload below IS the ruleset: any rule missing from it is deleted. Until
 # gh#114 the payload declared only deletion, non_fast_forward and pull_request, so a second run against a repo
 # whose merge gate had since been configured stripped every required check off all three rungs -- including
-# `no-order-path`, which is how ADR-0002's read-only boundary is enforced -- and printed "all rulesets active"
+# `no-order-path`, which is how the order-gate tripwire is enforced -- and printed "all rulesets active"
 # underneath, because enforcement was all it verified. Step 3 now reads each live ruleset before writing it,
 # treats a read that does not succeed as fatal, and reads the contexts back per rung afterwards.
 #

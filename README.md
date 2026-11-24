@@ -4,21 +4,32 @@ An **MCP server over the ProjectX / TopstepX gateway** — cached market data, p
 key levels, and account reads, exposed as tools an AI agent can call. Point Claude Cowork (or Claude Code, or
 any MCP client) at it and ask what a market has been doing.
 
-Its defining property is what it *cannot* do: **no order path exists in this repository**. The gateway client
-underneath it can place, modify and cancel orders; nothing here reaches those calls, and a CI gate proves it on
-every push ([ADR-0002](documentation/adr/0002-read-only-venue-boundary.md)). This server observes. Execution
-lives somewhere that has a risk gate.
+Order tools exist, and they are off unless you turn them on. `place_order`, `modify_order`, `cancel_order`,
+`close_position` and `partial_close_position` (`Tools/TradingOrderTools.cs`, named in `TradingMcpTools.cs`)
+reach the venue only through `TradingRiskGate`. `Trading__Enabled` defaults to **false**, so a normal
+configuration does not list or send those calls. When the gate is enabled it is **practice-account only**:
+non-practice accounts are refused (ADR-0024, which supersedes
+[ADR-0002](documentation/adr/0002-read-only-venue-boundary.md)). The CI tripwire checks that orders stay
+behind that seam. It does not mean the repository has no order path.
 
 Its second property is that it is **quiet**. Bars are served from a local TimescaleDB store and fetched from the
 vendor only for the buckets genuinely missing — where "genuinely" means the session calendar says the venue was
 open and should have published one. A weekend is not a gap.
 
-> ### ⚠️ No warranty. Not financial advice.
-> This software reads a **real brokerage account**. It is provided **as-is, without warranty of any kind**. You
-> alone are responsible for your trading decisions, for how you configure and operate your deployment, and for
-> complying with your broker's and prop firm's terms. Nothing here is investment advice. An indicator this
-> server computes is a number, not a recommendation — and a number that is subtly wrong looks exactly like one
-> that is right.
+> ### ⚠️ Order tools (practice accounts only). Use at your own risk. Not financial advice.
+> This software can **place, modify and cancel orders** and **close positions** once `Trading__Enabled` is
+> explicitly set to `true`. That switch defaults to **false**. When it is true, `Trading__AllowedAccountIds`
+> must be non-empty or startup refuses. Practice is decided from the account **name**, not from the allowlist:
+> the first `-` segment is `PRAC`, or the whole name matches the legacy `PRACTICE<MON><n>` family (three
+> letters then digits, for example `PRACTICEJUL3`). Evaluation, funded, and unknown names are refused. The
+> allowlist does not turn a non-practice name into a practice account. Leave trading disabled unless you
+> intend to send orders. Enabling it is your decision: you accept the risk of practice-account fills,
+> including losses, rejected or unknown outcomes, and any breach of your broker's or prop firm's rules.
+> Nothing in this repository is financial, investment, or trading advice. The software is provided
+> **as-is, without warranty of any kind**. You alone are responsible for your trading decisions, for how you
+> configure and operate your deployment, and for complying with your broker's and prop firm's terms. An
+> indicator this server computes is a number, not a recommendation — and a number that is subtly wrong looks
+> exactly like one that is right.
 
 > **Status: pre-release.** The ProjectX adapter is `MarqSpec.Client.ProjectX` 3.0.0, so the venue is live.
 > The tree is past Phase 0: contract rolls, on-read indicator projection, session levels, observations and
@@ -664,8 +675,10 @@ Two entry points, in this order:
 
 ## What it exposes
 
-Read-only, and **numeric-only** — every field an agent receives is a number, a timestamp or an enum name, so no
-vendor free text reaches the model ([ADR-0008](documentation/adr/0008-numeric-only-tool-payloads.md)). Full
+**Numeric-only** — every field an agent receives is a number, a timestamp or an enum name, so no
+vendor free text reaches the model ([ADR-0008](documentation/adr/0008-numeric-only-tool-payloads.md)).
+Order tools are off unless `Trading__Enabled` is true, and then only for practice account names
+([ADR-0024](documentation/adr/0024-gated-trading-actions-practice-v1.md)). Full
 signatures: [the tool catalogue](documentation/mcp-tool-catalog.md).
 
 | Group | Tools |

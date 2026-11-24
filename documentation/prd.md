@@ -446,7 +446,7 @@ The server serves OHLCV bars for a futures instrument at a requested resolution 
   initial balance is refused when the resolution is coarser than the hour it measures. Both are absences,
   never a well-formed number taken from a wider period.
 
-## R-4 — Read-only venue boundary
+## R-4 — Gated order boundary
 
 - **R-4.1** **A venue write exists only behind `TradingRiskGate`.** `Trading__Enabled` defaults to false and
   refuses every order operation, including cancel and close, before the vendor client is called and with no

@@ -393,8 +393,10 @@ reporting flat there would tell an operator they have no exposure when they do.
 
 ## Out of scope here
 
-The order endpoints — place, modify, cancel, close — exist and work. **This repository never calls them**
-([ADR-0002](../../adr/0002-read-only-venue-boundary.md)). They are named here only so the boundary is legible.
+The order endpoints — place, modify, cancel, close — exist and work. This repository reaches them only
+through `TradingRiskGate`, practice accounts only, and off unless trading is explicitly enabled
+([ADR-0024](../../adr/0024-gated-trading-actions-practice-v1.md), which supersedes
+[ADR-0002](../../adr/0002-read-only-venue-boundary.md)). They are named here so that boundary is legible.
 
 ## Open items
 

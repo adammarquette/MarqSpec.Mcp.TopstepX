@@ -1492,7 +1492,7 @@ worth a sentence: the previous form turned an explicit `0` into `20`, substituti
 caller stated and could not see replaced. **Absent** means 20; a **stated** number is honoured or refused,
 never rounded up to it.
 
-Writes to **this** database. Not the venue, and no weakening of the read-only boundary.
+Writes to **this** database, not the venue. It does not place an order.
 
 An observation is `{ id, symbol, kind, text, tags, recordedAt, embeddingNote, similarity }`. `embeddingNote`
 says why a row has no vector when it has none; `similarity` is populated only in `Semantic` mode.

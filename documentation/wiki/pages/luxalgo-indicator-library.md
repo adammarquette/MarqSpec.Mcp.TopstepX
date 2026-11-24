@@ -77,7 +77,7 @@ specified well enough to implement, whatever its preview image shows.
 **Machine Learning, Meta and Validation are out of scope**, and not merely unprioritised. A fitted model's
 output depends on when it was trained and on what — which is exactly the dependency on *when it ran* that
 [ADR-0006](../../adr/0006-indicators-as-projections.md) forbids anything in `Domain` from acquiring. Nothing
-in a read-only cache server has anywhere to put one.
+in this server's domain layer has anywhere to put one.
 
 **Sentiment & Breadth** needs inputs this server does not hold. Breadth is a cross-sectional statistic over a
 universe; this repo stores bars per contract and reaches one venue.

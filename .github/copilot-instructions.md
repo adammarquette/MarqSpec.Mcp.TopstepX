@@ -4,9 +4,11 @@ What to weigh when reviewing a change here. GitHub's Copilot reviewer reads this
 
 ## Lead with the worst failure this repo can have
 
-**No order path exists here** ([ADR-0002](../documentation/adr/0002-read-only-venue-boundary.md)), so the loud
-failure — an operation performed twice — cannot fire on any diff in this repository. What is left is quieter,
-and it has already landed. Ask it on any diff touching a number a caller will read:
+Orders go through `TradingRiskGate` and are **off by default** (`Trading__Enabled=false`, practice accounts
+only, [ADR-0024](../documentation/adr/0024-gated-trading-actions-practice-v1.md)). A diff that reaches
+`PlaceOrder`, `ModifyOrder`, `CancelOrder`, `ClosePosition` or `PartialClosePosition` outside that seam is
+the failure to stop. Beside it, the quieter failure has already landed. Ask it on any diff touching a number
+a caller will read:
 
 > **Can this change cause a wrong, stale or absent number to be reported as an ordinary answer?**
 

@@ -41,7 +41,7 @@ folder.
 
 - **Instrument specifications** beyond ES and NQ — tick sizes and point values for energy and metals, and their
   session closes, which differ from the equity-index ones this repo defaults to.
-- **Webull's API**, for the eventual sibling server. It lives in `trading-copilot`'s wiki today.
+- **Webull's API**, for an eventual sibling server. It is not documented in this repository.
 - **A checked pivot family.** The five `R-3.10` formulas are stated on the definitions page from published
   sources and have **not** been checked against an implementation — the one section there whose trust does not
   match the rest of its page. Promote it when a fixture exists.

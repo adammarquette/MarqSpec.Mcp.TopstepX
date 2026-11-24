@@ -51,7 +51,7 @@ rather than reword it.
 | [`project-board-workflow.md`](project-board-workflow.md) | 7.1K | You are filing, grooming or moving a card. **The board is project #5; #4 is retired.** The board makes two of the seven transitions by itself; the other five are somebody's deliberate act. |
 | [`deployment.md`](deployment.md#railway-gh758) | 14.9K | Release is GHCR publish only (`release.yml`); running an instance — Docker pull/compose, **Railway** (`.railway/railway.ts`: services, shared variables, the headless staging seed service, volume permissions, two-recorder window, dashboard-only steps, tape retention after export; gh#758, gh#763, ADR-0025 draft), env vars, `check-deployment.sh`, operator rollback, the migration command timeout against a healthcheck that cannot see a process that is not listening yet (gh#756), vendor DNS on a custom compose network (gh#697), bar backfill off by default (gh#899), moving the server to OAuth with WorkOS AuthKit (gh#997). |
 | [`work-estimate-rubric.md`](work-estimate-rubric.md) | 1.0K | You are setting a `Work Estimate` on an issue. |
-| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 6.2K | Branching, claiming, commits, PRs, and the Definition of Done. |
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | 6.0K | Branching, claiming, commits, PRs, and the Definition of Done. |
 | [`../AGENTS.md`](../AGENTS.md) | 3.0K | Loads automatically. The non-negotiables and the role routing table. |
 
 ## Decisions — [`adr/`](adr/README.md)

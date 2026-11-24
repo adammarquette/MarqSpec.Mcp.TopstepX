@@ -10,7 +10,7 @@ Everything this server returns is read by a language model, and a model does not
 was given from instructions it was given. Any free text that reaches a tool result is text that can steer the
 agent — and some of it originates outside the operator's control.
 
-`trading-copilot` reached the same conclusion when it built the market context passed to its trigger reviewer,
+An earlier system reached the same conclusion when it built the market context passed to its trigger reviewer,
 and made that payload deliberately numeric-only, deferring news headlines precisely because they are the
 injection surface.
 

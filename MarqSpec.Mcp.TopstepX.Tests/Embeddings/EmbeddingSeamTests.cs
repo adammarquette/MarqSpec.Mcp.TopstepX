@@ -15,7 +15,7 @@ namespace MarqSpec.Mcp.TopstepX.Tests.Embeddings;
 /// <remarks>
 /// <b>Availability means a key AND somewhere to put the vector.</b> The middle state — a key with no vector
 /// store — is the one that costs money: it embeds happily at real expense on every write and then faults at
-/// the upsert, and the failure is invisible until the bill arrives. `trading-copilot` learned that the
+/// the upsert, and the failure is invisible until the bill arrives. An earlier system learned that the
 /// expensive way, which is why it is pinned here rather than left to review.
 /// </remarks>
 public sealed class EmbeddingSeamTests : IDisposable

@@ -21,7 +21,7 @@ account. On a prop platform a *funded* account reports `simulated: true` and exe
 while a real payout rides on it — so "it is only the sim account" is not a distinction the wire will make for
 you.
 
-The sibling system, `trading-copilot`, does place orders. It also has a risk gate that sizes every attempt, a
+A sibling system does place orders. It also has a risk gate that sizes every attempt, a
 kill switch that survives restart, an auto-flatten watchdog, and an append-only decision log. Order placement
 is safe there because of roughly a phase and a half of safety machinery around it.
 
@@ -72,7 +72,7 @@ stop would not have. Auto-flatten belongs where the session model and the watchd
 
 - An agent using this server can never accidentally trade. That is the point, and it is what makes the server
   safe to hand a broad set of read tools without auditing each one.
-- Execution requires a second system. Accepted: `trading-copilot` is that system.
+- Execution requires a second system. Accepted: that sibling is that system.
 - A future "propose a trade" tool is still possible — it returns a structured proposal as **data**, and
   something else executes it. That does not weaken this record; the proposal never reaches the wire from here.
 - The CI gate is one more thing to maintain, and it will occasionally be wrong about a false positive. That is

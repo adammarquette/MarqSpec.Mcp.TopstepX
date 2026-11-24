@@ -46,7 +46,7 @@ number every time. Hence a tight absolute scale anchored to worked examples.
 | Task | Score | Why |
 |---|---:|---|
 | Add a row to the ADR index | **1** | Mechanical; wrong is visible immediately |
-| Port ATR and its fixture tests from `trading-copilot` | **2** | Prior art plus its own oracle |
+| Port ATR and its fixture tests from prior art | **2** | Prior art plus its own oracle |
 | Add SMA as a new `IIndicator` | **2** | A known shape, and the tests say whether it is right |
 | Wire the compose stack and `.env.example` | **2** | Fiddly, but failure is loud |
 | The data layer: six entities and their migrations | **3** | Schema decisions are expensive to reverse once rows exist |

@@ -5,8 +5,8 @@ namespace MarqSpec.Mcp.TopstepX.Data.Entities;
 /// </summary>
 /// <remarks>
 /// <para>
-/// This is the one table with no counterpart in <c>trading-copilot</c>, and the reason is worth stating: that
-/// system's backfill polls a fixed watchlist on a timer, so it never faces "an agent asked for an arbitrary
+/// This is the one table with no counterpart in an earlier watchlist poller, and the reason is worth stating: that
+/// poller's backfill uses a fixed watchlist on a timer, so it never faces "an agent asked for an arbitrary
 /// cold range twice in a row". A cache driven by agent queries faces it on every call.
 /// </para>
 /// <para>

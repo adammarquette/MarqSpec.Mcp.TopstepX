@@ -43,7 +43,7 @@ row stranded that way is never re-asked and never heals ([ADR-0011](0011-contrac
 bucket the store holds *with* a contract is never enumerated off-grid: it lacks nothing, and a stored bucket
 closes a coalesced run, so admitting it would undo the saving below.
 
-The model, ported from `trading-copilot`:
+The model, ported from an earlier codebase:
 
 - A **trade date**'s session opens the previous calendar evening at close + maintenance, and closes at the
   session close on the trade date itself — both in **Central wall-clock** time, because that is how the

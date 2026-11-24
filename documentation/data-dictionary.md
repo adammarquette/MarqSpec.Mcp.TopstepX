@@ -30,7 +30,7 @@ lockstep with them in the same PR.
   has an empty answer, which without a contract asserts "empty" on behalf of every contract (gh#504).
 - **`Venue` is part of every market-data key.** The same product on two venues is two series, and a future
   second venue must not silently overwrite the first.
-- **No tenancy.** `trading-copilot` scopes rows to an owner and exempts market data; here there is nothing but
+- **No tenancy.** An earlier system scopes rows to an owner and exempts market data; here there is nothing but
   market data. A tenant filter would hide the market from the operator reading it.
 
 ## §1 `Bars` — the clean-historical system of record
@@ -235,7 +235,7 @@ refuses.
 | `RecordedAt` | `timestamptz` | |
 | `ExpiresAt` | `timestamptz` | Null means never — settled history |
 
-**The one table with no counterpart in `trading-copilot`**, and the reason is instructive: its backfill polls a
+**The one table with no counterpart in that earlier watchlist poller**, and the reason is instructive: its backfill polls a
 fixed watchlist on a timer, so it never faces "an agent asked for an arbitrary cold range twice in a row".
 
 Records that the venue was asked for a range and answered **empty**. Without it, a range the vendor genuinely

@@ -223,7 +223,6 @@ build_repo() {
   D="$FIXTURES/repo"
   mkdir -p "$D"
   git init --quiet --bare "$D/origin.git"
-  git init --quiet --bare "$D/upstream.git"
   git init --quiet "$D/work"
   git -C "$D/work" config user.email selftest@example.invalid
   git -C "$D/work" config user.name "claim self-test"
@@ -268,7 +267,6 @@ run_claim() {
   (
     cd "$D/work" || exit 90
     PATH="$FIXTURES/bin:$PATH" \
-    CLAIM_SH_UPSTREAM_REMOTE="$D/upstream.git" \
       bash "$CLAIM" "$@"
   ) >"$STDOUT_FILE" 2>"$STDERR_FILE" || STATUS=$?
   # Strip the colour escapes before anything matches on the text: a verdict that only differs from prose by
@@ -658,7 +656,7 @@ fi
 # ---------------------------------------------------------------------------
 # 18. THE FORM THE CONTRACTS THEMSELVES RENDER. PR #441's round-3 review: condition 4 forgave a backticked
 #     BRANCH, but `TAKEOVER-ANNOUNCED: <branch>` wrapped as ONE span -- which is exactly what AGENTS.md,
-#     CONTRIBUTING.md, coordinator.md and project-board-workflow.md all write in their markdown source -- was
+#     CONTRIBUTING.md and project-board-workflow.md all write in their markdown source -- was
 #     refused. An agent copies raw markdown, not rendered output, so the documented form announced nothing.
 #     The mirror of advisory 3, and taken for the same reason: fail-closed is still a correct announcement
 #     being ignored.

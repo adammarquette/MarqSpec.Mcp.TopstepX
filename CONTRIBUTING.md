@@ -4,13 +4,10 @@ How we work in this repo. This is the contributor front door; the agent contract
 [`AGENTS.md`](AGENTS.md), and the reasoning behind individual decisions lives in
 [`documentation/adr/`](documentation/adr/).
 
-These practices are shared with
-[trading-copilot](https://github.com/adammarquette/trading-copilot/blob/develop/CONTRIBUTING.md), which is a
-**sibling and not a parent**: this repository is not one of its four submodules, and nothing in it references
-this one. Its agent reaches its own tools through an in-process seam rather than the MCP wire protocol, so this
-server's tool surface is not a contract it consumes either (gh#171). Where the two differ, the difference is
-deliberate and noted below — this repo cuts **versioned releases**: a `v*` tag on `main`, and a **container
-image on GHCR** built from it.
+Parts of this project are developed with AI coding assistants under human review.
+
+This repository cuts **versioned releases**: a `v*` tag on `main`, and a **container
+image on GHCR** built from it. Nothing else builds or pins this repository (gh#171).
 
 ## Issue-first, its one exemption, and the promotion carve-out
 
@@ -190,17 +187,14 @@ backticked branch alone, and the bare form all count, so copying the line out of
 the script's own printed recipe both work. What still defeats this: a live session that never reads its
 issue. Push as you go.
 
-### This repo is one half of a two-repo card
+### Claims live in this repository
 
-Work here is sometimes tracked by an issue in **trading-copilot** — that repo is where execution lives, and much
-of this server's domain layer was distilled from it. Nothing over there builds or pins this repository (gh#171);
-what is shared is the *board*, so a claim and its work can sit in different repositories and checking one gives
-false comfort. [`scripts/claim.sh`](scripts/claim.sh) reads **both** remotes for you. By hand it is:
+A claim is a pushed branch in **this** repository. [`scripts/claim.sh`](scripts/claim.sh) reads this remote.
+By hand it is:
 
 ```bash
 gh pr list --repo adammarquette/MarqSpec.Mcp.TopstepX --state open
 git ls-remote --heads https://github.com/adammarquette/MarqSpec.Mcp.TopstepX
-git ls-remote --heads https://github.com/adammarquette/trading-copilot
 ```
 
 **A clean `main` here is not "nobody started"** — work in review is on a branch, so a clean `main` reads as free
@@ -322,8 +316,7 @@ possible rather than merely discouraged.
    condition that produced that repo's 1.0.3–1.0.5 gap.
 
 **The public surface is the [MCP tool surface](documentation/mcp-tool-catalog.md), not an assembly.** Nothing
-compiles against these projects: `trading-copilot` is a sibling that does not reference this repository, and
-neither does anything else (gh#171). A breaking change is therefore a breaking change to the **tools** the
+compiles against these projects (gh#171). A breaking change is therefore a breaking change to the **tools** the
 published image serves — that needs a major bump **and** an ADR. A changed C# signature is not one. The pull
 request template asks about the **catalogue** rather than about a "public API", because the compile-time consumer
 that phrase named has never existed.

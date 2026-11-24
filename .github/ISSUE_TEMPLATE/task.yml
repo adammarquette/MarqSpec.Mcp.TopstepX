@@ -47,7 +47,7 @@ body:
     id: traceability
     attributes:
       label: Traceability
-      description: PRD requirements, ADRs, or a trading-copilot issue this serves.
-      placeholder: "R-4, ADR-0002, adammarquette/trading-copilot#589"
+      description: PRD requirements or ADRs this serves.
+      placeholder: "R-4, ADR-0002"
     validations:
       required: false

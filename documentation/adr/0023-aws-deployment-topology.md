@@ -1,6 +1,6 @@
 # ADR-0023: The AWS deployment topology — Fargate behind one load balancer per environment, Timescale on EFS, CDK in C#, Cognito as the issuer, OIDC deploys
 
-**Status:** Superseded (2026-10-17) — deployment is Docker via the repository [`Dockerfile`](../../Dockerfile) and GHCR; see [`deployment.md`](../deployment.md). This record is kept for history. · **Date:** 2026-09-06 · **Deciders:** Adam (operator)
+**Status:** Superseded (2026-10-17) — this record describes **a former AWS deployment**. Running an instance is Docker via the repository [`Dockerfile`](../../Dockerfile) and GHCR; see [`deployment.md`](../deployment.md). Stack names and the region below are placeholders. The Cognito custom-domain rule that an ACM certificate must be in `us-east-1` is an AWS product constraint, not this deployment's region. This record is kept for history. · **Date:** 2026-09-06 · **Deciders:** Adam (operator)
 **Relates to:** PRD `R-5.1`, `R-7.1` · [architecture](../architecture.md) *Transports* ·
 the infrastructure under [ADR-0021](0021-a-non-loopback-instance-is-supported.md), which decided the shape
 and named this record as the one that carries it · rests on
@@ -289,7 +289,7 @@ client ids and `Mcp__OAuth__ResourceUrl=https://topstepx-mcp.<root>/mcp`, and **
 `auth.<root>` on the wildcard certificate. A Cognito custom domain needs an ACM certificate in **`us-east-1`**
 whatever region the pool is in, plus an `A` record already present at the parent — a cross-region
 certificate this stack cannot mint in-line unless the chosen region *is* `us-east-1`. The custom domain is
-an option this record names, not the plan; the region is `us-east-1` (gh#519) so it could be taken, and
+an option this record names, not the plan; the chosen region was that certificate's region (gh#519) so it could be taken, and
 it was not — no pool exists yet.
 
 Cognito has no Dynamic Client Registration. That is accepted on ADR-0021's second assumption — Anthropic's
@@ -445,7 +445,7 @@ its own reason, not a drift.
   entries; gh#520's first `aws-production` approval either follows a closed verdict or
   is recorded here, on a date, as having preceded it.
 - **Cost is an order of magnitude, checked by the bill.** gh#527's estimate basis is roughly 95 USD per
-  environment per month, priced on `us-east-1` on-demand as a basis and not as a chosen region — the region
+  environment per month, priced on the region's on-demand list as a basis and not as a chosen region — the region
   is still gh#519's — for two Fargate services, one ALB with its two public IPv4 addresses, EFS Elastic
   throughput, logs and secrets. Whether any task carries an address of its own is the outbound fork in the
   decision log, and its cost lands in whichever entry closes it. That is before WAF (gh#528, about 5 USD
@@ -465,7 +465,7 @@ its own reason, not a drift.
   the new environment name.
 - **The hostname spelling is `staging.`**, confirmed on 2026-09-09 (gh#519). Public NS does not yet
   match the Route 53 zone, so the staging EnvironmentStack has not been deployed.
-- **The region is `us-east-1`**, chosen on 2026-09-09 (gh#519). Decision 9's custom domain stays unused
+- **The region was one region**, chosen on 2026-09-09 (gh#519). Decision 9's custom domain stays unused
   (prefix domain) until an EnvironmentStack exists.
 - **The platform contract's "How the pipeline is shaped" still says *there is no deployment here, only a
   published image*, and that sentence is true today.** It changes in the same pull request as the deploy jobs
@@ -559,7 +559,7 @@ writes, stack does not own — by deleting the two resources and restoring the p
 gh#517 built decision 9 in `EnvironmentStack`, and this entry records the five things a reader of decision 9
 would otherwise have to reconstruct from the template.
 
-**What exists, per environment.** A user pool `topstepx-mcp-<env>` — self-sign-up off, email sign-in,
+**What exists, per environment.** A user pool `<environment-stack>` — self-sign-up off, email sign-in,
 MFA optional with a TOTP app as the only second factor (no SMS, so no SNS role appears), account recovery
 by email, the `ESSENTIALS` feature plan named because it is the one refresh-token rotation needs and is
 Cognito's own default for a new pool, `RETAIN` on both halves. The resource server `topstepx-mcp` with the
@@ -575,7 +575,7 @@ client: confidential, `client_credentials` alone on `topstepx-mcp/read`, no call
 `ExplicitAuthFlows: [ALLOW_REFRESH_TOKEN_AUTH]` and nothing else** — no SRP, no username/password, no custom
 challenge — set on the L1 because the L2 omits the property when every flow is off, and an omitted property
 is Cognito's default of SRP plus custom plus refresh. The hosted UI is the **Cognito prefix domain**
-`topstepx-mcp-<env>.auth.<region>.amazoncognito.com`, as decision 9 defaults; the custom domain was not
+`<environment-stack>.auth.<region>.amazoncognito.com`, as decision 9 defaults; the custom domain was not
 taken, because the region is still gh#519's. Four outputs — `OAuthIssuer`, `ClaudeConnectorClientId`,
 `DeployCheckClientId`, `HostedUiBaseUrl` — and none names a secret.
 
@@ -687,7 +687,7 @@ caught that; gh#586's review measured it and it now permits a `*` nowhere but th
 `:ref:refs/tags/` subject. The role-name equivalence in the same test is what refuses a third role at all,
 so relaxing that count is what would leave these per-subject rules reading alone.
 
-**The read-back**, once gh#519 has deployed `topstepx-mcp-github-oidc`:
+**The read-back**, once gh#519 has deployed `<oidc-stack>`:
 
 ```console
 $ aws iam get-role --role-name GitHubDeploy-staging --query Role.AssumeRolePolicyDocument
@@ -917,7 +917,7 @@ public NS, not the spelling.
 gh#527. Decisions above are unchanged; this records where the budget lives, the default amount, the
 notification thresholds, the two tag keys, and the account setting that activates them for Cost Explorer.
 
-- **Budget home:** `GitHubOidcStack` (`topstepx-mcp-github-oidc`), not `EnvironmentStack`. One monthly
+- **Budget home:** `GitHubOidcStack` (`<oidc-stack>`), not `EnvironmentStack`. One monthly
   `AWS::Budgets::Budget` for the account; two environment stacks would have synthesised two budgets.
 - **Amount:** CloudFormation parameter `BudgetAmount`, type `Number`, default **300** USD. Notifications at
   **50 / 80 / 100 % of ACTUAL** and **100 % of FORECASTED**, all to parameter `AlertsEmail` (no default —
@@ -945,7 +945,7 @@ stack has exactly one monthly COST budget whose amount and subscriber Ref parame
 
 gh#526. Decisions above are unchanged; this records what pages, what does not, and the thresholds.
 
-- **Topic:** `topstepx-mcp-<env>-alerts` on each `EnvironmentStack`, email subscription whose endpoint
+- **Topic:** `<environment-stack>-alerts` on each `EnvironmentStack`, email subscription whose endpoint
   is parameter `AlertsEmail` (no default — a default would be a literal in a public repository). The
   OIDC stack's budget `AlertsEmail` is a different parameter on a different stack; pass the same
   address on each deploy. #522's "no dump in 26 h" alarm publishes here.
@@ -992,9 +992,9 @@ ship gate, not this card's (AC split 2026-09-08).
   exclusions yet — JSON-RPC bodies can trip SQLi/XSS and body-size rules of the common set, and inventing
   an exclusion without a week of staging logs would be a hole dressed as hygiene. The exclusion list
   (possibly empty) and the log line that justified each land here when #519 quotes them.
-- **Logging:** CloudWatch log group `aws-waf-logs-topstepx-mcp-<env>`, 30 days, `RETAIN`. The ALB
+- **Logging:** CloudWatch log group `aws-waf-logs-<environment-stack>`, 30 days, `RETAIN`. The ALB
   access-log bucket cannot be the destination: WAF requires the name prefix `aws-waf-logs-`.
-- **Cost, per environment, us-east-1 list as a basis not a choice:** about **5 USD per ACL** + **1 USD
+- **Cost, per environment, that region's list as a basis not a choice:** about **5 USD per ACL** + **1 USD
   per rule** + **0.60 USD per million requests**. Three rules (one rate-based, two managed groups) so
   roughly 8 USD / month / environment before request charges. gh#527's 95 USD basis did not include this;
   the budget default of 300 USD still covers both environments with room.
@@ -1013,7 +1013,7 @@ production; logs go to a 30-day `aws-waf-logs-*` group. Suite **203** at this en
 
 gh#519. Decisions above are unchanged except where this entry names them.
 
-**Region: `us-east-1`.** The account had no stacks in `us-east-1` or `us-west-2`. The cost basis, the
+**Region: one region.** The account had no stacks in that region or in a second candidate region. The cost basis, the
 `cdk.json` placeholder, and the Cognito custom-domain option (a `us-east-1` ACM certificate) all already
 named this region. It is now a choice, not a basis. Custom domain was **not** taken: no EnvironmentStack,
 so no pool.
@@ -1028,9 +1028,9 @@ Public NS: the apex's existing public nameservers, which were not those four. Th
 into an apex nobody queries. Quoted on #519. The maintainer cuts DNS over; this card does not guess
 which of Cloudflare or Route 53 should win.
 
-**What did deploy.** `cdk bootstrap aws://<account-id>/us-east-1`. `cdk deploy topstepx-mcp-github-oidc`
+**What did deploy.** `cdk bootstrap aws://<account-id>/<region>`. `cdk deploy <oidc-stack>`
 (AlertsEmail as a parameter, not a tracked literal). Stack
-`arn:aws:cloudformation:us-east-1:<account-id>:stack/topstepx-mcp-github-oidc/<stack-id>`.
+`arn:aws:cloudformation:<region>:<account-id>:stack/<oidc-stack>/<stack-id>`.
 `aws-production` GitHub environment created create-only; read-back `["User:adammarquette"]`.
 
 **OIDC thumbprint is IAM fill-in, not drift.** `GetOpenIDConnectProvider` answered
@@ -1065,12 +1065,12 @@ do not mint them out of band.
 gh#519. Decisions above are unchanged.
 
 **Public hosted zone `<zone-id>`** for `staging.example.com.` in account `<account-id>`
-(us-east-1). Not private. Four NS: `<ns-1>`, `<ns-2>`,
+(the former deployment's region). Not private. Four NS: `<ns-1>`, `<ns-2>`,
 `<ns-3>`, `<ns-4>`. Quoted on #519 for the Cloudflare paste (Type NS,
 Name `staging`). Replace the current four (apex NS on `<apex-zone-id>`) with these.
 
 **EnvironmentStack still not deployed.** ACM would hang until Cloudflare answers those four for
-`staging.example.com`. Do not `cdk deploy` `topstepx-mcp-staging`. Production stays undeployed.
+`staging.example.com`. Do not `cdk deploy` `<staging-stack>`. Production stays undeployed.
 
 ## Update (2026-09-09) — staging looks up the existing zone; do not create a second one
 
@@ -1087,7 +1087,7 @@ certificate-behind-delegation edge cannot rot; the app's staging stack must not 
 **Outbound path** is still the 2026-09-06 fork. This deploy passes `-c outbound=PublicIpPerTask` as
 synth context only — the last #519 session's choice for the OIDC stack — not a `Program.cs` literal.
 
-**Cognito rotation vs `ALLOW_REFRESH_TOKEN_AUTH`.** The first `cdk deploy topstepx-mcp-staging`
+**Cognito rotation vs `ALLOW_REFRESH_TOKEN_AUTH`.** The first `cdk deploy <staging-stack>`
 (2026-09-09) failed `InvalidRequest` on `ClaudeConnectorClient`: *"ALLOW_REFRESH_TOKEN_AUTH is not
 a permitted ExplicitAuthFlow when refresh token rotation is enabled."* AWS documentation agrees
 (refresh tokens / rotation). The connector keeps rotation and pins `ExplicitAuthFlows` to the empty
@@ -1106,16 +1106,16 @@ Maintainer raises the quota; this card does not invent a number.
 
 Release **`v0.4.0`** (`01a8fdf`, digest
 `sha256:8f388466165056252ec309bea65563e22a168671764f2ba8654c5aa335f03ce2`) ships gh#512 OAuth.
-gh#519 deleted `topstepx-mcp-staging` (`CREATE_FAILED` from the v0.3.x image mismatch), removed
+gh#519 deleted `<staging-stack>` (`CREATE_FAILED` from the v0.3.x image mismatch), removed
 **RETAIN** orphans (six secret shells, server/postgres log groups, EFS + access point, ALB access-log
-bucket, backup vault, Cognito pool `us-east-1_PCefbBDnZ`, and the WAF log group
-`aws-waf-logs-topstepx-mcp-staging`), and redeployed with `ZoneMode.Lookup` of
+bucket, backup vault, Cognito pool `<retired-user-pool-id>`, and the WAF log group
+`aws-waf-logs-<staging-stack>`), and redeployed with `ZoneMode.Lookup` of
 `<zone-id>` unchanged.
 
 Postgres shell filled during `CREATE_IN_PROGRESS`. Stack **`CREATE_COMPLETE`**; postgres **1/1**,
 server **1/1** on `0.4.0`. **`GET /health` → 200** (`{"status":"ok","store":"available",…}`); a
 `HEAD` probe still hits the OAuth gate (**401** — ALB uses `GET`). ACM `*.staging.example.com`
-**ISSUED**; Route 53 alias **A → ALB**. Cognito pool **`us-east-1_lVKjeSrgi`**. IdP discovery:
+**ISSUED**; Route 53 alias **A → ALB**. Cognito pool **`<user-pool-id>`**. IdP discovery:
 `token_endpoint_auth_methods_supported` = `client_secret_basic, client_secret_post`;
 **`code_challenge_methods_supported` still absent** (S256 not advertised); no RFC 8707 `resource`
 key. Protected-resource metadata at `/.well-known/oauth-protected-resource/mcp` names the Cognito
@@ -1128,7 +1128,7 @@ gh#519 filled all six staging shells (ARNs and client ids in the runbook, never 
 18:51 UTC addendum on the card itemizes every expected key as nonempty (`postgres`
 password/connectionString, `projectx` apiKey/apiSecret, `cohere` apiKey, `claude-connector`
 and `deploy-check` clientId/clientSecret, `otel` endpoint/authorization). Same quote:
-`list-users` on `us-east-1_lVKjeSrgi` is count **1**, `UserStatus` **CONFIRMED** (no
+`list-users` on `<user-pool-id>` is count **1**, `UserStatus` **CONFIRMED** (no
 username or email). `scripts/check-deployment.sh` is `client_credentials` and does not prove
 a user. Force-new-deployment 12:06 CDT so the task re-read every `valueFrom`.
 `scripts/check-deployment.sh` 0.4.0 exit 0 (`tools/list` 22) proves `deploy-check` only.
@@ -1146,7 +1146,7 @@ logs against Cowork traffic has not elapsed.
 ## Update (2026-09-09) — quota 64, delete+redeploy, `CREATE_FAILED`
 
 Fargate On-Demand vCPU quota `L-3032A538` is **64** (was **0** on the first deploy). The first
-`topstepx-mcp-staging` stack then rolled to **`ROLLBACK_COMPLETE`** — not updatable. gh#519 deleted
+`<staging-stack>` stack then rolled to **`ROLLBACK_COMPLETE`** — not updatable. gh#519 deleted
 it, removed **RETAIN** orphans (six secret shells, three log groups, EFS + access point, ALB
 access-log bucket, backup vault, Cognito pool), and redeployed with `ZoneMode.Lookup` of
 `<zone-id>` unchanged.
@@ -1162,7 +1162,7 @@ maintainer fills the remaining shells.
 ## Update (2026-09-10) — production describe is granted; a failed look is not a first create
 
 gh#520's production deploy starts an on-demand EFS backup by reading the filesystem id off
-`topstepx-mcp-production` with `cloudformation describe-stack-resources`. The first draft
+`<production-stack>` with `cloudformation describe-stack-resources`. The first draft
 treated a failed describe as "no EFS yet" (`|| efs_id=""` → `NO BACKUP`) and continued.
 `GitHubDeploy-production` could `backup:StartBackupJob` and could not describe stack
 resources, so every live run was AccessDenied and every live run skipped the snapshot.
@@ -1172,9 +1172,9 @@ The script now assigns the describe and checks its status. CloudFormation saying
 does not exist, or a successful look that names no `AWS::EFS::FileSystem`, is still a first
 create and is named. Any other failure — AccessDenied included — stops the deploy. The
 production role is granted `cloudformation:DescribeStackResources` on
-`stack/topstepx-mcp-production/*` so a live run can tell those apart; staging is not. The
+`stack/<production-stack>/*` so a live run can tell those apart; staging is not. The
 OIDC stack is already in the account — the grant takes effect on the next `cdk deploy` of
-`topstepx-mcp-github-oidc` (maintainer). Until then a production run fails loud on the look
+`<oidc-stack>` (maintainer). Until then a production run fails loud on the look
 rather than skipping the snapshot.
 
 Assisted-by: Cursor Grok 4.6 (Cursor)
@@ -1199,9 +1199,9 @@ Any one crossing files an EC2 + EBS card with the number that triggered it. All 
 EFS stays. Production is not approved by this entry.
 
 **Measurement (after the threshold), staging `0.4.0`, 2026-09-10, quoted on #525.** EFS
-`fs-0ed26bca5aabea73e`. Postgres 17.10. Cluster `topstepx-mcp-staging`. Zone
+`<efs-id>`. Postgres 17.10. Cluster `<staging-stack>`. Zone
 `<zone-id>` unchanged. `MarketData__RecordTape` stayed `false` (`describe-task-definition`
-`topstepx-mcp-staging-server:6`). No `aws-production` approval. No EC2 + EBS card — the tape
+`<staging-server-task>:6`). No `aws-production` approval. No EC2 + EBS card — the tape
 triggers have no session numbers yet, and nothing measured today crossed PercentIOLimit.
 
 - **Portable pgbench** (ECS Exec, dedicated `pgbench_525`, dropped afterwards). `pgbench -i -s 10`
@@ -1209,7 +1209,7 @@ triggers have no session numbers yet, and nothing measured today crossed Percent
   10, simple, 4 clients, 1 thread, **8609** txns, 0 failed, **latency average 27.862 ms**, initial
   connection 49.928 ms, **tps 143.563**. Default `pgbench` does not print p99; this average is not
   the Trades-insert trigger above.
-- **EFS over that window** (1-minute Maximum / Sum, `us-east-1`). `PercentIOLimit` peak **0.133 %**
+- **EFS over that window** (1-minute Maximum / Sum, the former deployment's region). `PercentIOLimit` peak **0.133 %**
   at 14:26 CDT (pgbench run); **0.172 %** at 14:28 CDT (first replacement). `TotalIOBytes` Sum
   **714 224 952** (14:25, init), **203 380 296** (14:26), **36 249 696** (14:27). `MeteredIOBytes`
   Sum **585 811 998** / **139 774 587** / **36 249 696** on the same three minutes. Far under 80 %.
@@ -1269,7 +1269,7 @@ A first-month billed figure is still missing (account stood up 2026-09-09).
 ECS refused the first staging deploy of decision 10: *A dependency container with SUCCESS or
 COMPLETE condition cannot be an essential container.* The dump container exits 0 after writing
 `/dump/topstepx_mcp.dump`; upload `dependsOn` that SUCCESS and is the essential container. Dump
-is therefore `Essential=false`. Measured 2026-09-10 against `topstepx-mcp-staging` (stack returned
+is therefore `Essential=false`. Measured 2026-09-10 against `<staging-stack>` (stack returned
 `UPDATE_ROLLBACK_COMPLETE`). Zone `<zone-id>` unchanged. `RecordTape` and the server
 image were not touched.
 
@@ -1343,9 +1343,9 @@ This entry is the measurement of the window that actually ran. It does not inven
 
 **Window, staging `0.5.0-rc.1`**, digest
 `sha256:5ed69b53ec37e001f76fdb797c6e9b312a7742bae19a73cdc04a6bff5d8123c9`.
-`ProjectXDataTier=Simulated`. Cluster `topstepx-mcp-staging`. EFS `fs-0ed26bca5aabea73e`.
+`ProjectXDataTier=Simulated`. Cluster `<staging-stack>`. EFS `<efs-id>`.
 Postgres task `8bf520ccd7414b67ac1db65171c55ecb` (family `:6`). Server task
-`73200669fea841feabf2d2a3507acda3` on `topstepx-mcp-staging-server:11` with
+`73200669fea841feabf2d2a3507acda3` on `<staging-server-task>:11` with
 `MarketData__RecordTape=true` from **2026-09-11 16:38:14.648333Z / 11:38:14 CT**. Planned
 end was cash close **15:00 CT / 20:00Z**. Zone `<zone-id>` unchanged. No
 `aws-production` approval.
@@ -1387,7 +1387,7 @@ The first real compression on this hypertable is **unmeasured**. This number is 
 
 **`RecordTape` at quote time.** CloudFormation `--use-previous-template` at 23:32Z
 flipped only `RecordTape=false` (other parameters `UsePreviousValue`). Quoted
-`aws ecs describe-task-definition --task-definition topstepx-mcp-staging-server:12`:
+`aws ecs describe-task-definition --task-definition <staging-server-task>:12`:
 
 ```
 Deployment__Version = 0.5.0-rc.1
@@ -1433,13 +1433,13 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 
 The 2026-09-11 entry said the next staging deploy that picks up the default starts
 listening. `v0.5.0` / `sha256:ea0b23b998edd9be2bdc8ac7924163d2ed98bb4641ce39ff7cdac71ac5065732`
-landed on `topstepx-mcp-staging-server:13` with CloudFormation `RecordTape=false`:
+landed on `<staging-server-task>:13` with CloudFormation `RecordTape=false`:
 `deploy-environment.sh` passes only `ImageDigest` and `Version`, so the 23:32Z
 value was retained. The CDK `RecordTapeDefault` was already `true`.
 
 2026-09-12 `update-stack --use-previous-template` set `RecordTape=true` and kept
 the same digest and `Version=0.5.0`. Quoted
-`aws ecs describe-task-definition --task-definition topstepx-mcp-staging-server:14`:
+`aws ecs describe-task-definition --task-definition <staging-server-task>:14`:
 
 ```
 Deployment__Version = 0.5.0
@@ -1458,7 +1458,7 @@ Assisted-by: Cursor Grok 4.6 (Cursor)
 
 - gh#516, gh#517, gh#518 built decisions 7, 9 and 8; gh#529 gates decision 4's rule. gh#516 also
   still owns the outbound-path fork with the maintainer.
-- gh#519 stood the account up, confirmed `staging.`, chose `us-east-1`, created public zone
+- gh#519 stood the account up, confirmed `staging.`, chose one region, created public zone
   `<zone-id>`, swapped Cloudflare NS onto it, and changed staging to `ZoneMode.Lookup`
   of that zone. Staging runs **`v0.4.0`** (2026-09-10 entries). Shells filled (18:51 UTC key-presence
   quote), one `CONFIRMED` Cognito user (same quote), step 6, SNS confirm (18:51 UTC), and the

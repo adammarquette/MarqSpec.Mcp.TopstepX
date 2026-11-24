@@ -6,10 +6,8 @@
   not enough on its own (extra `Related to` lines next to a `Closes #N` are fine): if this PR leaves its issue
   open, replace the line below with `Part of #N` plus a line `Issue-stays-open: <why>`.
 
-  Every section you write or edit ends with `Assisted-by: <model>:<version>` — the same form as the
-  commit trailer. Replace the placeholder on sections you wrote; delete it on sections you did not. A later
-  rewrite replaces the line. Comments and reviews are not this file: write the trailer on the comment itself.
-  A single footer on the PR is not a substitute — more than one tool can write the same PR.
+  Parts of this project are developed with AI coding assistants under human review. An `Assisted-by:` line is
+  optional. Do not sign a section with an agent name.
 -->
 
 Closes #
@@ -17,8 +15,6 @@ Closes #
 ## What changed and why
 
 <!-- The why, not a restatement of the diff. A reviewer reads this to know what question the change answers. -->
-
-Assisted-by: <model>:<version>
 
 ## How it was verified
 
@@ -29,8 +25,6 @@ Assisted-by: <model>:<version>
 - [ ] Unit tests green
 - [ ] Integration tests green — Testcontainers Postgres, `--filter "Category!=Live"`, no credentials required
 
-Assisted-by: <model>:<version>
-
 ## Checklist
 
 - [ ] **Test-first** — the new test failed before the implementation; a bug fix reproduces the bug first
@@ -38,10 +32,8 @@ Assisted-by: <model>:<version>
       catalogue is updated *in this PR*, and a **breaking** change to the tools that catalogue documents carries
       an ADR of its own
 - [ ] **No secrets** — nothing logged, nothing tracked, no credential-shaped value in a committed file
-- [ ] **PR documentation** — every body section you wrote, and every comment or review you add, carries
-      `Assisted-by: <model>:<version>`. A single footer on the PR is not a substitute
-- [ ] **Commits** are Conventional; AI-assisted commits end with an `Assisted-by: <model>:<version>` trailer as
-      CONTRIBUTING describes ([*AI-assisted commits*](../CONTRIBUTING.md#ai-assisted-commits)). `Co-Authored-By` isn't required
+- [ ] **Commits** are Conventional. An `Assisted-by:` trailer is optional; if present it must match the shape
+      [CONTRIBUTING](../CONTRIBUTING.md#ai-assisted-commits) describes. Do not sign with an agent name.
 - [ ] History is curated into units of work (this repo rebase-merges; squash is disabled)
 
 ## Order-path questions — answer if this touches transport, resilience, or orders
@@ -52,5 +44,3 @@ Assisted-by: <model>:<version>
 - [ ] A timeout or cancellation is treated as an **unknown** outcome, not a failure — no path reports
       "not placed" for a request that may be live.
 - [ ] New wire enum values are handled exhaustively; no zero-value default is permissive.
-
-Assisted-by: <model>:<version>

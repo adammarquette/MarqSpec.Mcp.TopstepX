@@ -9,16 +9,9 @@ Role- and subtree-specific rules live in their own contracts, so they cost conte
 |---|---|---|
 | writing product code or unit tests | [`MarqSpec.Mcp.TopstepX/AGENTS.md`](MarqSpec.Mcp.TopstepX/AGENTS.md) — Coding | on your first read of a file there |
 | writing integration tests | [`IntegrationTests/AGENTS.md`](MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md) — QA | on your first read in that project |
-| **reviewing any change** | [`agents/code-reviewer.md`](documentation/agents/code-reviewer.md) | **open it yourself** |
-| **touching CI/CD, the image, compose, or deploy** | [`agents/platform.md`](documentation/agents/platform.md) | **open it yourself** |
-| **assigning work from the board, or driving a task to approval** | [`agents/coordinator.md`](documentation/agents/coordinator.md) | **open it yourself** |
 
 The subtree contracts load by directory proximity — **lazily, when you first read a file there, not at session
-start**. The role contracts follow *what you are doing* rather than where a file sits, and never auto-load.
-**Wearing one of those hats without opening its contract is the most common way agents get a repo wrong.**
-They also differ sharply in what they cost to read, and the links above do not say so: each carries a
-measured `~tok` in [`agents/README.md`](documentation/agents/README.md). Check it before you open one
-(gh#178).
+start**. Review, CI/CD and board dispatch follow this file and [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 > Each `AGENTS.md` has a one-line `CLAUDE.md` beside it holding `@AGENTS.md`. **Those shims are load-bearing** —
 > Claude Code reads `CLAUDE.md`, not `AGENTS.md`. Deleting one as "redundant" silently unloads that contract.
@@ -107,10 +100,9 @@ it before starting, and add dated entries only when nothing formal fits.
   one. Epics decompose into sub-issues. A thin issue is a defect — the next
   agent rebuilds context from these fields.
   Detail: [board workflow](documentation/project-board-workflow.md).
-- **Commits:** Conventional Commits. AI-assisted commits end with an `Assisted-by:` trailer in the form
-  CONTRIBUTING describes (see [*AI-assisted commits*](CONTRIBUTING.md#ai-assisted-commits)). `Co-Authored-By`
-  isn't required. **PR documentation** carries the `Assisted-by:` line on every body section, comment
-  and review — more than one tool can write the same PR. Full type list: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- **Commits:** Conventional Commits. An `Assisted-by:` trailer is optional; when present it follows
+  [*AI assistance*](CONTRIBUTING.md#ai-assisted-commits). Full type list: [`CONTRIBUTING.md`](CONTRIBUTING.md).
+  Parts of this project are developed with AI coding assistants under human review.
 - **Branch off `develop` and PR back into it.** `develop` is the sole integration branch, never a workspace.
   Promotion is one-way with one source per step: `staging` ← `develop`, `main` ← `staging`. Never branch off or
   PR into `main`. Name branches `<type>/<work-item-id>_<title>`. **A release is cut on `main`, and the tag is

@@ -138,7 +138,7 @@ has no in-band answer to *"which release is this"*, and is worse off than with n
 looks like one.
 
 **The `fetch-depth: 0` on `ci.yml`'s `image` and `release.yml`'s `publish` stays, and not for MinVer.**
-Re-derived per job against the question the [platform contract](../agents/platform.md) says to ask — *does
+Re-derived per job against the question *does
 this job read git history?* — rather than *does it build*: `build-test` and `integration-test` (`ci.yml`) and
 `analyze` (`codeql.yml`) run `dotnet` on the runner and do stamp an assembly from tag history. The first two
 need the depth; `analyze`'s is build **parity** rather than need, as that contract and `codeql.yml`'s own

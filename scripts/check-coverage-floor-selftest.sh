@@ -88,7 +88,7 @@
 #   | **the floor `ci.yml` DEPLOYS is the ratcheted one** | `deployed-floor/at-or-above-the-ratchet` |
 #   | **the deployed floor rejects a tier that ran nothing** | `deployed-floor/rejects-a-dead-tier` |
 #
-# MUTATED BEFORE IT WAS BELIEVED (platform.md: run a text-matching gate before believing its diagnostics).
+# MUTATED BEFORE IT WAS BELIEVED (run a text-matching gate before believing its diagnostics).
 # Thirteen mutations, each run against this suite unchanged, on Python 3.11.15. Ten of the gate, and THREE OF
 # `ci.yml` -- because the last three are the only ones that exercise what this suite says about the
 # deployment rather than about the script:
@@ -113,7 +113,7 @@
 # for a different reason. A suite asserting only "it failed" would have passed both.
 #
 # And the eleventh row is the one this suite shipped for review WITHOUT (PR #436, round one). It was 13/13
-# green with the old floor deployed, and three separate comments -- here, in `ci.yml` and in `platform.md` --
+# green with the old floor deployed, and the comments beside the floor -- here and in `ci.yml` --
 # said walking the floor back would redden this step. It would not have. **A claim about failing is a claim
 # that has to be run, and the run has to touch the thing the claim is about.**
 #
@@ -140,7 +140,7 @@ if [ ! -f "$GATE" ]; then
 fi
 
 # Resolve an interpreter that RUNS, not one that merely resolves. See the header: the Windows Store alias is
-# on PATH and exits 49. Assigned on its own line and checked, per documentation/agents/platform.md.
+# on PATH and exits 49. Assigned on its own line and checked.
 PY=""
 for candidate in "${PYTHON:-}" python3 python; do
   [ -n "$candidate" ] || continue
@@ -197,7 +197,7 @@ mkreport() {
     if [ "$hits" -gt 0 ]; then covered=$((covered + count)); fi
   done
   # `if`, not `[ … ] && …`: a false test as a whole statement carries exit 1 into `set -e`, which would
-  # abort the builder on every fixture that overrides a total. platform.md's first constraint, in miniature.
+  # abort the builder on every fixture that overrides a total. The first constraint, in miniature.
   if [ "$root_valid" = auto ]; then root_valid="$valid"; fi
   if [ "$root_covered" = auto ]; then root_covered="$covered"; fi
 
@@ -395,8 +395,8 @@ expect_green() {
 
 # Reads MINIMUM_LINE_COVERAGE out of the workflow and leaves it in DEPLOYED_FLOOR, or reports the fault and
 # leaves it empty. A READ THAT DECIDES A VERDICT, so it is assigned on its own line and its status checked,
-# and "no assignment in the file" (grep 1) is told apart from "could not look" (grep 2+) -- platform.md's
-# first constraint. `MINIMUM_LINE_COVERAGE` appears a dozen times in that file's PROSE; only the YAML
+# and "no assignment in the file" (grep 1) is told apart from "could not look" (grep 2+).
+# `MINIMUM_LINE_COVERAGE` appears a dozen times in that file's PROSE; only the YAML
 # assignment shape matches, and finding more than one is itself a fault, because two places stating one
 # number are two numbers.
 DEPLOYED_FLOOR=""

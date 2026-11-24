@@ -1,8 +1,6 @@
 # Review checklist — MarqSpec.Mcp.TopstepX
 
-What to weigh when reviewing a change here. This file is the **substantive** checklist; the
-[Code Reviewer contract](../documentation/agents/code-reviewer.md) owns *how* to report, and points here for
-*what* to look for. It stays at this path because GitHub's Copilot reviewer reads it.
+What to weigh when reviewing a change here. GitHub's Copilot reviewer reads this file.
 
 ## Lead with the worst failure this repo can have
 

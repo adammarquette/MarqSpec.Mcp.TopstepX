@@ -302,8 +302,8 @@ jobs:
       # it as an empty diff.
       #
       # It rides in this job because `build & unit tests` is already required on all three rungs — no
-      # ruleset write, and `image`'s and `coverage`'s `needs:` lists are untouched, so the skip argument
-      # in documentation/agents/platform.md is unchanged. Moving it to a job of its own would mean adding
+      # ruleset write, and `image`'s and `coverage`'s `needs:` lists are untouched. Moving it to a job
+      # of its own would mean adding
       # a required context by hand, and a context nobody adds only ever reports (gh#26).
       - name: New migrations are additive, or acknowledged in the file
         run: |
@@ -472,8 +472,8 @@ jobs:
   # scripts/check-coverage-floor.py's header -- beside the floor, so the next reader meets them where the
   # number is configured rather than in a pull-request body.
   #
-  # `needs:` GREW A JOB, SO THE SKIP ARGUMENT IS RE-RUN HERE, per documentation/agents/platform.md's rule
-  # that the argument is a property of the `needs:` list rather than of the job. GitHub counts a SKIPPED
+  # `needs:` GREW A JOB, SO THE SKIP ARGUMENT IS RE-RUN HERE. The argument is a property of the `needs:`
+  # list rather than of the job. GitHub counts a SKIPPED
   # required check as satisfied, so a downstream required job is only safe while it cannot be skipped with
   # everything blocking green. `coverage` now needs `build-test` and `integration-test`, which report
   # `build & unit tests` and `integration tests`; BOTH are themselves required contexts on all three rungs,
@@ -546,7 +546,7 @@ jobs:
     steps:
       # The gate is a tracked script rather than an inline `shell: python3 {0}` step since gh#431, so this
       # job now needs the tree. NO `fetch-depth: 0`: it installs no SDK, builds nothing and reads no git
-      # history, which is platform.md's actual test -- MinVer is not in play here.
+      # history, which is the question the job is there to answer -- MinVer is not in play here.
       - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v8

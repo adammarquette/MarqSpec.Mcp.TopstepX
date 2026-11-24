@@ -21,7 +21,7 @@ root=$(git -C "$work" rev-parse HEAD)
 
 POST=2026-10-25T06:00:00-05:00   # window 1 (interim rule)
 POST2=2026-10-26T12:00:00-05:00  # window 2 (current rule)
-GOOD_M='Assisted-by: grok-bot:4.2'
+GOOD_M='Assisted-by: example-model:4.2'
 PRE=2026-10-20T12:00:00-05:00
 GOOD_A='Assisted-by: Grok Bot (Cursor)'
 GOOD_C='Co-Authored-By: Grok Bot <cursoragent@cursor.com>'
@@ -140,26 +140,26 @@ expect_green "w2: a malformed Co-Authored-By is not inspected" "1 checked, 0 ski
 commit "$POST2" "$POST2" "$(printf 'feat: x\n\n%s\n%s' "$GOOD_A" "$GOOD_C")"
 expect_red "w2: interim 'Grok Bot (Cursor)' form fails" "[window 2 (authored >= 2026-10-25 12:36 CDT)]: malformed 'Assisted-by: Grok Bot (Cursor)'"
 
-commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: grok-bot')"
-expect_red "w2: missing version fails" "malformed 'Assisted-by: grok-bot'"
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: example-model')"
+expect_red "w2: missing version fails" "malformed 'Assisted-by: example-model'"
 
-commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: grok-bot:')"
-expect_red "w2: empty version fails" "malformed 'Assisted-by: grok-bot:'"
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: example-model:')"
+expect_red "w2: empty version fails" "malformed 'Assisted-by: example-model:'"
 
 commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: :4.2')"
 expect_red "w2: empty name fails" "malformed 'Assisted-by: :4.2'"
 
-commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: grok-bot:4 2')"
-expect_red "w2: version with a space fails" "malformed 'Assisted-by: grok-bot:4 2'"
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: example-model:4 2')"
+expect_red "w2: version with a space fails" "malformed 'Assisted-by: example-model:4 2'"
 
 commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by:\nSigned-off-by: s <s@x.y>')"
 expect_red "w2: empty value fails" "malformed 'Assisted-by:"
 
-commit "$POST2" "$POST2" "$(printf 'feat: x\n\nbody\n\nAssisted-by: grok-bot:sgt-squash')"
-expect_green "w2: Assisted-by: grok-bot:sgt-squash passes" ", window 2"
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nbody\n\nAssisted-by: example-model:1.0')"
+expect_green "w2: Assisted-by: example-model:1.0 passes" ", window 2"
 
-commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: grok-bot:sgt-squash')"
-expect_green "w2: grok-bot:sgt-squash with no Co-Authored-By passes" "1 checked, 0 skipped"
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: example-model:1.0')"
+expect_green "w2: example-model:1.0 with no Co-Authored-By passes" "1 checked, 0 skipped"
 
 commit "$POST2" "$POST2" "$(printf 'feat: x\n\nAssisted-by: Example-Model:1.2.3')"
 expect_red "w2: the CONTRIBUTING example (any case) is rejected" "copied the CONTRIBUTING example"
@@ -167,7 +167,7 @@ expect_red "w2: the CONTRIBUTING example (any case) is rejected" "copied the CON
 commit "$POST2" "$POST2" "$(printf 'feat: x\n\nassisted-by: Grok Bot (Cursor)')"
 expect_red "w2: lowercase key is enforced" "malformed 'Assisted-by: Grok Bot (Cursor)'"
 
-commit "$POST2" "$POST2" "$(printf 'feat: x\n\nassisted-by: grok-bot:4.2')"
+commit "$POST2" "$POST2" "$(printf 'feat: x\n\nassisted-by: example-model:4.2')"
 expect_green "w2: lowercase key with a valid value passes" "1 checked, 0 skipped"
 
 commit "2026-10-25T12:36:00-05:00" "2026-10-25T12:36:00-05:00" "$(printf 'feat: x\n\n%s' "$GOOD_M")"

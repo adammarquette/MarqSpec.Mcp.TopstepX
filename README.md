@@ -646,8 +646,7 @@ The full environment contract, including the names gh#758 must use, is in
 Two entry points, in this order:
 
 1. **[`AGENTS.md`](AGENTS.md)** — the rules every agent follows (imported by `CLAUDE.md`, so it loads itself).
-   It routes you to your **role contract** — Coding, QA, Reviewer or Platform — which holds the rules the root
-   file deliberately does not repeat.
+   It routes you to the Coding or QA contract beside the project you are editing.
 2. **[`documentation/README.md`](documentation/README.md)** — the map of the documentation layer: what each
    document is, when to open it, and what it costs to read. **Go through the map; do not sweep the folder.**
 
@@ -655,7 +654,7 @@ Two entry points, in this order:
 
 | Path | What's there |
 |---|---|
-| [`documentation/`](documentation/) | All specs and design docs — the [PRD](documentation/prd.md) (`R-#`), [architecture](documentation/architecture.md), [data dictionary](documentation/data-dictionary.md), the [tool catalogue](documentation/mcp-tool-catalog.md), [ADRs](documentation/adr/), [agent contracts](documentation/agents/), and the [`wiki/`](documentation/wiki/) companion knowledge base (vendor-API and market-session reference; not read by the product) |
+| [`documentation/`](documentation/) | All specs and design docs — the [PRD](documentation/prd.md) (`R-#`), [architecture](documentation/architecture.md), [data dictionary](documentation/data-dictionary.md), the [tool catalogue](documentation/mcp-tool-catalog.md), [ADRs](documentation/adr/), and the [`wiki/`](documentation/wiki/) companion knowledge base (vendor-API and market-session reference; not read by the product) |
 | `MarqSpec.Mcp.TopstepX/` | The MCP host — tool registration, both transports, the composition root, and the cache-aside services |
 | `MarqSpec.Mcp.TopstepX.Domain/` | The pure layer — bars, indicators, the session calendar, gap detection, key levels. **References nothing** |
 | `MarqSpec.Mcp.TopstepX.Data/` | EF Core entities, the `DbContext`, and the migrations |

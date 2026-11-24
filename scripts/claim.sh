@@ -55,7 +55,7 @@
 #
 # ALL FOUR FAIL CLOSED. A wrong refusal costs the taker one re-post; a wrong acceptance costs somebody else
 # their work. That is the opposite direction from issue-link's stripper, where refusing blocks a legitimate
-# pull request -- ask which way the specific construct fails, every time (platform.md, gh#142).
+# pull request -- ask which way the specific construct fails, every time (gh#142).
 #
 # The token matters. "A comment naming the branch" would be satisfied by the CLAIMANT: issue #293's own
 # session posted `Claimed. Working on feature/293_...` on its own card, which would have authorised a
@@ -308,7 +308,7 @@ if [ -n "$CLAIMED" ]; then
         #
         # No ERE interval expressions, and no regex is ever run over the comment body or the branch name:
         # both reach `index()` as literals, so a branch carrying regex metacharacters cannot change what is
-        # matched, and the program behaves the same on the mawk /usr/bin/awk resolves to (platform.md, gh#142).
+        # matched, and the program behaves the same on the mawk /usr/bin/awk resolves to (gh#142).
         ANN_ISO="$(printf '%s\n' "$COMMENTS" \
           | awk -F '\t' \
                 -v tok="$ANNOUNCE_TOKEN" \

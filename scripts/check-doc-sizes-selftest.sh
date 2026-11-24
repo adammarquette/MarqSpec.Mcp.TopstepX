@@ -145,17 +145,15 @@
 #   -------------------------------------------  -------------------------------------------------  ----
 #   PRICED pair 1 (README / Start here)          a drifted ~tok value                               case
 #   PRICED pair 2 (README / Working agreements)  a renamed section heading                          case
-#   PRICED pair 3 (agents / The contracts)       a drifted row in the second priced file            case
 #   ROUNDING_STEP = 100 (the 0.1K grid)          off-grid green; one 0.1K step off red              case
 #   BYTES_PER_TOKEN = 4                          every sized fixture (sizes exact at 4)             case
 #   SIZE_CLAIM vocabulary                        size claim; quickest; no-longer green              case
-#   ALIGNMENT_ROW regex                          a sound pair of priced files                       case
+#   ALIGNMENT_ROW regex                          a sound priced file                                case
 #   SIZE_CELL regex                              a placeholder instead of a size                    case
 #   stated_tokens fraction handling              1K and 1.0K are the same price; 1.05K refused      case
 #   FILES de-duplication                         a sound pair (two pairs, one file)                 case
 #   NO SUCH FILE (priced file absent)            a priced file that is not on disk                  case
 #   EMPTY (priced file has no lines)             a priced file that exists and has no lines         mut
-#   per-file heading list (pair keying)          a renamed heading in the second priced file        mut
 #   heading match on the normalised line         a renamed section heading                          case
 #   UNLISTED TABLE (unlisted heading)            a price table under an unlisted heading            case
 #   blank line closes a table                    a priced section with no rows                      case
@@ -269,7 +267,6 @@ mkfile() {
 
 # Builds one fixture root. The priced documents are sized so their correct prices are exact:
 #   alpha.md 4000 B -> 1000 tok -> 1.0K, beta.md 8000 B -> 2000 tok -> 2.0K, gamma.md 2000 B -> 500 tok -> 0.5K
-#   agents/epsilon.md 6000 B -> 1500 tok -> 1.5K
 #
 # `delta.md` sits under a THIRD heading the gate does not price. Which table it gets is the fifth argument:
 #
@@ -279,17 +276,9 @@ mkfile() {
 #           was the `plain` case's opposite in name only: an unlisted priced table was silently unread, and
 #           the fixture asserted that it should be.
 #
-# THE SECOND PRICED FILE IS THE gh#178 HALF, and it is present in every fixture because the real `PRICED`
-# names it: a `documentation/agents/README.md` with a `~tok` table of its own, standing in for the role
-# contracts. Two things about it are load-bearing and neither is decoration:
-#
-#   - `documentation/epsilon.md` is a 400 B SHADOW of `documentation/agents/epsilon.md`. The second file's
-#     row prices `epsilon.md` at 1.5K, which is right relative to `documentation/agents/` and 15x wrong
-#     relative to `documentation/`. So a gate that kept ONE map-relative directory — the obvious way to
-#     port this script and the way that silently measures a different file — turns the SOUND case red. The
-#     green case is the measurement; nothing else has to assert it.
-#   - the `../beta.md` row climbs out of the nested file, which is the shape three of the four real rows
-#     have (`../../MarqSpec.Mcp.TopstepX/AGENTS.md`).
+# THE FIXTURE PRICES ONE FILE, documentation/README.md, under the two headings PRICED names. Three rows
+# (alpha, beta, gamma) is the sound count. `second_file=absent-map` deletes that file; `empty-map` truncates
+# it to zero bytes. Both are how the one priced file fails closed.
 #
 # `stray_kind` is the file-level twin of `reference_kind`, and both take a third value. `priced` drops a
 # `~tok` table where the gate must refuse it — under an unlisted heading, or in a file `PRICED` does not name
@@ -304,8 +293,8 @@ mkfile() {
 # and must not be read as unterminated. `quote-eof` ends the FILE instead, which closes the quote and the
 # fence with it. `quote-then-table` puts a REAL price table after the quote -- the only shape that can tell
 # "the fence closed with its container" from "the fence ran to EOF and was forgiven there".
-# `second_file` set to `absent` deletes the second priced file outright — a priced file that has moved must
-# be reported, not skipped.
+# `second_file` set to `absent-map` deletes the priced file outright — a priced file that has moved must
+# be reported, not skipped. `empty-map` leaves it on disk with no lines.
 #
 # Every argument is one editable part of an otherwise known-good pair of files, so every case is a one-line
 # perturbation. A fixture that differs from the sound one in more than the fault under test proves nothing
@@ -321,26 +310,12 @@ make_fixture() {
   # Defaulted, so every call that predates it is unchanged.
   local alpha_bytes="${11:-4000}"
   local fk_kind=no fk_open="" fk_inner="" fk_close=""
-  mkdir -p "$dir/documentation/agents"
+  mkdir -p "$dir/documentation/nested/deep"
   mkfile "$dir/documentation/alpha.md" "$alpha_bytes"
   mkfile "$dir/documentation/beta.md" 8000
   mkfile "$dir/documentation/gamma.md" 2000
   mkfile "$dir/documentation/delta.md" 400
-  mkfile "$dir/documentation/agents/epsilon.md" 6000
-  mkfile "$dir/documentation/epsilon.md" 400
   mkfile "$dir/documentation/zero.md" 0
-  if [ "$second_file" = "empty" ]; then
-    : > "$dir/documentation/agents/README.md"
-  elif [ "$second_file" = "present" ]; then
-    {
-      printf '# fixture role contracts\n\n'
-      printf '%s\n\n' "$contracts_heading"
-      printf '| Contract | ~tok | Loads |\n'
-      printf '|---|---:|---|\n'
-      printf '%s\n' "$contract_row"
-      printf '| [`beta.md`](../beta.md) | 2.0K | Open it yourself. |\n'
-    } > "$dir/documentation/agents/README.md"
-  fi
   # THE SWEEP HAS TWO ROOTS AND EVERY OTHER FIXTURE LIVES UNDER documentation/, so until this one nothing
   # in the suite could tell them apart -- `.github/**/*.md` could be deleted from the glob with all 36 cases
   # green, and a price list in `copilot-instructions.md` would simply stop being read. That root was added
@@ -369,7 +344,7 @@ make_fixture() {
       printf '| Document | ~tok | Read it when |\n'
       printf '|---|---:|---|\n'
       printf '| [`epsilon.md`](epsilon.md) | 99K | Only globstar reaches this depth. |\n'
-    } > "$dir/documentation/agents/deep.md"
+    } > "$dir/documentation/nested/deep/notes.md"
   fi
 
   case "$stray_kind" in closer-char|closer-len|closer-info|tilde|reset-leak) fk_kind=yes ;; esac
@@ -498,13 +473,18 @@ make_fixture() {
     printf '\n## The contracts\n\n'
     printf '| Document | Notes |\n'
     printf '|---|---|\n'
-    printf '| [`delta.md`](delta.md) | The SECOND priced file uses this heading; here it is unpriced. |\n'
+    printf '| [`delta.md`](delta.md) | An unpriced table the gate must leave alone. |\n'
     if [ "$reference_kind" = "quote-eof" ]; then
       printf '\n> Quoted, and then the file simply ends:\n\n'
       printf '> ```markdown\n'
       printf '> | Document | ~tok | Read it when |\n'
     fi
   } > "$dir/documentation/README.md"
+  if [ "$second_file" = "absent-map" ]; then
+    rm -f "$dir/documentation/README.md"
+  elif [ "$second_file" = "empty-map" ]; then
+    : > "$dir/documentation/README.md"
+  fi
 }
 
 # Every priced heading present, every priced table EMPTY. Its own builder rather than five more positional
@@ -513,7 +493,7 @@ make_fixture() {
 # it as unreachable (PR #193 round 7).
 make_empty_fixture() {
   local dir="$1"
-  mkdir -p "$dir/documentation/agents"
+  mkdir -p "$dir/documentation"
   mkfile "$dir/documentation/alpha.md" 4000
   {
     printf '# fixture routing map\n\n'
@@ -524,12 +504,6 @@ make_empty_fixture() {
     printf '| Document | ~tok | Read it when |\n'
     printf '|---|---:|---|\n\n'
   } > "$dir/documentation/README.md"
-  {
-    printf '# fixture role contracts\n\n'
-    printf '## The contracts\n\n'
-    printf '| Contract | ~tok | Loads |\n'
-    printf '|---|---:|---|\n\n'
-  } > "$dir/documentation/agents/README.md"
 }
 SOUND_GAMMA='| [`gamma.md`](gamma.md) | 0.5K | Before starting any work. |'
 SOUND_HEADING='## Working agreements'
@@ -549,7 +523,7 @@ run_gate() {
   # Truncated per call, not appended: each case asserts what ITS OWN run wrote, and a leftover byte from the
   # previous case would redden the next one and name the wrong culprit.
   : > "$GATE_STDERR"
-  bash "$GATE" "$1" 2>"$GATE_STDERR"
+  bash "${GATE_OVERRIDE:-$GATE}" "$1" 2>"$GATE_STDERR"
 }
 
 # Both streams as one string, for the callers that must read the gate's own words wherever it chose to put
@@ -652,11 +626,11 @@ expect_red "a drifted ~tok value (5.0K on a 1.0K file)" "$FIXTURES/drifted" "OUT
 #    1.0K and is 4% away from it. The green half is what stops the rule collapsing into "stated must equal
 #    the raw measurement", which would redden nearly every real row on this repository and be deleted the
 #    same afternoon; the red half is 1.1K, ONE STEP off, which the old 25% band accepted in silence. That
-#    red case is gh#196's regression test: it is the shape of `code-reviewer.md` sitting at 1.7K against a
+#    red case is gh#196's regression test: it is the shape of a small priced file sitting at 1.7K against a
 #    measured 1.8K, green for as long as nobody re-derived it by hand.
 make_fixture "$FIXTURES/rounds" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "present" "none" 4180
-expect_green "a measurement off the 0.1K grid, priced at what it rounds to" "$FIXTURES/rounds" "5 priced rows"
+expect_green "a measurement off the 0.1K grid, priced at what it rounds to" "$FIXTURES/rounds" "3 priced rows"
 
 make_fixture "$FIXTURES/onestep" "1.1K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "present" "none" 4180
@@ -666,7 +640,7 @@ expect_red "one 0.1K step off, which the old 25% band accepted" "$FIXTURES/onest
 #    the same price, so a gate comparing the two CELLS would redden a row for its spelling -- a blocked merge
 #    on a correct number, which is how a gate gets deleted by the first person it wrongly stops.
 make_fixture "$FIXTURES/bareK" "1K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
-expect_green "1K and 1.0K are the same price" "$FIXTURES/bareK" "5 priced rows"
+expect_green "1K and 1.0K are the same price" "$FIXTURES/bareK" "3 priced rows"
 
 #    And a cell FINER than the column is refused, with its own wording. 1.05K on a 1045-token file is nearer
 #    the truth than the 1.0K demanded of it, so the deviation truncates to 0% and the ordinary diagnostic
@@ -732,7 +706,7 @@ expect_red "prose claiming the quickest read" "$FIXTURES/quickest" "SIZE CLAIM"
 #    the first person it wrongly stops, so this case is what keeps the comparatives out of the vocabulary.
 make_fixture "$FIXTURES/nolonger" "1.0K" \
   '| [`gamma.md`](gamma.md) | 0.5K | Read it when an estimate no longer matches the card. |' "$SOUND_HEADING" "plain"
-expect_green "ordinary prose containing 'no longer'" "$FIXTURES/nolonger" "5 priced rows"
+expect_green "ordinary prose containing 'no longer'" "$FIXTURES/nolonger" "3 priced rows"
 
 # 7. A row pointing at a file that is not there. It cannot be measured, so the gate must not call it priced.
 make_fixture "$FIXTURES/missing" "1.0K" \
@@ -765,21 +739,40 @@ expect_red "a renamed section heading" "$FIXTURES/renamed" "NO SECTION"
 make_fixture "$FIXTURES/unlisted" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "priced"
 expect_red "a price table under an unlisted heading" "$FIXTURES/unlisted" "UNLISTED TABLE"
 
-# 13. THE SECOND PRICED FILE IS ACTUALLY READ (gh#178). Everything above perturbs the routing map, so every
-#     one of them would still pass on a gate that had been pointed at a second file and never opened it --
-#     which is the whole failure mode this card was filed about, in the gate rather than in the map. The
-#     drift is put in the second file's OWN row, so only a gate that read it can report this.
-make_fixture "$FIXTURES/contract-drift" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
-  '| [`epsilon.md`](epsilon.md) | 5.0K | Open it yourself. |'
-expect_red "a drifted row in the second priced file" "$FIXTURES/contract-drift" "OUT OF DATE"
+# 12b. A SECOND PRICED FILE IS READ. The shipped PRICED list names one file, so these two cases run a
+# copy of the gate with one extra pair and a synthetic documentation/priced-extra.md. A gate that never
+# opens that file cannot report the drift, and a gate that keys headings by text alone cannot report the
+# renamed heading while the map fixture still has other headings.
+EXTRA_GATE="$FIXTURES/gate-with-extra.sh"
+awk '
+  index($0, "documentation/README.md|## Working agreements") {
+    print
+    print "  \"documentation/priced-extra.md|## Measured\""
+    next
+  }
+  { print }
+' "$GATE" > "$EXTRA_GATE"
+write_extra() {
+  local dir="$1" heading="$2" tok="$3"
+  {
+    printf '# synthetic second priced file\n\n'
+    printf '%s\n\n' "$heading"
+    printf '| Document | ~tok | Read it when |\n'
+    printf '|---|---:|---|\n'
+    printf '| [`alpha.md`](alpha.md) | %s | A second file the gate must open. |\n' "$tok"
+  } > "$dir/documentation/priced-extra.md"
+}
+make_fixture "$FIXTURES/extra-drift" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
+write_extra "$FIXTURES/extra-drift" "## Measured" "5.0K"
+GATE_OVERRIDE="$EXTRA_GATE"
+expect_red "a drifted row in a second priced file" "$FIXTURES/extra-drift" "OUT OF DATE"
+unset GATE_OVERRIDE
 
-# 14. The same renamed-heading fault as case 11, in the second file -- and the one case that asserts `PRICED`
-#     is keyed on PAIRS rather than on heading text. The map fixture carries a `## The contracts` heading of
-#     its own, deliberately and unpriced, so a gate keeping one flat list of headings finds that occurrence,
-#     marks the section seen, and never says `NO SECTION` about the file whose heading actually moved.
-make_fixture "$FIXTURES/contract-renamed" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
-  "$SOUND_CONTRACT" "## Contracts"
-expect_red "a renamed heading in the second priced file" "$FIXTURES/contract-renamed" "NO SECTION"
+make_fixture "$FIXTURES/extra-renamed" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
+write_extra "$FIXTURES/extra-renamed" "## Not the priced heading" "1.0K"
+GATE_OVERRIDE="$EXTRA_GATE"
+expect_red "a renamed heading in a second priced file" "$FIXTURES/extra-renamed" "NO SECTION"
+unset GATE_OVERRIDE
 
 # 15. A ~tok table in a FILE `PRICED` does not name. Case 12 is this fault at the heading level and was the
 #     PR #175 review's finding; gh#178 opened it again one level up by making "which files" a list at all.
@@ -790,27 +783,27 @@ make_fixture "$FIXTURES/stray" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
 expect_red "a price table in a file the gate does not read" "$FIXTURES/stray" "UNLISTED FILE"
 
 # 16. A priced file that is not on disk. `check-doc-links.sh` says nothing about it -- nothing links to a
-#     table, only to documents -- so if this gate skipped it instead, moving `documentation/agents/README.md`
-#     would silently stop pricing four contracts with every other check still green.
+#     table, only to documents -- so if this gate skipped a missing priced file, the map could move and
+#     every other check would still be green.
 make_fixture "$FIXTURES/nofile" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
-  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "absent"
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "absent-map"
 expect_red "a priced file that is not on disk" "$FIXTURES/nofile" "NO SUCH FILE"
 
 # 17. FENCED EXAMPLES ARE NOT PRICE TABLES, and both halves of that must be green (PR #193 review). A
 #     document that EXPLAINS a `~tok` table shows one, and a gate matching `~tok` plus two pipes then blocks
 #     a merge on correct prose -- `docs` is required on all three rungs, so that is the shape a gate gets
-#     deleted for. It very nearly landed: this card's own `platform.md` edit added two `~tok` sentences to a
+#     deleted for. It very nearly landed: that change added two `~tok` sentences to a
 #     swept file, each one `|` short of tripping it.
 #
 #     Two cases because the two rules are separate code paths: the fence must be honoured in a file the gate
 #     WALKS (rule 3, below a heading it does not price) and in one it merely SWEEPS (rule 4). The unfenced
 #     twins are cases 12 and 15, which stay red.
 make_fixture "$FIXTURES/fenced-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "fenced"
-expect_green "a fenced ~tok example under an unlisted heading" "$FIXTURES/fenced-section" "5 priced rows"
+expect_green "a fenced ~tok example under an unlisted heading" "$FIXTURES/fenced-section" "3 priced rows"
 
 make_fixture "$FIXTURES/fenced-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "fenced"
-expect_green "a fenced ~tok example in an unswept-for-pricing file" "$FIXTURES/fenced-file" "5 priced rows"
+expect_green "a fenced ~tok example in an unswept-for-pricing file" "$FIXTURES/fenced-file" "3 priced rows"
 
 # 18. A FENCE LEFT OPEN AT END OF FILE -- the one fail-open case 17's fence tracking introduces. Every line
 #     below an unclosed ``` is skipped, so a price table under it is unseen. In a PRICED file that reddens as
@@ -831,11 +824,11 @@ expect_red "a fence left open in a swept file" "$FIXTURES/unterminated-file" "UN
 #     fence, which is what they had done. Case 17 one construct out, and gh#123's rule met a third time: the
 #     stateful pass has to know the delimiters the later passes remove. Both code paths again.
 make_fixture "$FIXTURES/quoted-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "quoted"
-expect_green "a quoted, fenced ~tok example under an unlisted heading" "$FIXTURES/quoted-section" "5 priced rows"
+expect_green "a quoted, fenced ~tok example under an unlisted heading" "$FIXTURES/quoted-section" "3 priced rows"
 
 make_fixture "$FIXTURES/quoted-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quoted"
-expect_green "a quoted, fenced ~tok example in a swept file" "$FIXTURES/quoted-file" "5 priced rows"
+expect_green "a quoted, fenced ~tok example in a swept file" "$FIXTURES/quoted-file" "3 priced rows"
 
 # 20. A QUOTED FENCE CLOSED BY THE END OF ITS BLOCKQUOTE, with no closing ``` anywhere -- valid CommonMark,
 #     because the container closes and the fence closes with it (PR #193 review round 3, the residual). This
@@ -846,11 +839,11 @@ expect_green "a quoted, fenced ~tok example in a swept file" "$FIXTURES/quoted-f
 #     UNTERMINATED FENCE if the container close goes (the fence never closes), and green only when both are
 #     right.
 make_fixture "$FIXTURES/quote-closed-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "quote-closed"
-expect_green "a quoted fence closed by the end of its blockquote" "$FIXTURES/quote-closed-section" "5 priced rows"
+expect_green "a quoted fence closed by the end of its blockquote" "$FIXTURES/quote-closed-section" "3 priced rows"
 
 make_fixture "$FIXTURES/quote-closed-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quote-closed"
-expect_green "the same, in a swept file" "$FIXTURES/quote-closed-file" "5 priced rows"
+expect_green "the same, in a swept file" "$FIXTURES/quote-closed-file" "3 priced rows"
 
 # 21. A QUOTED FENCE STILL OPEN AT END OF FILE (PR #193 review round 4). Case 20's rule has two halves --
 #     "a fence opened under a `>` ends at the first line carrying none" AND a blockquote also ends at EOF --
@@ -859,11 +852,11 @@ expect_green "the same, in a swept file" "$FIXTURES/quote-closed-file" "5 priced
 #     at all, which is a confident wrong diagnostic of exactly the kind gh#108/gh#140 is about. Half a rule
 #     is the shape that produces one.
 make_fixture "$FIXTURES/quote-eof-section" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "quote-eof"
-expect_green "a quoted fence still open at end of a priced file" "$FIXTURES/quote-eof-section" "5 priced rows"
+expect_green "a quoted fence still open at end of a priced file" "$FIXTURES/quote-eof-section" "3 priced rows"
 
 make_fixture "$FIXTURES/quote-eof-file" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "quote-eof"
-expect_green "the same, at the end of a swept file" "$FIXTURES/quote-eof-file" "5 priced rows"
+expect_green "the same, at the end of a swept file" "$FIXTURES/quote-eof-file" "3 priced rows"
 
 # 22. THE CASE THAT PINS `close_fence_if_quote_ended`, and it exists because case 21 stopped pinning it.
 #     Adding the quoted-at-EOF exemption MASKED the container rule: with `close_fence_if_quote_ended`
@@ -891,19 +884,19 @@ expect_red "the same, in a swept file" "$FIXTURES/quote-then-table-file" "UNLIST
 #     column -- a claim nothing re-measures -- reappearing inside the script that closes it.
 make_fixture "$FIXTURES/closer-char" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "closer-char"
-expect_green "a ~~~ line inside a backtick fence closes nothing" "$FIXTURES/closer-char" "5 priced rows"
+expect_green "a ~~~ line inside a backtick fence closes nothing" "$FIXTURES/closer-char" "3 priced rows"
 
 make_fixture "$FIXTURES/closer-len" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "closer-len"
-expect_green "a shorter fence run closes nothing" "$FIXTURES/closer-len" "5 priced rows"
+expect_green "a shorter fence run closes nothing" "$FIXTURES/closer-len" "3 priced rows"
 
 make_fixture "$FIXTURES/closer-info" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "closer-info"
-expect_green "a fence run with an info string closes nothing" "$FIXTURES/closer-info" "5 priced rows"
+expect_green "a fence run with an info string closes nothing" "$FIXTURES/closer-info" "3 priced rows"
 
 make_fixture "$FIXTURES/tilde" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "tilde"
-expect_green "a ~~~-fenced price table is still fenced" "$FIXTURES/tilde" "5 priced rows"
+expect_green "a ~~~-fenced price table is still fenced" "$FIXTURES/tilde" "3 priced rows"
 
 # 24. THE FAIL-OPEN OF THE FIVE, and the sharpest defect in this batch. `fence_reset` runs once per file in
 #     the sweep; remove it and fence state LEAKS from one file into the next. Two adjacent files -- the
@@ -936,7 +929,7 @@ expect_red "a price table under .github/" "$FIXTURES/github-root" "UNLISTED FILE
 #     could parse anything and the fixture would prove nothing.
 make_fixture "$FIXTURES/thematic-break" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
   "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "present" "thematic-break"
-expect_green "a thematic break under a priced heading" "$FIXTURES/thematic-break" "5 priced rows"
+expect_green "a thematic break under a priced heading" "$FIXTURES/thematic-break" "3 priced rows"
 
 # 27. A LINK CARRYING A #FRAGMENT. `target="${target%%#*}"` strips it so the row resolves; delete that and
 #     the row reports MISSING against a file that is plainly there. No priced row in this repository uses a
@@ -944,7 +937,7 @@ expect_green "a thematic break under a priced heading" "$FIXTURES/thematic-break
 #     would have reddened a required check on a legitimate anchor link.
 make_fixture "$FIXTURES/fragment" "1.0K" \
   '| [`gamma.md`](gamma.md#a-section) | 0.5K | Before starting any work. |' "$SOUND_HEADING" "plain"
-expect_green "a row whose link carries a #fragment" "$FIXTURES/fragment" "5 priced rows"
+expect_green "a row whose link carries a #fragment" "$FIXTURES/fragment" "3 priced rows"
 
 # 28. A ROW POINTING AT A ZERO-BYTE FILE. The `measured <= 0` guard exists so the deviation arithmetic never
 #     divides by zero. `dev_pct` decides nothing since gh#196 — it is the wording of a failure, not the
@@ -970,7 +963,7 @@ expect_red "a price table three directories down" "$FIXTURES/globstar" "UNLISTED
 #     case was one argument away, since `mkfile ... 0` already existed in the builder. An
 #     unreachable-with-a-reason row is a claim, and this is the one that was wrong in both halves.
 make_fixture "$FIXTURES/empty-priced" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain" \
-  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "empty"
+  "$SOUND_CONTRACT" "$SOUND_CONTRACTS_HEADING" "none" "empty-map"
 expect_red "a priced file that exists and has no lines" "$FIXTURES/empty-priced" "has no lines"
 
 # 31. NOTHING CHECKED, also recorded as unreachable and also reachable: every priced heading present and
@@ -979,16 +972,12 @@ expect_red "a priced file that exists and has no lines" "$FIXTURES/empty-priced"
 make_empty_fixture "$FIXTURES/nothing-checked"
 expect_red "every priced table empty" "$FIXTURES/nothing-checked" "NOTHING CHECKED"
 
-# 32. The sound fixture. Five priced rows across three sections in two files, plus an ordinary table with no
+# 32. The sound fixture. Three priced rows in one file, plus an ordinary table with no
 #     price column under a third heading -- so this also asserts the gate leaves un-priced tables alone,
-#     which is what nearly every table in the corpus is.
-#
-#     It is ALSO the only assertion that link targets resolve against the file that names them: the second
-#     file prices `epsilon.md` at 1.5K, and `documentation/epsilon.md` is 400 B sitting where a map-relative
-#     resolution would look. Green here means the gate measured `documentation/agents/epsilon.md`; a gate
-#     that kept one directory for every file goes red on this case with `OUT OF DATE`.
+#     which is what nearly every table in the corpus is. Link targets resolve against the file that names
+#     them: gamma.md sits beside the map, and a row that pointed at a missing file would be MISSING.
 make_fixture "$FIXTURES/sound" "1.0K" "$SOUND_GAMMA" "$SOUND_HEADING" "plain"
-expect_green "a sound pair of priced files" "$FIXTURES/sound" "5 priced rows"
+expect_green "a sound priced file" "$FIXTURES/sound" "3 priced rows"
 
 info ""
 if [ "$failures" -gt 0 ]; then
@@ -1004,4 +993,4 @@ if [ "$cases" -eq 0 ]; then
   exit 1
 fi
 
-ok "ok  $cases self-test cases across two priced files — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input WITHOUT WRITING A BYTE TO STDERR: one priced off the 0.1K grid at what it rounds to, one spelling that price \`1K\`, one whose prose says \"no longer\", twelve showing a price table inside a fence, one placing a thematic break under a priced heading, and one wholly sound."
+ok "ok  $cases self-test cases across one priced file — check-doc-sizes.sh rejects each known fault BY NAME, and accepts correct input WITHOUT WRITING A BYTE TO STDERR: one priced off the 0.1K grid at what it rounds to, one spelling that price \`1K\`, one whose prose says \"no longer\", twelve showing a price table inside a fence, one placing a thematic break under a priced heading, and one wholly sound."

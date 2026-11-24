@@ -21,18 +21,11 @@
 # entries after anyone corrects it, and nothing in an ordinary pull request ever looks at the row that prices
 # it. A rule whose violation is produced by obeying another rule cannot be left to memory.
 #
-# WHY THERE IS MORE THAN ONE PRICED TABLE (gh#178)
+# WHY THERE IS A LIST OF PRICED TABLES (gh#178)
 #
-# The routing map is a two-level route: its `agents/` row points at `documentation/agents/README.md`, and that
-# index points on at the role contracts. gh#160 priced the row — correctly, for the index — and the row
-# was then the entrance to a read nothing described, `documentation/agents/platform.md` being an order of
-# magnitude past the number a reader had just budgeted from.
-#
-# The prices went into the index's own contract table rather than into one map row per contract. Map
-# rows would have listed the same contracts a second time, priced, beside the index's table listing them
-# unpriced — one fact in two places with only one copy ever corrected, which is precisely what rule 2 below
-# refuses inside a single row. The cost of that choice is this script: "the priced table" became a LIST of
-# (file, heading) pairs, and the list is `PRICED` below.
+# "The priced table" is a LIST of (file, heading) pairs, `PRICED` below. The routing map is the list this
+# repository ships. Adding another file is a deliberate edit of that list; a `~tok` table the list does not
+# name is refused.
 #
 # HOW THE NUMBER IS DERIVED
 #
@@ -104,7 +97,6 @@ cd "$REPO_ROOT" || { die "  NO SUCH ROOT  $REPO_ROOT"; exit 1; }
 PRICED=(
   "documentation/README.md|## Start here"
   "documentation/README.md|## Working agreements"
-  "documentation/agents/README.md|## The contracts"
 )
 
 # THE ROW MUST SAY WHAT THE COLUMN CAN SAY -- there is no percentage band, and gh#196 is why.
@@ -115,14 +107,14 @@ PRICED=(
 # widest on exactly the documents that grow. Measured at `fecc463`, the two ends of this repository's own
 # priced set:
 #
-#   agents/platform.md                      23182 tok   25% = +/- 5795 tok of slack
+#   the largest then-priced contract          23182 tok   25% = +/- 5795 tok of slack
 #   MarqSpec.Mcp.TopstepX.IntegrationTests/AGENTS.md   882 tok   25% = +/-  220 tok
 #
 # A 26x spread, and 5795 tokens is a quarter of the largest contract in the repository being addable before
 # anything complains. Drift here is not noise around a true value, it is SYSTEMATIC AND COMPOUNDING -- these
 # documents only grow, `AGENT-MEMORY.md` under standing orders to -- so each tolerated increment moved the
 # row further out AND the ceiling further away. gh#196 recorded the failure three times in one afternoon,
-# the sharpest being `code-reviewer.md` at 1.7K while measuring 1.8K: 3% off, green, and corrected only
+# the sharpest being a small contract at 1.7K while measuring 1.8K: 3% off, green, and corrected only
 # because a human re-derived it by hand under the same-PR rule.
 #
 # THE BAND WAS ALSO TOO WIDE FOR THE DEFECT IT WAS WRITTEN FOR, and that measurement is kept from the
@@ -131,7 +123,7 @@ PRICED=(
 #
 #   flagged   AGENT-MEMORY.md 88% · work-estimate-rubric.md 56% · project-board-workflow.md 44%
 #             mcp-tool-catalog.md 43% · architecture.md 35% (the row carrying the inverted recommendation)
-#             agents/README.md -- as NOT A SIZE, it was priced `index`
+#             the index row -- as NOT A SIZE, it was priced `index`
 #   tolerated prd.md 14% · data-dictionary.md 10% · CONTRIBUTING.md 7% · AGENTS.md 2%
 #
 # So four of the values gh#160 corrected would never have been demanded by the gate gh#160 produced. That
@@ -228,12 +220,11 @@ explain() {
   cat >&2 <<'EXPLAIN'
 
 A `~tok` column is the price list a reader consults before opening a document, and it is only worth
-consulting while it is true. documentation/README.md carries one for the documents it routes to;
-documentation/agents/README.md carries one for the role contracts.
+consulting while it is true. documentation/README.md carries one for the documents it routes to.
 
   tokens = bytes / 4, bytes from `wc -c`, rounded to 0.1K. The value to write is printed above each failure.
 
-If you APPENDED to a priced document — AGENT-MEMORY.md especially, or documentation/agents/platform.md —
+If you APPENDED to a priced document — AGENT-MEMORY.md especially —
 correct its row in this same pull request. That is the same-PR docs rule in AGENTS.md, and it is one
 character of editing.
 
@@ -467,7 +458,7 @@ for file in "${FILES[@]}"; do
     # A PRICED TABLE UNDER AN UNLISTED HEADING IS A FAILURE, NOT AN EXEMPTION (PR #175 review). `SECTIONS`
     # was a fixed pair, so before this the parser fail-CLOSED on removal -- delete a section and you get
     # `NO SECTION`, empty one and you get `NO ROWS` -- and fail-OPEN on addition: add one and you got
-    # silence. A new `## Operations` table pricing `agents/platform.md` at 0.2K, with the word "cheap" in its
+    # silence. A new `## Operations` table pricing a large contract at 0.2K, with the word "cheap" in its
     # prose, drew `ok 10 routed rows ... every ~tok within 25% and no size claims in prose` and exit 0. That
     # sentence was false about the file it had just read, and the map's own promise -- "re-measures every row
     # below" -- was false with it.
@@ -535,10 +526,8 @@ for file in "${FILES[@]}"; do
     target="${target%%)*}"
     target="${target%%#*}"
 
-    # RESOLVED AGAINST THE PRICED FILE'S OWN DIRECTORY, not against the routing map's (gh#178). Every link in
-    # `documentation/agents/README.md` is relative to `documentation/agents/`, and three of the four climb
-    # out of it with `../../`. A port that kept a single `MAP_DIR` would have measured a different file, or
-    # none, and reported a confident number either way.
+    # RESOLVED AGAINST THE PRICED FILE'S OWN DIRECTORY, not against one shared directory (gh#178).
+    # A link is relative to the file that contains the row.
     resolved="$file_dir/$target"
 
     if [[ ! "$cell_tok" =~ $SIZE_CELL ]]; then
@@ -658,9 +647,8 @@ done
 # `**` does not match dot-directories unless `dotglob` is set, which is the behaviour wanted for `.git/` and
 # — the one that matters locally — `.worktrees/`, which holds full checkouts of this repository for other
 # sessions; sweeping those would report a parallel session's half-finished table as this pull request's
-# fault. It also silently excluded `.github/`, whose five markdown files include
-# `copilot-instructions.md`, the checklist `documentation/agents/code-reviewer.md` routes every review to —
-# so that root is named explicitly (PR #193 review). Between them the two patterns reach every tracked
+# fault. It also silently excluded `.github/`, whose markdown includes
+# `copilot-instructions.md` — so that root is named explicitly (PR #193 review). Between them the two patterns reach every tracked
 # markdown file. THE COUNT IS NOT WRITTEN DOWN ANYWHERE — it is printed on the green line and nothing else
 # asserts it, because a number stated in prose that no run measures is the defect this whole script is
 # about. To check the reach is still total: `git ls-files '*.md' | wc -l` against that printed count.
